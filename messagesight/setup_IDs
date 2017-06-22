@@ -1,0 +1,52 @@
+#!/bin/bash
+
+usage() {
+  echo "USAGE: $0 [-w <host>] [-N <role>]"
+  exit
+}
+
+
+while getopts w:N: opt
+do
+  case $opt in
+  w)
+    MSHOST=$OPTARG
+    ;;
+
+  N)
+    MSROLE=$OPTARG
+    ;;
+
+  *)
+    usage
+    ;;
+  esac
+done
+
+[[ -z $MSHOST && -z $MSROLE ]] && usage
+
+if [[ -n $MSROLE ]] ; then
+  NODELIST=$(dsls -qe system role==$MSROLE)
+else
+  NODELIST=$MSHOST
+fi
+
+read -p "Enter password for admin ID: " -s PASSWORD
+echo
+
+for NODE in $NODELIST
+do
+  for ID in spong itmadmin logs adrian gregg marjan aleras
+  do
+    echo "Adding ID $ID to $NODE"
+    ./ms_ID -u $ID -t WebUI -p passw0rd -g SystemAdministrators -w $NODE -P $PASSWORD
+  done
+done
+
+for NODE in $NODELIST
+do
+  echo "Updating itmadmin's password on $NODE"
+  ./ms_ID -U -u itmadmin -t WebUI -p Fr6NrU5J -w $NODE -P $PASSWORD
+done
+
+

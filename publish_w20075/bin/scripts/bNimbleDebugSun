@@ -1,0 +1,109 @@
+#!/bin/bash
+
+LOGDIR=$1
+DIR=/tmp/bNimbleDebug/
+DATESTRING=$(date +%Y%m%d-%H:%M:%S)
+JDB="/usr/java/jdk1.3.1_03/bin/jdb -attach"
+JDBINI=/fs/system-RW/tools/publish/config/sun.ini
+
+echo "Starting bNimble debug procedures..."
+
+
+
+
+###################  Directory Check ####################
+echo ""
+echo -e "\tChecking for debug directory..."
+if [ -d $DIR ]
+then 
+echo -e "\t\tDebug directory exists"
+else
+mkdir $DIR
+echo -e "\t\tCreated Debug directory"
+fi
+echo -e "\tDone (Directory Check)"
+
+
+###################  Process Check ####################
+echo ""
+echo -e "\tGetting process stats..."
+ps -ef --cols 2048  2>&1 > $DIR/ps.$DATESTRING
+echo -e "\tDone (Process Check)"
+
+###################  Netstat Check ####################
+echo ""
+echo -e "\tGetting network socket stats..."
+netstat -an 2>&1 > $DIR/netstat-an.$DATESTRING
+netstat -s 2>&1 > $DIR/netstat-s.$DATESTRING
+echo -e "\tDone (Network Check)"
+
+
+
+
+###################  Top Check ####################
+echo ""
+echo -e "\tGetting top processes stats..."
+top -b -n 5 2>&1 > $DIR/top.$DATESTRING
+echo -e "\tDone (Top Process Check)"
+
+
+###################  Vmware Check ####################
+echo ""
+echo -e "\tGetting top vmstat stat...(This will take 20 seconds)"
+vmstat 1 20  2>&1 > $DIR/vmstat.$DATESTRING
+echo -e "\tDone (vmstat Check)"
+
+
+
+
+
+###################  Directory Check ####################
+echo ""
+echo -e "\tChecking for output file..."
+if [ -d $LOGDIR ]
+then 
+echo -e "\t\tlogdir exists"
+else
+echo -e "\t\tlogdir does not exist exiting"
+exit 
+fi
+
+if [ -e $LOGDIR/output.log ]
+then 
+echo -e "\t\tOutput file exists"
+else
+echo -e "\t\tOutput file does not exist exiting"
+exit 
+fi
+
+
+
+
+###################  jdb Check ####################
+echo ""
+echo -e "\tStarting JDB"
+echo -e "\t\tCopying proper jdb.ini file"
+cp $JDBINI $DIR/jdb.ini
+echo -e "\t\tDone (copying file)"
+cd $DIR
+
+echo -e "\t\tGetting port to attach to with jdb"
+JDBPORT=`cat $LOGDIR/output.log | grep dt | tail -1 | awk '{print $NF}'`
+echo -e "\t\tDone (Getting port)"
+
+
+echo -e "\t\tRunning JDB, if this takes more than 1 minute press CTRL-C"
+$JDB $JDBPORT 2>&1 > $DIR/jdb.$DATESTRING
+
+echo -e "\t\tRemoving jdb.ini file"
+rm $DIR/jdb.ini
+echo -e "\t\tDone (Removing file)"
+
+echo -e "\t\tDone (Running JDB)"
+
+echo -e "\tDone (JDB)"
+
+
+
+
+echo "Finished bNimble debug procedures..."

@@ -1,0 +1,163 @@
+#!/bin/ksh
+status_all()
+{ 
+  su - mqm -c "dspmq"
+  echo "==>Checking for $1 processes"
+  /lfs/system/tools/configtools/countprocs.sh 1  $1
+}
+
+#----------------------------------------------------------------------
+# wait for broker to start and check system.def.srvrcon is connected
+# run enable if not
+#----------------------------------------------------------------------
+wait_running() {
+	print -u2 -- "**************************************************************"
+	print -u2 -- "Waiting for broker to start before enabling SYSTEM.DEF.SRVRCON"
+	print -u2 -- "**************************************************************"
+	broker=$1
+	for i in 1 2 3 4 5 ; do
+		su - mqm -c ". ~/.profile;mqsilist" | {
+			while read line; do
+				print -u2 -- $line
+				if [[ "$line" = *"Broker"*"on queue manager"* ]]; then
+					BROKER=${line#*\'}
+					BROKER=${BROKER%%\'*}
+					STATUS=${line#*is }
+					QMANAGER=${line%\'*}
+					QMANAGER=${QMANAGER##*\'}
+					if [[ "$STATUS" = "running." ]]; then
+						matched=1
+					fi
+				fi
+			done
+			if [ "$matched" = 1 ];then 
+				break	
+			else 
+				sleep 10
+			fi
+		}
+	done
+	if [ $i -eq 5 ]; then 
+		print -u2 -- "timeout waiting for broker start.... run rc.wbimb enable manually"
+		exit
+	else
+		for i in 1 2 3 4 5; do 
+			print "su - mqm -c 'echo \"display  chstatus(SYSTEM.DEF.SVRCONN)\" | runmqsc $QMANAGER'"
+			su - mqm -c ". ~/.profile; echo \"display  chstatus(SYSTEM.DEF.SVRCONN)\" | runmqsc $QMANAGER" | {
+				while read line; do
+					print -u2 -- $line
+					if [[ "$line" = *"Channel Status not found."* ]]; then
+						enable_broker $broker
+					elif [[ "$line" = *CHANNEL* ]];then
+						CHANNEL=${line#*\(}
+						CHANNEL=${CHANNEL%%\)*}
+					elif [[ "$line" = *CONNAME* ]]; then
+						CONNAME=${line#*\(}
+						CONNAME=${CONNAME%%\)*}
+    				elif [[ "$line" = *STATUS* ]]; then
+    					STATUS=${line#*\(}
+						STATUS=${STATUS%%\)*}
+					fi
+				done
+			}
+		
+	 		if [[ "$CHANNEL" = "SYSTEM.DEF.SVRCONN" ]] && [[ "$CONNAME" = "127.0.0.1" ]]; then
+				if [[ "$STATUS" != "RUNNING" ]]; then
+					enable_broker $1
+					return
+				else
+					print -u2 -- "no enable required"
+					return
+				fi
+			fi
+			sleep 10
+		done
+	fi
+}
+
+stop_broker()
+{
+    broker=$1
+    echo "Stopping broker $broker..."
+#  echo "Stopping using -i for force stop due to problems with stop command"
+    su - mqm -c ". ~/.profile;mqsistop -i -q $broker;sleep 10"
+}
+
+
+start_broker()
+{
+    broker=$1
+    echo "Starting broker $broker..."
+    su - mqm -c ". ~/.profile;mqsistart  $broker;sleep 5"
+	 su - mqm -c ". ~/.profile; echo \"alter chl(SYSTEM.DEF.SVRCONN) CHLTYPE(SVRCONN) MCAUSER('')\"  | runmqsc \$QMANAGER"
+    sleep 5
+    su - mqm -c ". ~/.profile; echo \"alter chl(SYSTEM.DEF.SVRCONN) CHLTYPE(SVRCONN) MCAUSER(NOBODY)\"  | runmqsc \$QMANAGER"
+}
+enable_broker()
+{
+  broker=$1
+  echo "enabling broker $broker..."
+  su - mqm -c ". ~/.profile; echo \"alter chl(SYSTEM.DEF.SVRCONN) CHLTYPE(SVRCONN) MCAUSER('')\"  | runmqsc \$QMANAGER"
+  sleep 5
+  su - mqm -c ". ~/.profile; echo \"alter chl(SYSTEM.DEF.SVRCONN) CHLTYPE(SVRCONN) MCAUSER(NOBODY)\"  | runmqsc \$QMANAGER"
+}
+
+#MAIN
+usage="Command syntax: sudo rc.wbimb <stop|start|restart|list|status|enable>"
+if [[ ! -z $1 ]]; then
+    action=$1
+else
+    echo $usage
+    exit
+fi
+if [[ "$SUDO_USER" != "" ]]; then
+ if [ -e /opt/IBM/mqsi/7.0/bin/mqsiprofile ]; then
+   broker=`su - mqm -c ". /opt/IBM/mqsi/7.0/bin/mqsiprofile;mqsilist" | grep Broker | awk '{print $3}'`
+ 
+   case $action in
+      stop)
+         if [[ ! -z $broker ]]; then
+              stop_broker $broker
+         fi
+         ;;
+      start)
+         if [[ ! -z $broker ]]; then
+              start_broker $broker
+              wait_running $broker
+         fi
+        ;;
+	  enable)
+			if [[ ! -z $broker ]]; then
+					enable_broker $broker
+         fi
+        ;;
+      restart)
+         if [[ ! -z $broker ]]; then
+              stop_broker $broker
+         fi
+         if [[ ! -z $broker ]]; then
+              start_broker $broker
+              wait_running $broker
+         fi
+        ;;
+      list)
+        echo "Listing for WBIMB"
+        su - mqm -c ". ~/.profile;mqsilist"
+        ;;
+      status)
+	if [[ ! -z $broker ]]; then
+	      status_all $broker
+      fi
+        ;;
+      *)
+         echo $usage
+         exit 1
+         ;;
+  esac
+ else
+  print -u2 -- "######### Unable to find  /opt/IBM/mqsi/7.0/bin/mqsiprofile"
+  exit 1
+ fi
+else
+     print "This script requires SUDO to run"
+fi

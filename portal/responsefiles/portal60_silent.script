@@ -1,0 +1,725 @@
+################################################################################
+#
+# Response File for IBM WebSphere Portal for Multiplatforms 6.0.0.0 Silent Installation
+#
+# Before you can begin the installation of WebSphere Portal you may want to 
+# first edit this response file with the values appropriate for your 
+# environment. Refer to the comments to learn how to use the response file and 
+# understand the various options.  You must carefully complete or change the 
+# various values. If the values are not completed properly, the install may 
+# be unsuccessful.
+#
+# IMPORTANT: ALL VALUES MUST BE ENCLOSED IN DOUBLE QUOTES ( "" ).
+#
+# To use this response file with the installation, specify -options <file-name>
+# as a command line argument to the install script, where <file-name> is the 
+# full path name of this response file.
+#
+################################################################################
+
+################################################################################
+#
+# SILENT INSTALL CHOICE
+#
+# Description: Specify this parameter if you want to install WebSphere Portal
+# silently.  When installing silently, the installation program will not display
+# any graphical interface panels or solicit input from the user. Note that if a
+# required parameter is not specified in this response file, an error message
+# will be displayed. 
+# 
+# If you want to use this response file but do not want to install silently, 
+# comment this parameter out. 
+# 
+################################################################################
+
+-silent
+
+################################################################################
+#
+# LICENSE ACCEPTANCE
+#
+# Description: This parameter specifies that you accept the license agreement
+# for WebSphere Portal. By default it is set to false.  You must set it to
+# true for the silent install to complete successfully.
+#
+# -G licenseAccepted="true"
+# 
+################################################################################
+
+-G licenseAccepted="true"
+
+################################################################################
+#
+# INSTALL WEBSPHERE APPLICATION SERVER
+#
+# Description: Select the type of install that best suites your needs
+#
+# Values:
+# 
+#   full    - Installs everything you need for WebSphere Portal, including 
+#             WebSphere Application Server.
+#   
+#   custom  - Choose this option to install WebSphere Portal to use an existing 
+#             WebSphere Application Server. 
+#
+################################################################################
+
+-W setupTypePanel.selectedSetupTypeId="custom"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER INSTALLATION LOCATION
+#
+# Description: Specify the directory where you want to install WebSphere 
+# Application Server. If you have WebSphere Application Server already
+# installed specify the location where it is installed.  
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  For example,
+#
+# Windows: C:\WebSphere\AppServer
+# AIX: /usr/WebSphere/AppServer
+# Linux: /opt/WebSphere/AppServer
+# Solaris: /opt/WebSphere/AppServer
+# HP-UX: /opt/WebSphere/AppServer
+#
+################################################################################
+
+-W was.location="/usr/WebSphere60/AppServer"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER MANAGED NODE
+#
+# Description: If installing on an existing WebSphere Application Server,
+# specify if you are installing on a managed node.
+#
+################################################################################
+
+-W installedWasLocation.managedNode="true"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER MANAGED NODE PRIMARY OR SECONDARY
+#
+# Description: If installing on an existing WebSphere Application Server,
+# and you are installing on a managed node, specify if you are installing on a 
+# primary or secondary node.
+#
+# true  - Primary node
+# false - Secondary node
+#
+# !!!! Only one node in the Portal cluster should be installed as the primary
+# !!!! See sections below that discuss the differences for installing the primary
+# !!!! versus the secondary node
+#
+#
+################################################################################
+
+-W managedNodeInput.primarySecondary="[primary]"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER MANAGED NODE PROFILE
+#
+# Description: If installing on an existing WebSphere Application Server,
+# and you are installing on a managed node, specify the profile you are
+# installing on.
+#
+################################################################################
+
+-W managedNodeInput.profile="[host]"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER CELL NAME
+#
+# Description: Specify the cell within the WebSphere Application Server profile 
+# which the WebSphere Portal application server will belong. This value must be 
+# unique among other cell names in the same profile. 
+#
+# Note: You must replace the "DefaultCell" value with the cell name that you  
+# want to use for your default node.
+#
+################################################################################
+
+-W nodeCellHost.cellName="[cell]"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER NODE NAME
+#
+# Description: Specify the node within the WebSphere Application Server cell to 
+# which the WebSphere Portal application server will belong. This value must be 
+# unique among other node names in the same cell. Typically this value is the 
+# same as the short host name for the computer.
+#
+# Note: You must replace the "DefaultNode" value with the node name that you  
+# want to use for your default node.
+#
+################################################################################
+
+-W nodeCellHost.nodeName="[host]"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER HOST NAME
+#
+# Description: Specify the fully qualified host name or IP address of the
+# computer running WebSphere Application Server.  For example, 
+# "hostname.yourco.com".
+#
+################################################################################
+
+-W nodeCellHost.hostName="[host].event.ibm.com"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER ADMINISTRATIVE USER AND PASSWORD
+#
+# Enter the user ID and password for the Websphere Application Server
+# administrator
+#
+# Portal install will try and run WPSConfig.sh and fail
+# the main install doesn't want '@' characters.  So it will fail
+# if this is set to eiauth@events.ihost.com.   Just use eiauth for now.
+# Once all the portal code is on the local filesystem we can edit them
+# and get eiauth@events.ihost.com put into the wpconfig.properties file
+#
+################################################################################
+
+-W wasAdmin.user="eiauth"  
+-W wasAdmin.password="tmp4now"
+
+################################################################################
+#
+# WEBSPHERE PROCESS SERVER INSTALL CHOICE
+#
+# Description: Select to install WebSphere Process Server
+#
+# This choice is only available during a full install, not during custom install
+#
+# Important: Business process support cannot be federated into a Deployment 
+# Manager managed cell after installation.  If you plan to create a WebSphere 
+# Portal cluster that exploits the business process integration function, refer 
+# to the WebSphere Portal Information Center for required setup instructions.  
+# If you do not plan to create a cluster but you want to exploit the business 
+# process integration function, proceed with installing WebSphere Process 
+# Server.  Otherwise, do not install WebSphere Process Server at this time.
+#
+################################################################################
+
+-W installWps.choice="false"
+
+################################################################################
+#
+# WEBSPHERE PORTAL INSTALLATION LOCATION
+#
+# Description: Specify the directory where you want to install WebSphere Portal.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  For example,
+#
+# Windows: C:\WebSphere\PortalServer
+# AIX: /usr/WebSphere/PortalServer
+# Linux: /opt/WebSphere/PortalServer
+# Solaris: /opt/WebSphere/PortalServer
+# HP-UX: /opt/WebSphere/PortalServer
+#
+################################################################################
+
+-W portal.location="/usr/WebSphere60/PortalServer"
+
+################################################################################
+#
+# WEBSPHERE PORTAL ADMINISTRATIVE USER AND PASSWORD
+#
+# Enter the user ID and password for the Portal
+# administrator
+#
+# ibmwpt for test, ibmwps for staging and ibmwpp for production
+#
+# Portal install will try and run WPSConfig.sh and fail
+# The main install doesn't want '@' characters.  So it will faill
+# if this is set to ibmwpt@events.ihost.com.   Just use ibmwpt for now.
+# Once all the portal config files are on the local filesystem we can edit them
+# and get ibmwpt@events.ihost.com put into the wpconfig.properties file
+################################################################################
+
+-W portalAdmin.user="[portalAdmin]"
+-W portalAdmin.password="tmp4now"
+
+################################################################################
+#
+# Begin Installing Services 
+#
+################################################################################
+
+################################################################################
+# 
+# INSTALL THE WEBSPHERE APPLICATION SERVER SERVICE (Windows only)
+#
+# Description: If you are installing WebSphere Application Server on a machine 
+# running Windows, specify whether you want to install it as a service.
+# Using Services, you can start and stop services, and configure startup and 
+# recovery actions.
+#
+# Note: If you are not installing WebSphere Application Server or are installing 
+# it on a system that is not running Windows, you can ignore this parameter
+# or comment it out.
+#
+# Values:
+#
+#   true   - Install WebSphere Application Server as service
+#
+#   false  - Do no install WebSphere Application Server as service
+#
+################################################################################
+#-W wasService.was="false"
+
+################################################################################
+# 
+# INSTALL THE WEBSPHERE PORTAL SERVICE (Windows only)
+#
+# Description: If you are installing WebSphere Portal on a machine 
+# running Windows, specify whether you want to install it as a service.
+# Using Services, you can start and stop services, and configure startup and 
+# recovery actions.
+#
+# Note: If you are installing WebSphere Portal on a system that is 
+# not running Windows, you can ignore this parameter or comment it out.
+#
+# Values:
+#
+#   true   - Install WebSphere Portal as service
+#
+#   false  - Do no install WebSphere Portal as service
+#
+################################################################################
+#-W wasService.wps="false"
+
+################################################################################
+# 
+# USER NAME AND PASSWORD FOR SERVICE INSTALLATION (Windows only)
+#
+# Description: If you chose to install either IBM HTTP Server or WebSphere
+# Application Server as a service (specified a value of "true" for 
+# wasService.was and wasService.wps parameters), you must also specify the
+# user name and password that will be used to install the services.  In order
+# to install the service and have it run properly, the user you specify must 
+# have administrator authority and "Log on as a service" authority.
+#
+# Note: If you are not installing WebSphere Application Server or are installing 
+# it on a system that is not running Windows, you can ignore these 
+# parameters or comment them out.
+#
+# Replace the placeholder values "YOUR_USER_NAME" and "YOUR_PASSWORD" with
+# appropriate values for your system.
+#
+################################################################################
+#-W wasService.user="YOUR_USER_NAME"
+#-W wasService.password="YOUR_PASSWORD"
+
+################################################################################
+#
+# End Installing Services 
+#
+################################################################################
+
+################################################################################
+#
+# SETUP CD LOCATION 
+# 
+# Required for: Tradtional and Archive install
+#
+# Description: Specify the directory path to the Setup CD.
+# Although this can be to a CD-ROM drive, for unattended
+# installation this location is more likely to be a directory where electronic
+# product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+################################################################################
+
+-W cdSetup.cdPath="/fs/system/images/portal/6.0"
+
+################################################################################
+#
+# INSTALL CD LOCATIONS
+#
+################################################################################
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER CD LOCATION 
+#
+# Description: Specify the directory path to the WebSphere Application Server 
+# installation images.  Although this can be to a CD-ROM drive, for unattended 
+# installation this location is more likely to be a directory where electronic 
+# product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  W-1     Windows
+#  IL-1    Linux for x86
+#  A-1     AIX
+#  SS-1    Solaris
+#  H-1     HP-UX
+#  ZL-1    Linix for zSeries
+#  PL-1    Linux for ppc
+#
+################################################################################
+
+-W userInputCDLocWas.cdPath="/fs/system/images/portal/6.0"
+
+################################################################################
+#
+# WEBSPHERE PROCESS SERVER CD LOCATION 
+#
+# Description: Specify the directory path to the WebSphere Process Server 
+# installation images.  Although this can be to a CD-ROM drive, for unattended 
+# installation this location is more likely to be a directory where electronic 
+# product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  W-2     Windows
+#  IL-2    Linux for x86
+#  A-2     AIX
+#  SS-2    Solaris
+#  H-2     HP-UX
+#  ZL-2    Linix for zSeries
+#  PL-2    Linux for ppc
+#
+################################################################################
+#-W userInputCDLocWps.cdPath="/cdimg/A-2"
+
+################################################################################
+#
+# ARCHIVE CD 1
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the first archive install image
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  W-3     Windows
+#  IL-3    Linux for x86
+#  A-3     AIX
+#  SS-3    Solaris
+#  H-3     HP-UX
+#  I-3     iSeries
+#  ZL-3    Linix for zSeries
+#  PL-3    Linux for ppc
+#
+################################################################################
+
+-W archiveMediaPanel1.cdPath="/fs/system/images/portal/6.0"
+	   
+################################################################################
+#
+# ARCHIVE CD 2
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the second archive install image
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  W-4     Windows
+#  IL-4    Linux for x86
+#  A-4     AIX
+#  SS-4    Solaris
+#  H-4     HP-UX
+#  I-4     iSeries
+#  ZL-4    Linix for zSeries
+#  PL-4    Linux for ppc
+#
+################################################################################
+
+-W archiveMediaPanel2.cdPath="/fs/system/images/portal/6.0"
+
+################################################################################
+#
+# Advanced Options
+#
+################################################################################
+
+################################################################################
+#
+# Dependency Checking     
+#
+# Description: Specify whether you want to disable the prerequisite checking 
+# and input validation used during the WebSphere Portal installation. 
+#
+# Note: Because prerequisite checking and input validation play an important 
+# role in ensuring a successful installation, it is recommended that disable 
+# dependency checking only when absolutely necessary.
+#
+# Values:
+#
+# true - Dependency checking is performed. This is the default value and is 
+#        assumed if the dependency.useValidation parameter is not specified. 
+# false - No dependency checking is performed. 
+#
+################################################################################
+
+#-W dependency.useValidation="true"
+
+################################################################################
+#
+# Custom Dependency Files     
+#
+# Description: If you want to use custom dependency and validation rules, 
+# specify the directory where your custom rules files are located. 
+#
+# This parameter is not required if you have disabled dependency checking 
+# (specified a value of "false" for the dependency.useValidation parameter).
+#
+# Replace the placeholder value "DIRECTORY_PATH" with the appropriate value for 
+# your system.
+#
+################################################################################
+
+#-W dependency.rulesDirectory="DIRECTORY_PATH"
+
+################################################################################
+#
+# Basic Configuration Option   (iSeries ONLY)     
+# When the basic configuration choice is specified as yes during a silent:
+#
+################################################################################
+
+#-W basicConfig.choice="yes" 
+         
+################################################################################
+#
+# User Specified Profile Name Option   (iSeries ONLY)     
+# Specify the name of WAS profile to be created
+# -W iSeriesdetectProfileAction.profileName=wp_profile9 
+#
+################################################################################
+
+#-W iSeriesdetectProfileAction.profileName= 
+
+################################################################################
+#
+# User Specified Starting Port for WAS Profile Creation Option  (iSeries ONLY)     
+# Specify the starting port that will be used in creating WAS profile
+# -W iSeriesStartingPort.startingPort=12345
+# 
+################################################################################
+
+#-W iSeriesStartingPort.startingPort= 
+
+################################################################################
+#
+# USER SPECIFIED PORT SCAN RANGE FOR WEBSPHERE ADMIN SERVER (NON-ISERIES)     
+# 
+# Description: When you you want to specify port values for the WebSphere Admin 
+# Server, one option is to specify a range of port values that will be searched 
+# until a block of free ports is found.  These two properties specify the 
+# search range to scan.  If any of the ports in a block are busy, the remaining
+# range is scanned for a free block.
+#
+# Portal sets the default starting port to scan value to 10000.  
+#
+#    -W adminPortBlockInput.startingPortToScan="10000"
+#
+# Portal sets the default ending port to scan value to 65000. 
+#  
+#    -W adminPortBlockInput.endingPortToScan="65000"
+#
+################################################################################
+
+# -W adminPortBlockInput.startingPortToScan="10000"
+ 
+# -W adminPortBlockInput.endingPortToScan="65000"
+
+################################################################################
+#
+# USER SPECIFIED PORT BLOCK SIZE FOR WEBSPHERE ADMIN SERVER (NON-ISERIES)
+#
+# Description:  This property determines the number of consecutive ports that 
+# will be used for configuring the WebSphere Admin Server.  When searching for 
+# a block of free ports, the Websphere Portal install will search in increments 
+# of this number.  Do not enter a number lower than 25. 
+#
+# The default port block size is 25.
+#
+#   -W adminPortBlockInput.portBlockSize="25"
+#
+################################################################################
+
+# -W adminPortBlockInput.portBlockSize="25"
+ 
+################################################################################
+# USER SPECIFIED PORTS FILE PATH FOR WEBSPHERE ADMIN SERVER (NON-ISERIES)     
+# 
+# Description: When you want to specify port values for the WebSphere Admin 
+# Server, one option is to specify a file that defines all of the WebSphere 
+# Admin Server port values.  Each line in the file has a <portname>=<value> 
+# pair.  See the file WASDefaultPortsFile.props in your cdsetup directory for 
+# a ports file example.
+#
+# The file's content is not validated so any errors will cause the install   
+# program to fail.
+#  
+# Be sure to follow the convention for specifying path information on your 
+# platform. Full path is required. 
+# 
+# When this parameter is specified, the other WebSphere Admin Server port 
+# values are ignored (adminPortBlockInput.startingPortToScan, 
+# adminPortBlockInput.endingPortToScan, adminPortBlockInput.portBlockSize).
+#  
+################################################################################
+
+#-W adminPortBlockInput.portsFilePath="/fs/system/images/portal/6.0/portal60_wasports.props"
+
+################################################################################
+#
+# USER SPECIFIED PORT SCAN RANGE FOR WEBSPHERE PORTAL SERVER (NON-ISERIES)     
+# 
+# Description: When you want to specify the port values for the WebSphere Portal
+# Server, one option is to specify a range of port values that will be searched 
+# until a block of free ports is found.  These two properties specify the 
+# search range.  If any of the ports in a block are busy, the remaining
+# range is scanned for a free block.  
+#
+# Portal sets the default starting port value to 10025. 
+# 
+#   
+#   -W portalPortBlockInput.startingPortToScan="10025"
+#
+# Portal sets the default ending port to scan value to 65000. 
+#  
+#    -W portalPortBlockInput.endingPortToScan="65000"
+#
+################################################################################
+
+# -W portalPortBlockInput.startingPortToScan="10025"
+ 
+# -W portalPortBlockInput.endingPortToScan="65000"
+
+################################################################################
+#
+# USER SPECIFIED PORT BLOCK SIZE FOR WEBSPHERE PORTAL SERVER (NON-ISERIES)
+#
+# Description:  This property determines the number of consecutive ports that 
+# will be used for configuring the WebSphere Portal Server.  When searching for 
+# a block of free ports, the Websphere Portal install will search in increments 
+# of this number.  Do not enter a number lower than 25. 
+#
+# The default port block size is 25.
+#
+#   -W portalPortBlockInput.portBlockSize="25"
+#
+################################################################################
+
+# -W portalPortBlockInput.portBlockSize="25"
+
+################################################################################
+#
+# USER SPECIFIED PORTS FILE PATH FOR PORTAL SERVER (NON-ISERIES)     
+# 
+# Description: When you want to specify port values for the WebSphere Portal 
+# Server, one option is to specify a file that defines all of the Portal 
+# Server port values.  Each line in the file has a <portname>=<value> 
+# pair.  See the file WPDefaultPortsFile.props in your cdsetup directory for 
+# a ports file example.
+#
+# The file's content is not validated so any errors will cause the install   
+# program to fail.
+#  
+# Be sure to follow the convention for specifying path information on your 
+# platform. Full path is required. 
+# 
+# When this parameter is specified, the other portal server port values
+# are ignored (portalPortBlockInput.startingPortToScan, 
+# portalPortBlockInput.endingPortToScan, portalPortBlockInput.portBlockSize).
+#  
+################################################################################
+
+#-W portalPortBlockInput.portsFilePath="/fs/system/images/portal/6.0/portal60_wpports.props"
+
+################################################################################
+#
+# SET THE PORTAL PROFILE AS THE DEFAULT WEBSPHERE PROFILE (NON-ISERIES)     
+# 
+# Description: This parameter specifies whether the Portal profile should 
+# be the default profile.   The default behavior is to set Portal's profile as 
+# the default when no other profiles exist in WebSphere Application Server.
+#
+# Values:
+# 
+#   "True"  - Sets the Portal profile as the default profile. 
+#   
+#   "False" - Leaves the existing default profile as is. 
+#  
+################################################################################
+
+# -W detectProfileAction.isDefault="True"
+
+################################################################################
+#
+# CUSTOMIZING PORTAL PROFILE (NON-ISERIES)  
+#
+# PORTAL PROFILE NAME     
+# 
+# Description: By default, the name of Portal's profile is wp_profile.  If 
+# multiple Portal profiles exist in the same instance of WebSphere Application
+# Server, a number is added to the default name to make it unique, such as
+# wp_profile1.  
+#
+# The name must be unique within the profiles of the WebSphere 
+# instance.
+# 
+# PORTAL PROFILE PATH   
+# 
+# Description: The profile path contains the path to Portal's profile.  
+# By default, it is set to a subdirectory of WebSphere's profile directory using
+# the profile name.
+#
+# You can change the name of the profile by supplying the profile name 
+# and/or the  profile path like this:
+#     -W detectProfileAction.profileName="my_profile_name"
+#     -W detectProfileAction.profilePath="c:\full\path\my_profile_name"           
+################################################################################
+
+#-W detectProfileAction.profileName="at0701m"
+#-W detectProfileAction.profilePath="/usr/WebSphere60/AppServer/profiles/at0701m"
+
+################################################################################
+#
+# SET THE FILE PERMISSIONS ON UNIX SYSTEMS (UNIX-ONLY)     
+# 
+# Description: This parameter specifies the file permissions for the files 
+# installed to the Portal installation directory.  Valid values are in the range
+# of 000 - 777.
+#
+# The default value is 770. 
+# 
+#  
+################################################################################
+
+# -W defaults.unixFilePermissions="770"
+
+################################################################################
+#
+# EMPTY PORTAL OPTION     
+# 
+# Description: This parameter specifies to remove all Portal resources
+#
+# The default value is "False".  
+#  
+################################################################################
+
+-W emptyPortal.active="True"

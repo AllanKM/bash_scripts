@@ -1,0 +1,6 @@
+CHECK /search/db/
+EXCLUDE /Admin/whichnode/index.html
+EXCLUDE /site.txt
+EXCLUDE /data/ve/xml/HostCPUData.xml
+EXCLUDE /en_US/scores/pubstatus_usopen_athens.txt
+EXCLUDE /en_US/scores/pubstatus_usopen_topeka.txt

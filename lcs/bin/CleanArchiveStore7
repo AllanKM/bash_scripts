@@ -1,0 +1,395 @@
+#!/usr/bin/perl
+#
+# CommandExit example for archiving a file to a dated subdirectory
+# and compressing a non-compressed file
+# Clean files and archive dated subdirectories older than retention
+# days old if:
+#   - specified on the command line with -r
+#     OR
+#   - number of days appended to script name and no controlling tty
+# Script name may also embed commandline arguments after the number
+# of days value in the script name; use ~ character to represent
+# the / for a directory specification in the script name
+# Success/Failure logged to stdout and syslog (daemon.notice)
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Gather current working directory
+my $mycwd = getcwd;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mydname = $0;
+$mydname =~ s%/$mysname$%%;
+$mydname = $mycwd if ($mydname eq "" || $mydname eq ".");
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Set defaults
+my $mvcmd = "mv";
+my $archdir = "archive";
+my $ddatedir = "%Y/%m/%d";
+my $findcmd = "/usr/bin/find";
+my $compresscmd = "/usr/bin/gzip";
+my $compressargs = "-9";
+my $compressflg = 0;
+
+# Grab up to the first dash in our script name
+my $tname = $mysname;
+my $dargs = $mysname;
+$tname =~ s/^(.*?)\-.*$/$1/;
+$dargs =~ s/^$tname//;
+
+# Set default retention period to find and remove old files
+my $ddays = 0;
+if ($tname =~ m/^.*?(\d+)$/) {
+  $ddays = $1;
+  $ddays = 0 unless ($tty =~ /vty|UNKNOWN/);
+}
+
+# Create embedded arguments from script name
+if ($dargs && ! @ARGV) {
+  $dargs =~ s%\-% \-%g;
+  $dargs =~ s%(\-\S)(\S+)\s%$1 $2 %g;
+  $dargs =~ s%~%/%g;
+  $dargs =~ s%^\s+%%;
+  $dargs =~ s%\s+$%%;
+  @ARGV = split(' ',$dargs);
+}
+
+# Obtain arguments
+my $rc = &main::GetOptions(
+  # Script options
+  'c|nocompress',
+  'd|datedirectory:s',
+  'l|nosyslog',
+  'r|retain:i',
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $days = $main::opt_r || $ddays;
+
+# Validate options
+
+# Make sure datedir is not fully-qualified
+#  Should be relative for easier moving, if not crossing filesystems
+#    Assuming no symlinks of one of these subdirs to another filesystem
+my $datedir = $ddatedir;
+if ($main::opt_d) {
+  if ($main::opt_d !~ /^\//) {
+    $datedir = $main::opt_d;
+  }
+}
+# Prefix with the archive subdirectory for proper cleaning
+$datedir = "$archdir/$datedir";
+
+# Loop on filenames to process
+my $file;
+foreach $file (@ARGV) {
+
+  next if (! -e $file);
+
+  # Fully qualify pathname of file
+  $file = "$mycwd/$file" if ($file !~ /^\//);
+  $file =~ s%\/\/%/%g;
+
+  # Determine basename and dirname
+  my $base = $file;
+  $base =~ s%^.*/%%;
+  my $dir = $file;
+  $dir =~ s%\/$base$%%;
+  if (! -d $dir) {
+    logit($mysname,2,
+          "Base directory \'%s\' not found for file \'$file\'",$dir,$file);
+    next;
+  }
+
+  # Obtain ownership/permissions of main directory
+  my($uid,$gid,$mode) = (stat($dir))[4,5,2];
+
+  # Parse file name (or mtime) for date-based subdirectory timestamp
+  my $ts = getlcsfilets($file);
+
+  # Create date-based subdirectory
+  my $destdir = "$dir/$datedir";
+  $destdir = POSIX::strftime($destdir, localtime($ts));
+  mkdirs($destdir,$uid,$gid,$mode);
+
+  # Move the file to the dated directory
+  my $rc = 0;
+  if (-d $destdir) {
+    rename($file,"$destdir/$base") ||
+      system($mvcmd,$file,"$destdir/$base");
+    $rc = $? >> 8;
+    if ($rc != 0) {
+      logit($mysname,2,
+            "Unable to rename \'$file\' to \'$destdir/$base\'");
+    } else {
+      # Compress the file, unless the -c option is specified
+      $compressflg = 0;
+      if (! defined $main::opt_c &&
+          -x $compresscmd &&
+          $base !~ /\.(Z|gz|bz2)$/) {
+        $compressflg = 1;
+        system($compresscmd,$compressargs,"$destdir/$base");
+        $rc = $? >> 8;
+        if ($rc != 0) {
+          logit($mysname,2,
+                "Unable to compress \'$destdir/$base\'");
+        }
+      }
+    }
+  } else {
+    logit($mysname,2,
+          "Unable to create date directory \'$destdir\'");
+  }
+
+  # Compress the file, unless the -c option is specified
+  $compressflg = 0;
+  if (! defined $main::opt_c &&
+      -x $compresscmd &&
+      $base !~ /\.(Z|gz|bz2)$/) {
+    $compressflg = 1;
+    system($compresscmd,$compressargs,$file);
+    $rc = $? >> 8;
+    if ($rc != 0) {
+      logit($mysname,10,"daemon","notice",
+            "Unable to compress \'$file\' ($rc): $!");
+    }
+  }
+
+  # Clean up old files (if requested)
+  my $dcnt = 0;
+  my $rdcnt = 0;
+  my $lcnt = 0;
+  my $rlcnt = 0;
+  if ($dir eq $mydname && $days > 0) {
+    logit($mysname,2,
+          "Unable to clean self directory");
+    $days = 0;
+  }
+  if ($days > 0) {
+    my @lst = ();
+    my $cmd = "$findcmd $dir/$archdir -type f -mtime +$days -print 2>/dev/null";
+    if (open(CMD,"$cmd|")) {
+      chomp(@lst = <CMD>);
+      close(CMD);
+    }
+    $lcnt = @lst;
+    if ($lcnt > 0) {
+      $rlcnt = unlink(@lst);
+      if ($lcnt != $rlcnt) {
+        logit($mysname,2,
+              "Unable to remove all $days old files ($lcnt!=$rlcnt)");
+      }
+    }
+    $cmd = "$findcmd $dir/$archdir -type d -print 2>/dev/null";
+    if (open(CMD,"$cmd|")) {
+      chomp(@lst = <CMD>);
+      close(CMD);
+    }
+    $dcnt = @lst;
+    if ($dcnt > 0) {
+      foreach my $d (reverse sort @lst) {
+        $rdcnt++ if (rmdir($d));
+      }
+    }
+  }
+
+  # Log success/failure to syslog
+  my $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " Compress: ".($compressflg ? "Y" : "N");
+  if ($days > 0) {
+    $out .= " Days: $days Del: $lcnt";
+    $out .= "($rlcnt)" if ($lcnt != $rlcnt);
+    $out .= "/$dcnt";
+    $out .= "($rdcnt)" if ($dcnt != $rdcnt);
+  }
+  if ($rc == 0) {
+    $out .= " succeeded";
+  } else {
+    $out .= " failed";
+  }
+  if ($main::opt_l) {
+    logit($mysname,1,$out);
+  } else {
+    logit($mysname,9,"daemon","notice",$out);
+  }
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-c][-d datedir][-l][-r days] filename [filename ...]\n",
+        "  where: filename - full path to log file\n",
+        "         datedir  - date subdirectory format (default: $ddatedir)\n",
+        "                    Note: archive/ is prefixed to this datedir\n",
+        "         days     - days to retain (default: $ddays; 0=do not clean)\n",
+        "         -c       - do not compress the log file\n",
+        "         -l       - do not log to syslog\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+  return if ($dir !~ /^\//);
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+# Supported forms:
+#   LCS    YYYYMMDD[HH[MM]]
+#   Akamai YYYYMMDDHHMM-HHMM-I
+#   Random *YYYY-MM-DD[-HH-MM-SS]
+sub getlcsfilets {
+  my ($f) = @_;
+  my ($year,$mon,$mday,$hour,$min) = ("","","","","");
+  my $tf = $f;
+
+  # Use file mtime as time stamp
+  my $ts = (stat($f))[9];
+
+  $tf =~ s/\.(Z|gz|bz2|tar)$//g;
+  $tf =~ s/^.*\.//;
+
+  if ($tf =~ m/^(.*)(\d\d\d\d)\-(\d\d)\-(\d\d)$/) {
+    if ($1 !~ /\d$/) {
+      ($year,$mon,$mday) =
+        ($tf =~ m/(\d\d\d\d)\-(\d\d)\-(\d\d)$/);
+    }
+  }
+
+  $tf =~ s/(\-\d+)?$//;
+
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)\-\d\d\d\d$/) if ($year eq "");
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)\-(\d\d)\-(\d\d)\-(\d\d)\-(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday,$hour) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+
+  if ($year ne "") {
+    $hour = 0 if ($hour eq "");
+    $min = 0 if ($min eq "");
+    $ts = timelocal(0,$min,$hour,$mday,$mon-1,$year-1900);
+  }
+
+  return $ts;
+}
+
+print "$main::running_under_some_shell\n";
+print "$main::opt_c\n";
+print "$main::opt_d\n";
+print "$main::opt_l\n";
+print "$main::opt_r\n";

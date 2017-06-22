@@ -1,0 +1,798 @@
+#!/usr/local/bin/perl
+
+#
+# $Id: configtool_ds,v 1.26 2015/09/07 17:17:14 keith_white Exp $
+#
+
+use lib "/fs/system/tools/dirstore/v2/lib";
+use EI::DirStore;
+
+#($command, @modifiers) = @ARGV;
+
+$hostname=`/bin/hostname -s`;
+$hostname =~ s/e0$//g;
+$hostname =~ s/e1$//g;
+chomp $hostname;
+
+$plex2char = substr($hostname, 0, 2);
+$plex3char = substr($hostname, 0, 3);
+
+#if ($plex2char !~ "at|dt|gt|ac|dc|gc") {
+#	$hostname_e1=$hostname."e1";
+#}else {
+	$hostname_e1=$hostname;
+#}
+
+#$target_site = substr($target, 0, 2);
+$doit = $test = $dryrun_only = 0;
+$me = `whoami`;
+chomp($me);
+if ($me eq "root") {
+	$who = `who -m`;
+	$who =~ s/\!(\w+)/{$1}/g;
+	$me = $1;
+	if ($me eq "") {
+		# must be AIX, who output different
+		($me,@junk) = split (" ",$who);
+	}
+#	open (LOG, ">> /logs/configtool.log");
+	#print "Running as root...hopefully you are really $me.\n";
+}
+$sync_all = "no";
+$force = $verbose = $log = 0;
+$timestamp = 1;
+$args = join(" ",@ARGV);
+$install_all_resources = 1;
+$order_count = 1;
+
+$FS_BASE="/fs";
+
+@possible_cmds = ("build", "list", "install", "cust", "sync", "run", "stop", "forcestop", "start", "restart", "status", "upload");
+
+@eiSystemAttrs_ALL = ("objectclass", "host", "caption", "description", "realm", "installDate", "ipAddress", "location", "macAddress", "manufacturer", "model", "nodeStatus", "osLevel", "role", "serialNumber", "sitesServed", "subSystems", "systemType");
+@eiSystemAttrs_VAR = ("description", "nodeStatus", "osLevel", "role", "serialNumber", "sitesServed", "subSystems", "systemType");
+@eiSystemRole_ALL = ("description", "resource", "roleVar");
+@eiSystemRole_SINGLE = ("description");
+@eiSystemRole_MULTI = ("resource", "roleVar");
+@eiSystemResource_SINGLE = ("checkCmd", "description", "installCmd", "postInstallCmd", "preInstallCmd", "postUninstallCmd", "preUninstallCmd", "resourceName", "resourceType", "startCmd", "statusCmd", "stopCmd", "uninstallCmd");
+@eiSystemResource_MULTI = ("pkgURL", "prereq", "resourceVar", "version");
+@eiSystemResource_ALL = (@SystemResource_SINGLE, @eiSystemResource_MULTI);
+my %DirStore_resources;
+my %DirStore_roles;
+my %DirStore_nodes;
+$cmdLineResources = ();
+
+
+while (@ARGV) {
+	$thisarg = shift @ARGV;
+	if ($thisarg eq "-d" || $thisarg eq "doit" || $thisarg eq "finland") {
+		$doit = 1;
+	}elsif ($thisarg eq "--no-dry-run") {
+		$ENV{"EI_FILESYNC_NODR"} = 1;
+	}elsif ($thisarg eq "--dry-run-only") {
+		$dryrun_only = 1;
+		$ENV{"EI_FILESYNC_NODR"} = 1;
+		$ENV{"EI_FILESYNC_DRONLY"} = 1;
+	}elsif ($thisarg eq "-t") {
+		$test = 1;
+	}elsif ($thisarg eq "-v") {
+		$verbose = 1;
+		$log = 1;
+	}elsif ($thisarg eq "-r") {
+		$thisarg = shift @ARGV;
+		$force_role = $thisarg;
+		push (@Force_Role, $thisarg);
+		print "FORCE ROLE:  $force_role\n";
+	}elsif ($thisarg eq "-n") {
+		$thisarg = shift @ARGV;
+		$allnodes_add = $thisarg;
+		#print "ALLNODES REPLACE:  $allnodes_add\n";
+	}elsif ($thisarg eq "-f") {
+		#print "Force install/sync:  ";
+		$sync_all = "yes";
+		$force = 1;
+	}elsif (grep {$_ eq $thisarg} @possible_cmds) {
+		$command = $thisarg;
+	}else {
+		push(@cmdLineResources, $thisarg);
+		# if user specifies resource explicity, we want to make sure it gets sync'd
+		$sync_all = "yes";
+		$install_all_resources = 0;
+	}
+}
+	
+
+if ($plex2char =~ "px|rg|at|dt|gt|ac|dc|gc") {
+	$conf_dir = "$FS_BASE/system/config/nd-gen";
+	$RSYNC="rsync";
+}else {
+	$conf_dir = "/fs/system/config/nd-gen";
+	$RSYNC="/fs/system/bin/rsync";
+}
+
+
+######################## SUBROUTINES ##############################
+
+sub DateStamp {
+        my $lines = shift || 20;
+        my ($time,$pid,$line);
+        return if $pid = open(STDOUT, "|-");
+        die "cannot fork: $!" unless defined $pid;
+        if ($doit) { open(LOG, ">> /logs/configtool.log"); }
+        while (<STDIN>) {
+		$line = $_;
+                $time = localtime;
+		#if ($verbose || $line =~ /^CONSOLE:/) {
+		#	$line =~ s/^CONSOLE://g;
+		if ($verbose || $line !~ /^LOG:/) {
+			$line =~ s/^LOG://g;
+			print "$line";
+		}
+                if ($doit) { 
+			$line =~ s/^LOG://g;
+			print LOG "$time: $line"; 
+		}
+        }
+        $doit && { close LOG };
+        exit;
+}
+
+sub cmpArray {
+	my ($first, $second) = @_;
+	no warnings;
+	return 0 unless @$first == @$second;
+	for (my $i = 0; $i < @$first; $i++) {
+		return 0 if $first->[$i] ne $second->[$i];
+	}
+	return 1;
+}
+
+sub dsInit {
+	dsConnect(user => "dsUpdate") or
+	    die "Error: dsConnect failed: $dsErrMsg\n";
+	dsSearch(%DirStore_resources,'RESOURCE') or die "Error: search failed $sdErrMsg\n";
+	dsSearch(%DirStore_roles,'ROLE') or die "Error: search failed $sdErrMsg\n";
+	# load just this system entry instead of everything for huge time savings
+	#dsSearch(%DirStore_nodes,'SYSTEM', expList => [ "systemtype!=NETWORK.*" ]) or die "Error: search failed: $dsErrMsg\n";
+	dsSearch(%DirStore_nodes,'SYSTEM', name => "$hostname" ) or die "Error: search failed: $dsErrMsg\n";
+}
+
+sub init_ALLCONFIG {
+	if ($test) {
+		$CFG_BASE="/fs/home/$me/src/configtool_ds";
+	}else {
+		$CFG_BASE="/fs/system/config/configtool_ds";
+	}
+	push(@INC, $conf_dir);
+	require "$CFG_BASE/configtool.conf";
+
+	%ALLCONFIG = ();
+	foreach $event (sort keys %CFGFILES) {
+		foreach $cfgfile (@{$CFGFILES{$event}}) {
+			require "$CFG_BASE/$event/$cfgfile";
+			foreach $cfgitem (keys %ADDTHIS) {
+				$cfgitem_add = $cfgitem;
+				#print "-> $cfgitem is $ADDTHIS{$cfgitem}{TYPE}\n";
+				if ($ADDTHIS{$cfgitem}{TYPE} eq "eiSystemRole") {
+					#print "$cfgitem is a ROLE, caps it\n";
+					$cfgitem_add = uc($cfgitem_add);
+				}
+				$ALLCONFIG{$cfgitem_add} = $ADDTHIS{$cfgitem};
+				# make sure Roles are CAPITALIZED
+					
+			}
+		}
+	}
+}
+
+sub pullResources {
+	my (@theseResources) = @_;
+	my ($thisprereq, $thisresource);
+	foreach $thisresource (@theseResources) {
+		next if ($thisresource eq "");
+		$ok = ((grep {$_ eq $thisresource || $_ eq $resource_instance || $_ eq "ALL"} @cmdLineResources) || ($install_all_resources));
+		#print "pulling $thisresource ($install_all_resources) ok=($ok)\n";
+		if ($ok) {
+			$Dont_Skip_Resource{$thisresource} = 1;
+			#print "\npullResources:  $thisresource\n";
+			#if ($thisresource =~ /^sync/) {
+			if ($thisresource =~ /sync\./) {
+				#print "     SYNC: $thisrole resource: $thisresource\n";
+				push (@MyFileSync_ds, $thisresource);
+			}else {
+				#print "     ROLE: $thisrole resource: $thisresource\n";
+				push (@MyResources_ds, $thisresource);
+			}
+			foreach $thisprereq (@{$DirStore_resources{"$thisresource"}{prereq}}) {
+				next if ($thisprereq eq "");
+				#print "Adding PREREQ: $thisprereq for $thisresource\n";
+				&pullResources("$thisprereq");
+			}
+		}
+	}
+}
+
+
+sub initMyStuff_ds {
+	#&dsInit;
+	# populate @MyRoles_ds and @MyResources_ds from dirstore 
+	#@pullThese = @{$DirStore_roles{"$thisrole"}{resource}};
+
+	# FIX:  this section is duplicated twice in the if/else...
+	if ($allnodes_add) {
+		$thisrole = $allnodes_add;
+		push (@MyRoles_ds, $thisrole);
+		&pullResources(@{$DirStore_roles{"$thisrole"}{resource}});
+
+		# pull out roleVar
+		foreach $rolevar (@{$DirStore_roles{"$thisrole"}{rolevar}}) {
+			($var, $value) = split(":", $rolevar);
+			if ($var eq "RESOURCE_INSTALL_ORDER") {
+				@res_order = split(",", $value);
+				foreach $thisres (@res_order) {
+					$thisres =~ s~ ~~g;
+					$Resource_Install_Order{$order_count} = $thisres;
+					$Resource_Install_Order_Rev{$thisres} = $order_count;
+					#print "Setting install order $order_count for $thisres\n";
+					$order_count++;
+				}
+			}else {
+				$MyVariables_ds{$var} = $value;
+				#print "VAR: $var VAL: $value\n";
+			}
+		}
+	}else {
+		foreach $thisrole (@{$DirStore_nodes{"$hostname"}{role}},@Force_Role) { 
+		#foreach $thisrole (@Force_Role) { 
+			push (@MyRoles_ds, $thisrole);
+			&pullResources(@{$DirStore_roles{"$thisrole"}{resource}});
+
+			# pull out roleVar
+			foreach $rolevar (@{$DirStore_roles{"$thisrole"}{rolevar}}) {
+				($var, $value) = split(":", $rolevar);
+				if ($var eq "RESOURCE_INSTALL_ORDER") {
+					@res_order = split(",", $value);
+					foreach $thisres (@res_order) {
+						$thisres =~ s~ ~~g;
+						$Resource_Install_Order{$order_count} = $thisres;
+						$Resource_Install_Order_Rev{$thisres} = $order_count;
+						#print "Setting install order $order_count for $thisres\n";
+						$order_count++;
+					}
+				}else {
+					$MyVariables_ds{$var} = $value;
+					#print "VAR: $var VAL: $value\n";
+				}
+			}
+		}
+	}
+	# need @MyProcesses here (?)
+	foreach $thisres (@MyResources_ds,@MyFileSync_ds) {
+		#print "Checking RO $thisres: $Resource_Install_Order_Rev{$thisres}\n";
+		if (! $Resource_Install_Order_Rev{$thisres}) {
+			#print "-> ($Resource_Install_Order_Rev{$thisres})\n";
+			$Resource_Install_Order{$order_count} = $thisres;
+			$Resource_Install_Order_Rev{$thisres} = $order_count;
+			#print "Setting UNSPECIFIED install order $order_count for $thisres\n";
+			$order_count++;
+		}
+	}
+		
+}
+
+sub ExpandVars_ds {
+	my(@in) = @_;
+	my($line,$thisvar,$pre,$post,$parent,$resource);
+	($resource_full, $check_script) = @in;
+	($parent,$resource,$instance) = split (/:/,$resource_full);
+	($line) = $check_script;
+
+	while ($line =~ /%(\w+)%/) {
+		$pre = $`; $post = $';
+		$thisvar = $&;
+		$thisvar =~ s/\%//g;
+		if ($instance) {
+			$parent_var = "$parent:$thisvar\[$instance\]";
+		}else {
+			$parent_var = "$parent:$thisvar";
+		}
+		$value = $MyVariables_ds{$thisvar};
+#		print "ExpandVars:  grabbing thisvar: $thisvar resource: $resource thisvar: $thisvar instance: $instance value: $value\n";
+		$line = $pre.$value.$post;
+	}
+	return $line;
+}
+
+sub unique {
+        my(@in) = @_;
+        undef %saw;
+        @out = grep(!$saw{$_}++, @in);
+        return @out;
+}
+
+sub checkInstall_ds {
+	my($checkme) = @_;
+	my($checkCmd);
+	$checkCmd = $DirStore_resources{$checkme}{checkcmd}[0];
+#	print "pre: $checkme -> $checkCmd\n";
+	$checkCmd = &ExpandVars_ds($checkme, $checkCmd);
+#	print "post: $checkme -> $checkCmd\n";
+	if ($checkCmd) {
+		$result = system("$checkCmd > /dev/null 2>\&1");
+		return $result;
+	}else {
+		# nothing to check
+		return 1;
+	}
+}
+
+sub checkAllInstallStatus_ds {
+	my ($item,$parent,$installthis);
+
+	foreach $item (@MyResources_ds, @MyFileSync_ds) {
+		$InstallStatus{$item} = &checkInstall_ds($item);
+		#print "Checked $item: ($InstallStatus{$item})\n";
+	}
+}
+
+sub ListPrereqs {
+	my($prereq) = @_;
+	print "\n     > PreReqs: (";
+	foreach $prereq (@{$ALLCONFIG{$prereq}{prereq}}) {
+		print "$prereq ";	
+		!($InstallStatus{$prereq}) && print " [installed]";
+	}
+	print ")";
+}
+
+sub PrintIt {
+	my($item) = @_;
+	($parent, $it) = split (":",$item);
+	print "  >> ($parent) $it";
+	!($InstallStatus{$item}) && print " [installed]";
+	(scalar @{$ALLCONFIG{$item}{prereq}}) && &ListPrereqs($item);
+	print "\n";
+}
+	
+sub PrintIt_ds {
+	my($item) = @_;
+#	($parent, $it) = split (":",$item);
+	print "  >> $item";
+	!($InstallStatus{$item}) && print " [installed]";
+	# need to put this back
+	#(scalar @{$ALLCONFIG{$item}{prereq}}) && &ListPrereqs($item);
+	print "\n";
+}
+
+sub ListStuff_ds {
+	my($item, $prereq);
+
+	print "$hostname has the following roles and resources:\n\n";
+
+	print "eiSystemRole\n";
+	foreach $item (@MyRoles_ds) {
+		print "  $item	($DirStore_roles{$item}{description}[0])\n";;
+	}
+
+        print "\neiSystemResource:\n";
+        foreach $item (@MyResources_ds) {
+                &PrintIt_ds($item);
+        }
+
+        print "\neiSystemResource file sync:\n";
+        foreach $item (@MyFileSync_ds) {
+                &PrintIt_ds($item);
+        }
+
+}
+
+sub uploadResources {
+	$resourceChangesFound = 0;
+	foreach $key (keys %AllResources) {
+		#print "RES: $key is $AllResources{$key}\n";
+		%dsUploadResource = ();
+		if ($AllResources{$key} eq "conf_only") {
+			$resourceChangesFound = 1;
+			print "\nNEW RESOURCE $key\n";
+			foreach $this_attr (@eiSystemResource_SINGLE) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				print "  $lc_this_attr: $ALLCONFIG{$key}{$this_attr}\n";
+				$dsUploadResource{$lc_this_attr} = $ALLCONFIG{$key}{$this_attr};
+			}
+			foreach $this_attr (@eiSystemResource_MULTI) {
+				# convert to DS names.  put any translations needed here
+				$config_printable = join("; ", @{$ALLCONFIG{$key}{$this_attr}});
+				$lc_this_attr = lc($this_attr);
+				print "  $lc_this_attr: $config_printable\n";
+				#push(@{$dsUploadResource{$lc_this_attr}}, @{$ALLCONFIG{$key}{$this_attr}});
+				$dsUploadResource{$lc_this_attr} = @{$ALLCONFIG{$key}{$this_attr}};
+			}
+			$doit and print "Adding resource $key to DirStore\n";
+			foreach $this_attr (keys %dsUploadResource) {
+				$printable = join("; ", @{$dsUploadResource{$this_attr}});
+				$printable2 = $dsUploadResource{$this_attr};
+				#print "  UPLOADING for $key $this_attr -> $printable, $printable2\n";
+			}
+			$doit and dsAdd('resource', $key, %dsUploadResource );
+			$doit and dsUpdate('resource', $key, %dsUploadResource, 'replace' );
+		}
+		if ($AllResources{$key} eq "both") {
+			$diffs_found = 0;
+			#print "Checking existing resource $key\n";
+			foreach $this_attr (@eiSystemResource_SINGLE) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				@dsStuff = @{$DirStore_resources{$key}{$lc_this_attr}};
+				$cftStuff = $ALLCONFIG{$key}{$this_attr};
+				sort @dsStuff;
+				$dsStuff_single = join("; ", @dsStuff);
+				#if (grep { $_ eq $cftStuff } @dsStuff) { print "Match!\n"; }
+				if ($cftStuff ne $dsStuff_single) { 
+					print "\nCHANGE within existing RESOURCE $key:$this_attr\n";
+					print "     config: ($cftStuff)\n";
+					print "   dirstore: ($dsStuff_single)\n";
+					$diffs_found = $resourceChangesFound = 1;
+				}
+				$dsUploadResource{$lc_this_attr} = $cftStuff;
+			}
+			foreach $this_attr (@eiSystemResource_MULTI) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				@dsStuff = @{$DirStore_resources{$key}{$lc_this_attr}};
+				@cftStuff = @{$ALLCONFIG{$key}{$this_attr}};
+				sort @dsStuff;
+				sort @cftStuff;
+				# the following few lines are a workaround to a problem where the arrays have *something* non-null in them,
+				# but I couldn't find a simple way to test for it.  They do show length of 0 in scalar context, so that's what I test for
+				$dsTest = join("",@dsStuff);
+				$dsLen = length($dsTest);
+				$cftTest = join("",@cftStuff);
+				$cftLen = length($cftTest);
+				#if ((! &cmpArray(\@dsStuff,\@cftStuff)) && (($cftLen > 0) && ($dsLen > 0))) {
+				if (! &cmpArray(\@dsStuff,\@cftStuff)) {
+					#print "$key $this_attr -> dslen:$dsLen: cftlen:$cftLen:\n";
+					if (! ($cftLen eq 0 and $dsLen eq 0)) {
+						print "\nCHANGE within existing RESOURCE $key:$this_attr\n";
+						if (! @cftStuff) { print " cftStuff empty\n";}
+						print " dsTest:$dsTest:$dsLen:\n";
+						#if (@dsStuff !~ /\S+/) { print " dsStuff empty\n";}
+						if ($dsLen == 0) { print " dsStuff empty\n";}
+						print "     config: (@cftStuff)\n";
+						print "   dirstore: (@dsStuff)\n";
+						$diffs_found = $resourceChangesFound = 1;
+					}
+				}
+				@{$dsUploadResource{$lc_this_attr}} = @cftStuff;
+			}
+			$doit and $diffs_found and print "Updating resource $key to DirStore\n";
+			$doit and $diffs_found and dsUpdate('resource', $key, %dsUploadResource, 'replace' );
+		}
+	}
+	(! $resourceChangesFound) && print "\nNo resource diffs between config and DirStore.\n";
+}
+
+sub uploadRoles {
+	$roleChangesFound = 0;
+	foreach $key (keys %AllRoles) {
+		#print "ROLE: $key is $AllRoles{$key}\n";
+		%dsUploadRole = ();
+		if ($AllRoles{$key} eq "conf_only") {
+			print "NEW ROLE found: $key\n";
+			$roleChangesFound = 1;
+			foreach $this_attr (@eiSystemRole_SINGLE) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				print "  $lc_this_attr: $ALLCONFIG{$key}{$this_attr}\n";
+				$dsUploadRole{$lc_this_attr} = $ALLCONFIG{$key}{$this_attr};
+			}
+			foreach $this_attr (@eiSystemRole_MULTI) {
+				# convert to DS names.  put any translations needed here
+				$config_printable = join("; ", @{$ALLCONFIG{$key}{$this_attr}});
+				$lc_this_attr = lc($this_attr);
+				print "  $lc_this_attr: $config_printable\n";
+				@{$dsUploadRole{$lc_this_attr}} = @{$ALLCONFIG{$key}{$this_attr}};
+				#foreach $foo (@{$ALLCONFIG{$key}{$this_attr}}) {
+				#	print "Putting in $foo\n";
+				#}
+			}
+			foreach $this_attr (keys %dsUploadRole) {
+				$printable = join("; ", @{$dsUploadRole{$this_attr}});
+				$printable2 = $dsUploadRole{$this_attr};
+				#print "UPLOADING for $key $this_attr -> $printable, $printable2\n";
+			}
+			
+			#-------------------------------------------------
+			# fix to add parent roles if they dont exist
+			#-------------------------------------------------
+			my @keyparts = split(/\./,$key);
+			my $parents = shift @keyparts;			# assume highest level already exists
+			pop @keyparts;												# we are trying to add this level
+			
+			foreach my $keypart ( @keyparts ) {
+				$parents.=".$keypart";
+				if ( ! dsSearch( my %results, 'role',baseName=>$parents ) ) {
+					print "Adding $parents\n";
+		 			dsAdd('role',$parents) ||	die "Failed to add $parents  $dsErrMsg\n";
+				}
+			}
+			# --- END of fix ----
+			
+			$doit and print "Adding role $key to DirStore\n";
+			$doit and dsAdd('role', $key, %dsUploadRole );
+		}
+		if ($AllRoles{$key} eq "both") {
+			$diffs_found = 0;
+			#print "Checking existing role $key\n";
+			foreach $this_attr (@eiSystemRole_SINGLE) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				@dsStuff = @{$DirStore_roles{$key}{$lc_this_attr}};
+				$cftStuff = $ALLCONFIG{$key}{$this_attr};
+				sort @dsStuff;
+				$dsStuff_single = join("; ", @dsStuff);
+				#if (grep { $_ eq $cftStuff } @dsStuff) { print "Match!\n"; }
+				if ($cftStuff ne $dsStuff_single) { 
+					print "\nCHANGE within existing ROLE $key\n  attribute: $this_attr\n";
+					print "     config: ($cftStuff)\n";
+					print "   dirstore: ($dsStuff_single)\n";
+					$diffs_found = $roleChangesFound = 1;
+				}
+				$dsUploadRole{$lc_this_attr} = $cftStuff;
+			}
+			foreach $this_attr (@eiSystemRole_MULTI) {
+				# convert to DS names.  put any translations needed here
+				$lc_this_attr = lc($this_attr);
+				@dsStuff = @{$DirStore_roles{$key}{$lc_this_attr}};
+				@cftStuff = @{$ALLCONFIG{$key}{$this_attr}};
+				sort @dsStuff;
+				sort @cftStuff;
+				if (! &cmpArray(\@dsStuff,\@cftStuff)) {
+					print "\nCHANGE within existing ROLE $key\n  attribute: $this_attr\n";
+					print "     config: (@cftStuff)\n";
+					print "   dirstore: (@dsStuff)\n";
+					$diffs_found = $roleChangesFound = 1;
+				}
+				@{$dsUploadRole{$lc_this_attr}} = @cftStuff;
+			}
+			$doit and $diffs_found and print "Updating role $key to DirStore\n";
+			$doit and $diffs_found and dsUpdate('role', $key, %dsUploadRole, 'replace' );
+		}
+	}
+	(! $roleChangesFound) && print "No role diffs between config and DirStore.\n";
+}
+
+# compare configs to dirstore and upload changes and additions
+sub upload {
+	my ($key);
+	foreach $key (keys %ALLCONFIG) {
+		#print "Checking $key $ALLCONFIG{$key}{TYPE}\n";
+		if ($ALLCONFIG{$key}{TYPE} eq "eiSystemResource") {
+			$AllResources{$key} = "conf_only";
+		}
+		if ($ALLCONFIG{$key}{TYPE} eq "eiSystemRole") {
+			$AllRoles{$key} = "conf_only";
+		}
+	}
+	foreach $key (sort keys %DirStore_resources) {
+		#print "DS Resource: $key\n";
+		if ($AllResources{$key} eq "conf_only") {
+			$AllResources{$key} = "both";
+		}else {
+			$AllResources{$key} = "ds_only";
+		}
+	}
+	foreach $key (sort keys %DirStore_roles) {
+		if ($AllRoles{$key} eq "conf_only") {
+			$AllRoles{$key} = "both";
+		}else {
+			$AllRoles{$key} = "ds_only";
+		}
+	}
+	foreach $thisrole (sort keys %AllRoles) {
+		if ($AllRoles{$thisrole} ne "ds_only") {
+			#print "Role: $thisrole is $AllRoles{$thisrole}\n";
+		}
+	}
+	&uploadRoles;
+	&uploadResources;
+}
+
+sub Install_ds {
+	my($installme) = @_;
+	my($installCmd, $checkCmd, $postInstallCmd, $parent, $installthis);
+#	($parent, $installthis) = split (":", $installme);
+	$installthis = $installme;
+	print ">> $installthis ($parent) (order $Resource_Install_Order_Rev{$installthis}):";
+
+	$installCmd = $DirStore_resources{$installthis}{installcmd}[0];
+	$installCmd = &ExpandVars_ds($installme, $installCmd);
+
+	$postInstallCmd = $DirStore_resources{$installthis}{postinstallcmd}[0];
+	$postInstallCmd = &ExpandVars_ds($installme, $postInstallCmd);
+
+	if (($InstallStatus{$installme} == 0) && ($force == 0)) {
+		print " (Installed)\n";
+	}else {	
+		print "\n";
+		#&logit("   Installing $installthis ($parent):\n");
+		print "   inst: $installCmd\n";
+		$doit && system ("$installCmd");
+		if ($dryrun_only == 0) {
+			print "   post: $postInstallCmd\n";
+			$doit && system ("$postInstallCmd");
+		}
+	}
+}
+
+sub InstallStuff_ds {
+	my ($item);
+
+	print "----- INSTALL STUFF -----\n";
+	#foreach $item (@MyResources_ds) {
+	#foreach $order_num (sort keys %Resource_Install_Order) {
+	foreach $order_num (sort { $a <=> $b } keys %Resource_Install_Order) {
+		$item = $Resource_Install_Order{$order_num};
+		($Dont_Skip_Resource{$item}) and &Install_ds($item);
+	}
+}
+
+sub BuildStuff_ds {
+	my ($item);
+
+	print "----- BUILD (INSTALL and SYNC) STUFF -----\n";
+	#foreach $item (@MyResources_ds, @MyFileSync_ds) {
+	foreach $order_num (sort keys %Resource_Install_Order) {
+		$item = $Resource_Install_Order{$order_num};
+		($Dont_Skip_Resource{$item}) and &Install_ds($item);
+	}
+}
+
+sub reportExit {
+	my ($exit, $command, $resource) = @_;
+}
+
+sub startResource {
+	my ($resource,$startCmd) = @_;
+	print "Starting $resource: $startCmd\n";
+	$doit && system("$startCmd 2>&1");
+}
+
+sub stopResource {
+	my ($resource,$startCmd) = @_;
+	print "Stopping $resource: $stopCmd\n";
+	$doit && system("$stopCmd 2>&1");
+}
+
+sub checkResource {
+	my ($resource,$statusCmd, $echo) = @_;
+	$echo && $verbose && print "Checking $resource: $statusCmd\n";
+	$exit = system("$statusCmd 2>&1");
+	if ($exit == 0) { 
+		$message = "RUNNING";
+	}else {
+		$message = "STOPPED";
+	}
+	$echo && print "$resource $command: $message ($exit)\n";
+	return $exit;
+}
+
+# stop/start/restart/status
+sub RunStuff_ds {
+	my ($item,$fullresource,$resource,$parent,$instance);
+
+	print "----- STOP/START/RESTART/STATUS -----\n"; 
+	foreach $resource (@MyResources_ds) {
+		#($parent,$resource,$instance) = split (/:/, $fullresource);
+		#if ($instance) {
+		#	$resource2 = "$resource:$instance";
+		#}else {
+		#	$resource2 = $resource;
+		#}
+		#print "Checking start/stop/status for $resource...\n";
+
+		$startCmd = $DirStore_resources{$resource}{startcmd}[0];
+		#next if !($startCmd);
+		$startCmd = &ExpandVars_ds($fullresource, $startCmd);
+		#print "startCmd: $startCmd\n";
+
+		$stopCmd = $DirStore_resources{$resource}{stopcmd}[0];
+		#next if !($stopCmd);
+		$stopCmd = &ExpandVars_ds($fullresource, $stopCmd);
+		#print "stopCmd: $stopCmd\n";
+
+		$statusCmd = $DirStore_resources{$resource}{statuscmd}[0];
+		next if !($statusCmd);
+		$statusCmd = &ExpandVars_ds($fullresource, $statusCmd);
+		if (! $verbose) {
+			$statusCmd = "$statusCmd 2>%1 > /dev/null";
+			$stopCmd = "$stopCmd 2>%1 > /dev/null";
+			$startCmd = "$startCmd 2>%1 > /dev/null";
+		}
+		#print "statusCmd: $statusCmd\n";
+
+		if ($command eq "start") {
+			if (&checkResource($resource, $statusCmd,0)) {
+				&startResource($resource, $startCmd);
+			}
+			&checkResource($resource, $statusCmd,1);
+		}elsif ($command eq "stop") {
+			if (! &checkResource($resource, $statusCmd,0)) {
+				&stopResource($resource, $stopCmd);
+			}
+			&checkResource($resource, $statusCmd,1);
+		}elsif ($command eq "forcestop") {
+			# nothing
+		}elsif ($command eq "restart") {
+			if (! &checkResource($resource, $statusCmd,0)) {
+				&stopResource($resource, $stopCmd);
+			}
+			if (&checkResource($resource, $statusCmd,1)) {
+				&startResource($resource, $startCmd);
+			}
+			&checkResource($resource, $statusCmd,1);
+		}else {
+			&checkResource($resource, $statusCmd,1);
+		}
+	}
+}
+
+sub SyncStuff_ds {
+	my($sync_all) = @_;
+	my ($syncme, $parent);
+	print "----- SYNC STUFF -----\n";
+	foreach $syncme (@MyFileSync_ds) {
+		#($parent, $syncthis) = split (":", $syncme);
+		#if (($ALLCONFIG{$syncthis}{ALWAYS_SYNC} eq "yes") || ($sync_all eq "yes")) {
+			&Install_ds($syncme);
+		#}
+	}
+}
+
+#####################################################################################
+# BEGIN HERE
+#####################################################################################
+
+
+# this enables logging, only needed with $doit
+&DateStamp;
+
+print "LOG:($me) configtool_ds $args\n";
+
+&dsInit;
+
+
+if (! $command) { $command = "list" };
+
+if ($command eq "upload") {
+	&init_ALLCONFIG;
+	&upload;
+	exit;
+}
+
+&initMyStuff_ds;
+
+&checkAllInstallStatus_ds;
+
+
+# Report configuration and status
+($verbose || $doit) && &ListStuff_ds;
+
+($command eq "list") && &ListStuff_ds;
+($command eq "install") && &InstallStuff_ds;
+#($command eq "cust") && &CustomizeStuff;
+($command eq "sync") && &SyncStuff_ds($sync_all);
+($command =~ /start|stop|restart|status/) && &RunStuff_ds;
+
+
+if ($command eq "build") {
+	$sync_all = "yes";
+
+	print "\n---------- BUILD ----------\n";
+	&InstallStuff_ds;
+	&SyncStuff_ds($sync_all);
+#	&RunStuff;
+	print "\n";
+}
+
+

@@ -1,0 +1,117 @@
+#!/bin/ksh
+#
+# usage: $0 [-d] [-h biginsights_home] src dst
+#
+# Returns:
+#   0   - successful
+#   1   - command line syntax error
+#   2   - failure to find source file
+#   3   - failure to set up environment properly
+# >10   - error returned by jaqlshell (plus 10)
+#
+#####
+# Sample JAQL shell command file:
+#    setOptions ( {conf : {"mapred.output.compress" : true, "mapred.output.compression.codec" : "com.ibm.biginsights.compress.CmxCodec" } } );
+#    localRead(lines("file:///logdrop/events/cmwimb-even/archive/2012/07/31/v30169.access_log.201207311600.gz")) -> write(lines(location="/user/hadoop/logs/2012/07/31/v30169.access_log.201207311600.cmx"));
+#    quit;
+######
+
+usage () {
+  me=`basename $0`
+  cat - <<EOF
+usage: $me [-d] [-h bihome] src dst
+           where: bihome = BigInsights HOME directory
+                  src    = fully-qualified path to source file (.gz)
+                  dst    = HDFS qualified path to destination file (.cmx)
+                  -d     = no jaqlshell will be run (debug only)
+EOF
+  exit 1
+}
+
+# Check some command line information
+debug=0
+errflg=0
+bihome=""
+while [ $# -gt 0 -a $errflg -eq 0 ] ; do
+  case "$1" in
+    -d) debug=1 ;;
+    -h) if [ -n "$2" ] ; then
+          bihome="$2"
+          shift
+        else
+          errflg=1
+        fi
+        ;;
+    -h*) bihome=`echo "$1" | sed 's/^-h//'` ;;
+    -\?) usage ;;
+    -*) errflg=1 ;;
+    *) break ;;
+  esac
+  shift
+done
+if [ $errflg -ne 0 -o $# -ne 2 ] ; then
+  echo "Unexpected argument error"
+  usage
+fi
+
+# Set up our source and destination for JAQL shell call
+src="$1"
+dst="$2"
+
+# Check if source file exists
+if [ ! -f "$src" ] ; then
+  
+  exit 2
+fi
+
+# Try to obtain the environment if key variables not found
+if [ -n "$bihome" -a -d "$bihome" ] ; then
+  BIGINSIGHTS_HOME="$bihome"
+else
+  BIGINSIGHTS_HOME=${BIGINSIGHTS_HOME:-"/opt/ibm/biginsights"}
+fi
+export BIGINSIGHTS_HOME
+
+if [ -z "$JAQL_HOME" ] ; then
+  biconf="$BIGINSIGHTS_HOME/conf/biginsights-env.sh"
+  if [ -f "$biconf" ] ; then
+    source "$biconf"
+  else
+    # Environment is not set properly
+    exit 3
+  fi
+fi
+
+if [ -n "$JAQL_HOME" -a -d "$JAQL_HOME" ] ; then
+  jaqlshell="$JAQL_HOME/bin/jaqlshell"
+  if [ -x "$jaqlshell" ] ; then
+    if [ $debug -eq 0 ] ; then
+      cat - <<EOF | $jaqlshell
+setOptions ( {conf : {"mapred.output.compress" : true, "mapred.output.compression.codec" : "com.ibm.biginsights.compress.CmxCodec" } } );
+
+localRead(lines("file://${src}")) -> write(lines(location="$dst"));
+
+quit;
+EOF
+      rc=$?
+      if [ $rc -gt 0 ] ; then
+        rc=`expr $rc '+' 10`
+      fi
+      exit $rc
+    else
+      echo "DEBUG: Would run this script in jaqlshell"
+      cat - <<EOF
+setOptions ( {conf : {"mapred.output.compress" : true, "mapred.output.compression.codec" : "com.ibm.biginsights.compress.CmxCodec" } } );
+
+localRead(lines("file://$src")) -> write(lines(location="$dst"));
+
+quit;
+EOF
+    fi
+  fi
+else
+  # Environment is not set properly
+  exit 3
+fi
+
+exit 0

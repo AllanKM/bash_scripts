@@ -1,0 +1,195 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+my $mailcmd = "mail";
+my $pagecmd = "page";
+#my $itmcmd = "/opt/IBM/ITMscripts/ITM_to_TEC";
+my $itmcmd = "/opt/IBM/ITMscripts/ITM_to_Omni";
+
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'mailto:s@' => sub { push(@{$clargs{$_[0]}},split(/[,;]/,$_[1])) },
+  'pageto:s@' => sub { push(@{$clargs{$_[0]}},split(/[,;]/,$_[1])) },
+  'host:s' => sub { $clargs{$_[0]} = $_[1] },
+  'options=s' => sub { $clargs{$_[0]} = $_[1] },
+  'eventid:s' => sub { $clargs{$_[0]} = $_[1] },
+  'verbose' => \$clargs{verbose},
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $cmd = "";
+my $msg = join(" ",@ARGV);
+
+if (defined $clargs{mailto}) {
+  $cmd = "mail -s '$msg' ".join(" ",@{$clargs{mailto}})." </dev/null";
+  logit($mysname,1,"Mail to: ".join(",",@{$clargs{mailto}})." Msg: $msg")
+    if ($clargs{verbose});
+  system($cmd);
+}
+
+if (defined $clargs{pageto}) {
+  logit($mysname,2,"WARNING: Paging not yet implemented");
+  logit($mysname,2,"WARNING: $mylname ".join(" ",@allargv));
+}
+
+if (defined $clargs{eventid}) {
+  my $alerthost = $host;
+  $alerthost = $clargs{host} if (defined $clargs{host});
+  $cmd = "$itmcmd";
+  if ($cmd =~ /ITM_to_TEC/) {
+    $cmd .= " $clargs{eventid} '$msg' $alerthost";
+    logit($mysname, 1, "ITM_to_TEC command: $cmd") if ($clargs{verbose});
+  } elsif ($cmd =~ /ITM_to_Omni/) {
+    my $opts = "";
+    $opts = " $clargs{options}" if (defined $clargs{options});
+    # Add Node option (-h) if not already specified
+    if ($opts !~ /\s+\-h/) {
+      $opts .= " -h $alerthost";
+    }
+    # Add OwnerGID option (-G) if not already specified
+    if ($opts !~ /\s+\-G/) {
+      $opts .= " -G $clargs{eventid}";
+    }
+    # Add Severity option (-s) if not already specified
+    if ($opts !~ /\s+\-s/) {
+      $opts .= " -s $clargs{eventid}";
+    }
+    $opts =~ s/^\s*//;
+    $opts =~ s/\s*$//;
+    $cmd .= " $opts '$msg'";
+    logit($mysname, 1, "ITM_to_Omni command: $cmd") if ($clargs{verbose});
+  }
+  system($cmd);
+}
+
+exit 0;
+
+print "$main::running_under_some_shell\n";
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-host host] [-mailto mailto] [-options options]\n",
+        "    [-pageto pageto] [-eventid eventid] message\n",
+        "  where: host    - alerting host\n";
+        "         mailto  - list of recipients for email\n",
+        "         options - options to send thru to ITM alert script\n",
+        "         pageto  - list of recipients for page\n",
+        "         eventid - ITM/TEC event ID\n",
+        "         message - arguments become the message to send\n";
+
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+

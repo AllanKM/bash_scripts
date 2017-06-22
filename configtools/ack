@@ -1,0 +1,130 @@
+#!/usr/local/bin/perl -w
+use strict;
+use Getopt::Long;
+use Data::Dumper;
+use Sys::Hostname;
+use Term::ANSIColor qw(:constants);
+$Term::ANSIColor::AUTORESET = 1;
+use EI::DirStore;
+
+my $host = hostname;
+
+my @args = qw{ /opt/IBM/ITMscripts/OmniAck };
+my ($hosts,$expires,$title,$msg,$cr,$key,$role,$plex,$delete );
+my @hosts;
+
+GetOptions("host=s" => \@hosts,
+   "msg=s" => \$msg,
+   "role=s" => \$role,
+   "plex=s" => \$plex,
+   "expires=s" => \$expires,
+   "alertkey=s" => \$key,
+   "Delete" => \$delete,
+   "cr=s" => \$cr,
+   "<>" => \&title );
+   
+
+if ( !$title ) {
+  print STDERR RED BOLD "Name for ACK must be specified\n";
+  syntax();
+  exit;
+}
+
+syntax() if $title =~/(?:help|\?)/i ;
+
+if ( $role ) {
+   my %results;
+   dsSearch(
+      %results, "system",
+      expList => ["role==$role"],
+      attrs   => ["realm"]
+   ); 
+   
+   foreach my $server ( keys %results ) {
+      push @hosts,$server if ! $plex || $results{$server}{realm}[0] =~/$plex/i;
+   }
+}
+
+@hosts = split(/,/,join(',',@hosts));
+
+push @hosts,$host if ! @hosts && ! $role;
+if ( scalar @hosts == 0 ) {
+   print STDERR RED BOLD "No hosts specified, cannot continue\n";
+   syntax();
+   exit;
+} 
+$expires = '1hour' if ! $expires;
+$cr = "CHG$cr" if $cr && $cr !~ /CHG\d/i;
+$title = "$cr $title" if $cr;
+
+if ( ! $delete ) {
+   push @args,"-e $expires";
+   push @args,"-h ".join(',',@hosts);
+   push @args,"-a $key" if $key;
+   push @args,"-m $msg" if $msg;
+   push @args,'-v';
+   push @args,"$title";
+}
+else {
+   $title =~ s/^\s+|\s+$//;
+   push @args,"-D";
+   my @query = ( '/opt/IBM/ITMscripts/OmniQuery',
+   '-noalerts',
+   '-noheader',
+   '-nototals',
+   '-acklist Identifier',
+   "\"$title\""
+    );
+    my $cmd = join(" ",@query);
+    #print "$cmd\n";
+    my $id = `$cmd`;
+    if ( ! $id ) {
+      print STDERR RED BOLD "Id for \"$title\" not found check u have supplied the full ack name\n";
+      exit;
+    }
+    chomp $id;
+    push @args,"\"$id\"";
+}
+
+#print Dumper(\@args);
+system("@args");
+
+sub title {
+   my $arg=shift;
+   $title .= " ".$arg;
+}
+
+sub syntax {
+   print STDERR <<ENDHELP;
+    
+   ack ( -h host1,host2 ) ( -e expires ) ( -r rolename ) ( -p plex ) ( -m msgregex ) ( -a alert_keyregex ) ( -c cr number ) "ack name"   
+   ack -D "ack name"
+   where:
+      -h a comma seperated list of hosts where alerts are to be suppressed. If not specified it will default to the current host
+      -e the period the ack is to be active for eg  1hour or 30minutes or 2days. If not specified it will default to 1hour
+      -r a role name used to build a list of hosts eg webserver.cluster.yzprdcl001 
+      -p a string matched against the host realm eg p1 or ci.p2, only servers matching the role and plex will be included 
+      -m a string used to match against the alert message text, multiple strings can be specified seperated by ,
+      -a a string used to match against the alert key text, multiple strings can be specified seperated by ,
+      -c the numeric part of the SNOW CR number, "CHG" and the string will be added to the title text 
+      "ack name" a name for the ack
+      
+      -D delete an ack, must supply the full name of the ack 
+      
+   Examples:
+      1 hour full node ack on the current server
+        ack "this is a fullnode ack"
+      
+      30 minute ack of alertkey csps or csqs on was.ibm.prd2 nodes in p2
+        ack -r was.ibm.prd2 -p p2 -a csps,csqs -e 30minutes "CSPS,CSQS acked in p2"
+        
+      15 minute ack of httpd messages on z10014 for cr CHG0012345
+        ack -h z10016 -m httpd -c 0012345 -e 15minutes "IHS restart"
+        
+     Delete existing ack with name "CHG0012345 IHS restart"
+        ack -D "CHG0012345 IHS restart"
+        
+      
+ENDHELP
+	exit;
+}

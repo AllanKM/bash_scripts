@@ -1,0 +1,106 @@
+set -o emacs
+alias ll="ls -l"
+alias hi="history"
+shopt -s cmdhist
+export HISTCONTROL="ignoreboth"
+export HISTIGNORE="&:ls:[bf]g:exit:history:hi"
+
+if [[ $HOSTNAME == dt1201b ]]; then
+	IIOSB_ID="steve_farrell@cvs.opensource.ibm.com"
+	export CVS_RSH=ssh
+	export CVSROOT=:ext:${IIOSB_ID}:/cvsroot/hpodstools
+elif [[ $HOSTNAME == at0101a ]]; then
+	export CVSROOT=/fs/system/src/cvsroot
+
+fi
+
+ZONE=`lssys -l realm,nodestatus,custtag -x csv $HOSTNAME | grep -v "#"`
+CUST=`echo $ZONE | cut -d, -f4`
+REALM=`echo $ZONE | cut -d, -f2`
+STATUS=`echo $ZONE | cut -d, -f3`
+PLEX=`echo $REALM | awk '/.p1/ {print "Raleigh"} /.p2/ {print "St Louis"} /.p3/ {print "Boulder"}'`
+
+case $REALM in
+   b.*) ZONE_COLOR=34 ;;
+   y.*) ZONE_COLOR=33 ;;
+   g.*) ZONE_COLOR=32 ;;
+   d.*) ZONE_COLOR=31 ;;
+   *) ZONE_COLOR=37 ;;
+esac
+
+EI_TITLE="`hostname` Cust:$CUST Status:$STATUS Realm:$REALM Plex:$PLEX"
+
+export PS1="\[\e]2;${EI_TITLE}\a\]\[\e[${ZONE_COLOR};1m\]\u@\h:\w> \[\e[0m\]"
+
+function cdg() {
+	local role=`echo $1 | tr '[a-z]' '[A-Z]'`
+	#---------------------------------------------------------------------
+	# check if we are on a Gold master server or current server is 
+	# assigned the role
+	#---------------------------------------------------------------------
+	if [[ $HOSTNAME != "at0101a" && $HOSTNAME != "at0406a" && $HOSTNAME != "at0906a" ]]; then
+		local valid_role=`lssys -l role -n | awk '/'$role'/{ print 1 }'`
+		if [[ -z $valid_role ]]; then
+			echo "$role not assigned to this server"
+		fi
+	else
+		local valid_role=1
+	fi
+
+	#---------------------------------------------------------------------
+	# If role is for Webserver lookup associated cluster
+	#---------------------------------------------------------------------
+	if [[ "$valid_role" == "1" ]]; then
+		if [[ $role==WEBSERVER* ]]; then
+			role=`lssys -l role -e role==$role | awk '{for (x=1;x<NF;x++) {if (index($x,"CLUSTER")) { gsub(/;/,"",$x); print $x } } }' | uniq`
+		fi
+
+		local role_env=`lssys -l realm -e role==${role}| grep realm | cut -d "=" -f 2 | cut -c2 | uniq`
+		local realm=`lssys -l realm -n | grep realm`
+		local env=`echo $realm | grep realm | cut -d "=" -f 2 | cut -c2 | uniq`
+		local plex=`echo $realm | awk -F'.' '{print $NF}'`
+		if [[ ! -z $role_env ]]; then
+			if [[ $env != $role_env || $plex != p1 ]]; then
+				if [[ $role_env == g ]]; then 
+					echo "Gold master on at0406a"
+				elif [[ $role_env == b ]]; then
+					echo "Gold master on at0906a"
+				elif [[ $role_env == y ]]; then
+					echo "Gold master on at0101a"
+				else
+					echo "Unable to determine Gold master location"
+				fi	
+			fi
+
+			set -- `dsls -l rolevar role ${role} | grep -i rolevar`
+			until [ -z "$1" ] ; do
+				case $1 in
+					CUSTOMER_TAG:*)  VALUE=${1#*:}; if [ "$VALUE" != "" ]; then local CUSTOMER_TAG=${VALUE%;*}; fi ;;
+					CUSTTAG:*)  VALUE=${1#*:}; if [ "$VALUE" != "" ]; then local CUSTOMER_TAG=${VALUE%;*}; fi ;;
+					CUSTENV:*)  VALUE=${1#*:}; if [ "$VALUE" != "" ]; then local CUSTOMER_ENV=${VALUE%;*}; fi ;;
+					CUSTOMER_ENV:*)  VALUE=${1#*:}; if [ "$VALUE" != "" ]; then local CUSTOMER_ENV=${VALUE%;*}; fi ;;
+					*)
+						;;
+				esac
+				shift
+			done
+
+			if [[ -z ${CUSTOMER_ENV} && -z ${CUSTOMER_TAG} ]]; then
+				echo "Unable to determine customer and environment"
+			fi
+
+			if [[ -d /fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG} ]]; then
+				cd /fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG}
+			elif [[ -d /fs/${CUSTOMER_TAG}/${CUSTOMER_ENV} ]]; then
+				cd /fs/${CUSTOMER_TAG}/${CUSTOMER_ENV}/
+			elif [[ -d /fs/${CUSTOMER_TAG} ]]; then
+				cd /fs/${CUSTOMER_TAG}/
+			else
+				echo "Can not find global master base directory" 1>&2
+			fi
+		else
+			echo "Unable to determine environment"
+		fi
+	fi
+}
+

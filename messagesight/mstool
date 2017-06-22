@@ -1,0 +1,309 @@
+#!/usr/local/bin/perl
+
+use Getopt::Std;
+use File::Basename;
+use feature "switch";
+
+## UserID to be used when making connections to MessageSight
+my $ms_user = "msadmin";
+
+my @ep_list;
+my %ms_data;
+
+my $cmd = basename($0);
+
+my $opt_string = 'p:cz:E:D:vdu:';
+getopts( "$opt_string") or usage();
+
+$plex = lc $opt_p;
+$plex =~ s/sl//;      ## Remore trailing "sl" from SL PLEX variable
+
+if ($verbose) { print "plex = $plex.\n"; }
+
+## Check that a valid plex ID has been provided. If not, exit
+#given ($plex) {
+#  when ([p1,P1,p2,P2,p3,P3,p5,P5]) { $ms_env=PRD; }
+#  when ([pre,PRE]) { $ms_env="PRE"; }
+#  when ([ecc,ECC]) { $ms_env="CDT"; }
+#  default { usage(); } 
+#}
+
+
+if ( lc $plex =~ /p[1235]/ || lc $plex =~ /s[123456]/ ) {
+  $ms_env=PRD;
+} else {
+  if ( lc $plex =~ /pre/ ) {
+    $ms_env=PRE;
+  } else {
+    if ( lc $plex =~ /ecc/ ) {
+      $ms_env=CDT;
+    } else {
+      usage();
+    }
+  }
+}
+
+## If Endpoint action is required, ensure a type is specified
+if ( $opt_D && $opt_D !~ /[pPsSaA]/ ) {
+  usage();
+} else {
+  $disableEP=$opt_D;
+}
+
+## If Endpoint action is required, ensure a type is specified
+if ( $opt_E && $opt_E !~ /[pPsSaA]/ ) {
+  usage();
+} else {
+  $enableEP=$opt_E;
+}
+
+## If a close client ID is specified, ensure that a close connection is requested
+if ($opt_z && !$opt_c) {
+  usage();
+}
+
+if ($opt_v) {
+  $verbose=1;
+}
+
+if ($opt_u) {
+  $ms_user=$opt_u;
+}
+
+if ($opt_d) {
+  print "DEBUG MODE: The following commands would be executed via this command. Run again without -d to make it so\n";
+  $debug=1;
+}
+
+if ($opt_c) {
+  $closeConns=1;
+}
+
+## Set the client disconnection string to either the one passed in or the default value
+if ($opt_z) {
+  $discon_string=$opt_z;
+} else {
+  $discon_string="UserID=scoreboard";
+}
+
+sub usage() {
+  print "USAGE: $cmd -p <plex> [-c [-z <connection definition>]] [-E <endpoint type>] [-e <endpoint type>] [-v] [-d]\n\n";
+  print "\t-p <plex>\t\t: indicate which \"plex\" to affect. Accepts p1,p2,p3,pre,ecc (case insensitive)\n";
+  print "\t-c\t\t\t: close client connections\n";
+  print "\t-z <connection defn>\t: specify string to idenfity connections to close. Defaults to \"UserID=scoreboard\"\n";
+  print "\t-D <endpoint type>\t: disable endpoints. [sS] - subscription EPs ; [pP] - publishing EPs ; [aA] - both sub and pub\n";
+  print "\t-E <endpoint type>\t: enable endpoints. [sS] - subscription EPs ; [pP] - publishing EPs ; [aA] - both sub and pub\n";
+  print "\t-v\t\t\t: verbose output\n";
+  print "\t-d\t\t\t: debug output - NO ACTIONS ARE TAKEN\n";
+  exit 1;
+}
+
+sub get_MS_list() {
+  ## get list of devices in affected site
+  if ($verbose || $debug) {
+    print ">>  eilssys -qe role==messagesight* hostenv==$ms_env realm==*.$plex* systemtype==APPLIANCE.MESSAGESIGHT nodestatus==live\n";
+  }
+
+  my @ms_list=`eilssys -qe role==messagesight* hostenv==$ms_env realm==*.$plex* systemtype==APPLIANCE.MESSAGESIGHT nodestatus==live`;
+
+  if ($#ms_list < 0) {
+    print "No MessageSight devices identified in environment $ms_env in plex $plex\n";
+    exit 0;
+  }
+
+  if ($verbose) {
+    print "ms_list = @ms_list";
+  }
+
+  foreach (@ms_list) {
+    my $ms = $_;
+    chomp($ms);
+
+    my @eps = ();
+
+    my $validMS = check_MS_status($ms);
+
+    if ($validMS) {
+      if ($enableEP || $disableEP) {
+        @eps = get_EP_list($ms);
+      }
+
+      $ms_data{$ms} = [ @eps ] ;
+    }
+  }
+ 
+  if ($verbose) {
+    for $ms ( keys %ms_data ) {
+      print "$ms Endpoints:\n@{ $ms_data{$ms} }\n";
+    }
+  }
+
+  if (keys %ms_data == 0) {
+    print "No MessageSights are active. Exiting\n";
+    exit 1;
+  }
+}
+
+
+sub check_MS_status() {
+  my $ms = $_;
+  chomp($ms);
+
+  $status_cmd="status imaserver";
+
+  if ($verbose || $debug) {
+    print ">>  ssh -l $ms_user $ms \"$status_cmd\"\n";
+  }
+     
+  $ms_status=`ssh -l $ms_user $ms "$status_cmd"`;
+
+  if ( $verbose ) {
+    print "Checking status of $ms\n$ms_status\n";
+  }
+
+  if ( $ms_status =~ /Status = Running \(production\)/i ) {
+    if ($verbose) { 
+      print "$ms status is good - carry on\n"; 
+    }
+
+    return 1;
+
+  } elsif ($ms_status =~ /^Status = (.*maintenance.*|Stopped)/ ) {
+    if ($enableEP) {
+      print "Cannot enable Endpoint on $ms when not in production mode:\n$ms_status\n"; 
+      exit 1;
+    } else {
+      if ($verbose) { print "Removing $ms from list of devices to be processed:\n$ms_status\n"; }
+      return 0;
+    }
+  } else {
+    print "Cannot interpret status of $ms : $ms_status\n";
+    if (!$debug) { 
+      exit 1;
+    }
+  }
+}
+
+
+
+sub disconnect_clients() {
+  $discon_cmd="imaserver close Connection \\\"$discon_string\\\"";
+
+  for $ms ( keys %ms_data ) {
+    if ($verbose || $debug) {
+      print ">>  ssh -l $ms_user $ms \"$discon_cmd\"\n";
+    }
+     
+    if (! $debug) { 
+      system("ssh -l $ms_user $ms \"$discon_cmd\"");
+
+      if ( $? != 0 ) {
+        print "Close Connection failed. RC: $?\n";
+        exit 1;   
+      } else {
+        print "Close Connection completed with return code $?\n";
+      }
+    }   
+  }
+}
+
+sub get_EP_list {
+  my $ms = $_;
+  chomp($ms);
+
+  $ep_list_cmd="imaserver list Endpoint";
+
+  if ($verbose || $debug) {
+    print ">>  ssh -l $ms_user $ms \"$ep_list_cmd\"\n\n";
+  }
+
+  @ep_list=`ssh -l $ms_user $ms "$ep_list_cmd"`;
+
+  if ( $? != 0 ) {
+    print "Endpoint listing for $ms failed. RC: $?\n";
+    exit 1;   
+  } else {
+    if ($verbose) {
+      print "Endpoint listing for $ms completed with return code $?\n";    
+    }
+  }
+
+  if ($#ep_list < 0) {
+    print "No Endpoints identified on $ms\n";
+    exit 1;
+  }
+
+  if ($verbose) {
+    print "ep_list = @ep_list\n";
+  }
+
+  return @ep_list;
+}
+
+sub update_endpoint() {
+  foreach my $ms ( keys %ms_data ) {
+    foreach (@{$ms_data{$ms}}) {
+     my $ep = $_;
+     chomp($ep);
+
+      if ($verbose) { 
+        print "enableEP = $enableEP  ;;  disableEP = $disableEP  ;;  ep = $ep\n";
+      }
+
+      if ( (( $disableEP =~ /^[p]$/i || $disableEP eq "a" ) && ( $ep =~ /.*_Pub_.*EP/ )) ||
+           (( $disableEP =~ /^[s]$/i || $disableEP eq "a" ) && ( $ep =~ /.*_Sub_.*EP/ )) ||
+           (( $enableEP =~ /^[p]$/i || $enableEP eq "a" ) && ( $ep =~ /.*_Pub_.*EP/ )) ||
+           (( $enableEP =~ /^[s]$/i || $enableEP eq "a" ) && ( $ep =~ /.*_Sub_.*EP/ )) ) {
+        if ($disableEP) {
+          if ($verbose) {
+            print "Starting to disable endpoints\n";
+          }
+          $ep_cmd="imaserver update Endpoint \\\"Name=$ep\\\" \\\"Enabled=false\\\"";
+        } elsif ($enableEP) {
+          if ($verbose) {
+            print "Starting to enable endpoints\n";
+          }
+          $ep_cmd="imaserver update Endpoint \\\"Name=$ep\\\" \\\"Enabled=true\\\"";
+        }
+
+        if ($debug || $verbose) {
+          #print "mslogin -c \"$ep_cmd\" -f ./.cloginrc $ms";
+          print ">>  ssh -l $ms_user $ms \"$ep_cmd\"\n";
+        }
+
+        if (! $debug) {
+          #system("ssh", "-l", "$ms_user", "$ms", "\"$ep_cmd\"");
+          system("ssh -l $ms_user $ms \"$ep_cmd\"");
+  
+          if ( $? != 0 ) {
+            print "Endpoint update command failed. RC: $?\n";
+            exit 1;
+          } else {
+            print "Endpoint update command completed with return code $?\n";
+          }
+        } 
+      }
+    }
+  }
+}
+
+
+if ($verbose) {
+  print "ms_env = $ms_env\n";
+}
+
+get_MS_list();
+
+if ( $closeConns ) {
+  if ($verbose) {
+    print "Starting to disconnect clients\n";
+  }
+
+  disconnect_clients();
+
+  sleep 2;
+}
+
+if ( $disableEP || $enableEP ) {
+  update_endpoint();
+}

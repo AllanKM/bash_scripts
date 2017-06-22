@@ -1,0 +1,181 @@
+################################################################################
+# V6.1 InstallShield Options File
+# Useage:
+#    -options "/installImage/WAS/responsefile.nd.txt" -silent
+################################################################################
+
+#################################################################################
+# License Acceptance
+-OPT silentInstallLicenseAcceptance="true"
+
+################################################################################
+# Operating System Prerequisite Checking
+-OPT disableOSPrereqChecking="true"
+
+################################################################################
+# Non-blocking Prerequisite Checking
+#-OPT disableNonBlockingPrereqChecking="true"
+
+################################################################################
+# Install Type Settings 
+# Valid Values: 
+#	installNew - default value, installs a new copy.
+#	addFeature - add features to an existing installation.
+
+################################################################################
+# Install a New Copy
+#  To install a new copy, be sure that the installLocation option is set to a 
+#  new install location.
+-OPT installType="installNew"
+
+################################################################################
+# Create Profile for an Existing V6.1 Installation
+#  To create a profile for an existing installation, uncomment the following
+#  entry. Comment out the "installType" option above since "installType"
+#  and "createProfile" options cannot be specified at the same time.
+#  Be sure the installLocation option is set to your existing install location.
+#-OPT createProfile="true"
+
+################################################################################
+# "Application Server samples" feature
+# Valid options:
+#    samplesSelected  - Indicates that the feature is selected for installation.
+#    noFeature - Indicates that the feature is not selected for installation,
+#                this is the default option.
+-OPT feature="noFeature"
+
+################################################################################
+# Install Location
+-OPT installLocation="/usr/WebSphere61/AppServer"
+
+################################################################################
+# Profile Creation Selection 
+# Valid Values:
+#	cell - two profiles will be created, one with a deployment manager and 
+#		 another with a managed node that is pre-federated into the cell.
+#	deploymentManager - a profile will be created with a deployment manager.
+#	standAlone - a profile will be created with a stand alone Application
+#                  server.
+#	custom - a profile will be created with an empty node
+#	none - a profile will not be created during installation.
+# This option is required for the installation on ND. Do not comment it out!
+-OPT profileType="custom"
+
+################################################################################
+# Administrative Security
+# If profileType="custom", Administrative security should be disabled.
+-OPT PROF_enableAdminSecurity="false"
+
+################################################################################
+# Security Options
+# The following two options should only be uncommented when
+# PROF_enableAdminSecurity="true".
+#
+#-OPT PROF_adminUserName=
+#-OPT PROF_adminPassword=
+#-OPT PROF_samplesPassword=
+
+################################################################################
+################################################################################
+#
+# The following options are related to creating profiles and can only be used
+# when installType="installNew" or createProfile="true". The options are dependent 
+# on the profileType option specified in the previous section.
+#
+
+################################################################################
+################################################################################
+# Custom Profile
+#
+# if profileType="custom", you may use the following profile creation options:
+################################################################################ 	
+# Profile name
+-OPT PROF_profileName=<profilename>
+
+################################################################################
+# Profile path
+-OPT PROF_profilePath=/usr/WebSphere61/AppServer/profiles/<profilename>
+
+################################################################################
+# Default Profile
+-OPT PROF_isDefault="true"
+
+################################################################################
+# Deployment Manager Hostname
+#   Specify the hostname or address of the machine where the deployment manager 
+#   is running.
+# Valid values: a valid deployment manager hostname
+#-OPT PROF_dmgrHost="localhost"
+
+################################################################################
+# Deployment Manager Port
+#   Specify the SOAP port of the deployment manager.
+# Valid values: a valid port number
+#-OPT PROF_dmgrPort="8879"
+
+################################################################################
+# Deployment Manager Admin User Name
+# Deployment Manager Admin Password
+#-OPT PROF_dmgrAdminUserName=
+#-OPT PROF_dmgrAdminPassword=
+
+################################################################################
+# Host name
+-OPT PROF_hostName=<host>
+
+################################################################################
+# Application Server Node name
+-OPT PROF_nodeName=<profilename>
+
+################################################################################
+# Cell name
+-OPT PROF_cellName=<profilename>
+
+
+################################################################################
+# Port File
+#
+# Specify the path to a property file containing the desired port values for 
+# the new profile. Do not use this parameter with the PROF_startingPort or 
+# PROF_defaultPorts parameters.
+# Valid values: A fully qualified path to a valid ports property file
+#
+#-OPT PROF_portsFile= 
+
+################################################################################
+# Federate Later
+#   Specify whether federation of the node will be done at a later time.
+# Valid Values: 
+#     true - federate this node later.
+#     false - federate this node now.
+-OPT PROF_federateLater="true"
+
+################################################################################
+# Tracing Control
+#
+# The trace output format can be controlled via the option 
+# -OPT traceFormat=ALL 
+#
+# The choices for the format are 'text' and 'XML'. By default, both formats will be produced, in two different trace files. 
+#
+# If only one format is required, use the traceFormat option to specify which one, as follows:
+#
+# Valid Values:
+#	text -	Lines in the trace file will be in a plain text format for easy readability. 
+#	XML -	Lines in the trace file will be in the standard Java logging XML format which can be viewed using any text or XML editor or using the Chainsaw tool from Apache (http://logging.apache.org/log4j/docs/chainsaw.html).
+#
+#
+# The amount of trace info captured can be controlled using the option:
+# -OPT traceLevel=INFO
+#
+# Valid Values:
+#	Level	   Numerical Level	Description
+#	OFF	   	0		No trace file is produced
+#	SEVERE	   	1		Only severe errors are output to trace file
+#	WARNING   	2		Messages regarding non-fatal exceptions and warnings are added to trace file
+#	INFO	   	3		Informational messages are added to the trace file (this is the default trace level)
+#	CONFIG	   	4		Configuration related messages are added to the trace file
+#	FINE	   	5		Tracing method calls for public methods
+#	FINER	   	6		Tracing method calls for non public methods except getters and setters
+#	FINEST	   	7		Trace all method calls, trace entry/exit will include parameters and return value
+

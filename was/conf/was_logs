@@ -1,0 +1,193 @@
+/logs/was??/*/*/SystemOut_*.log /logs/was??/*/*/SystemErr_*.log {
+  size 1
+  ifempty
+  missingok
+  nocompress
+  nocopytruncate
+  rotate 90
+  sharedscripts
+  postrotate
+    umask 022
+    days=15
+    zipcmd="gzip"
+    ziparg="-9"
+    zipext="gz"
+    zipext2="Z"
+    zipext3="bz2"
+    datemsg="`date '+%Y/%m/%d %H:%M:%S'` - SystemOut/SystemErr"
+    for f in $1 ; do
+      for i in 5 4 3 2 1 ; do
+        if [ -f "$f.$i" ] ; then
+          if [ -f "$f" ] ; then
+            rm -f $f
+          fi
+          if [ -s "$f.$i" ] ; then
+            $zipcmd $ziparg "$f.$i" </dev/null
+            if [ $? -eq 0 ] ; then
+              mv "$f.$i.$zipext" "$f.$zipext"
+              if [ ! -f "$f.$zipext" ] ; then
+                echo "$datemsg - Rename of $f.$i.$zipext to $f.$zipext failed"
+              fi
+            else
+              echo "$datemsg - Compress of $f.$i failed"
+            fi
+          else
+            rm -f "$f.$i"
+          fi
+        fi
+      done
+    done
+    dirlst=""
+    for d in /logs/was?? ; do
+      if [ -d "$d" ] ; then
+        dirlst="$dirlst $d"
+      fi
+    done
+    if [ -n "$dirlst" ] ; then
+      find $dirlst \( -name SystemOut_\*.log.$zipext -o \
+                      -name SystemOut_\*.log.$zipext2 -o \
+                      -name SystemOut_\*.log.$zipext3 -o \
+                      -name SystemErr_\*.log.$zipext -o \
+                      -name SystemErr_\*.log.$zipext2 -o \
+                      -name SystemErr_\*.log.$zipext3 \) \
+           -mtime +$days -print 2>/dev/null | xargs rm -f
+      find $dirlst \( -name SystemOut_\*.log -o \
+                      -name SystemErr_\*.log \) \
+           -mtime +$days -size 0 -print 2>/dev/null | xargs rm -f
+    fi
+  endscript
+}
+
+/logs/was??/*/*/native_stderr.log {
+  daily
+  notifempty
+  missingok
+  nocompress
+  copytruncate
+  rotate 90
+  sharedscripts
+  postrotate
+    umask 022
+    days=7
+    zipcmd="gzip"
+    ziparg="-9"
+    zipext="gz"
+    zipext2="Z"
+    zipext3="bz2"
+    datelog="`date '+_%y.%m.%d_%H.00.00.log'`"
+    datemsg="`date '+%Y/%m/%d %H:%M:%S'` - native_stderr"
+    for f in $1 ; do
+      for i in 5 4 3 2 1 ; do
+        if [ -f "$f.$i" ] ; then
+          if [ -s "$f.$i" ] ; then
+            b=`echo "$f" | sed 's%.*/%%'`
+            d=`echo "$f" | sed "s%/$b%%"`
+            b=`echo "$b" | sed 's%\.log$%%'`
+            mv "$f.$i" "$d/$b$datelog"
+            if [ -f "$d/$b$datelog" ] ; then
+              $zipcmd $ziparg "$d/$b$datelog" </dev/null
+              if [ $? -ne 0 ] ; then
+                echo "$datemsg - Compress of $d/$b$datelog failed"
+              fi
+            else 
+              echo "$datemsg - $d/$b$datelog not found to compress"
+            fi
+          else
+            rm -f "$f.$i"
+          fi
+        fi
+      done
+    done
+    dirlst=""
+    for d in /logs/was?? ; do
+      if [ -d "$d" ] ; then
+        dirlst="$dirlst $d"
+      fi
+    done
+    if [ -n "$dirlst" ] ; then
+      find $dirlst \( -name native_stderr_\*.log.$zipext -o \
+                      -name native_stderr_\*.log.$zipext2 -o \
+                      -name native_stderr_\*.log.$zipext3 \) \
+           -mtime +$days -print 2>/dev/null | xargs rm -f
+    fi
+  endscript
+}
+
+/logs/was??/*/*/verbosegc.*txt /logs/was??/*/*/verbosegc.*txt.001 {
+  daily
+  notifempty
+  missingok
+  nocompress
+  copytruncate
+  rotate 90
+  sharedscripts
+  postrotate
+    umask 022
+    days=14
+    zipcmd="gzip"
+    ziparg="-9"
+    zipext="gz"
+    zipext2="Z"
+    zipext3="bz2"
+    datelog="`date '+_%y.%m.%d_%H.00.00.txt'`"
+    datemsg="`date '+%Y/%m/%d %H:%M:%S'` - verbosegc"
+    for f in $1 ; do
+      for i in 5 4 3 2 1 ; do
+        if [ -f "$f.$i" ] ; then
+          if [ -s "$f.$i" ] ; then
+            oneext=""
+            b=`echo "$f" | sed 's%.*/%%'`
+            d=`echo "$f" | sed "s%/$b%%"`
+            ob="$b"
+            b=`echo "$b" | sed 's%\.001$%%'`
+            if [ "$b" != "$ob" ] ; then
+              oneext=".001"
+            fi
+            b=`echo "$b" | sed 's%\.txt$%%'`
+            mv "$f.$i" "$d/$b$datelog$oneext"
+            if [ -f "$d/$b$datelog$oneext" ] ; then
+              $zipcmd $ziparg "$d/$b$datelog$oneext" </dev/null
+              if [ $? -ne 0 ] ; then
+                echo "$datemsg - Compress of $d/$b$datelog$oneext failed"
+              fi
+            else 
+              echo "$datemsg - $d/$b$datelog$oneext not found to compress"
+            fi
+          else
+            rm -f "$f.$i"
+          fi
+        fi
+      done
+    done
+    dirlst=""
+    for d in /logs/was?? ; do
+      if [ -d "$d" ] ; then
+        dirlst="$dirlst $d"
+      fi
+    done
+    if [ -n "$dirlst" ] ; then
+      # Clean compressed verbosegc*.txt* logs that are $days old
+      find $dirlst \( -name verbosegc\*.txt\*.$zipext -o \
+                      -name verbosegc\*.txt\*.$zipext2 -o \
+                      -name verbosegc\*.txt\*.$zipext3 \) \
+           -mtime +$days -print 2>/dev/null | xargs rm -f
+      # For each directory that contains empty, uncompressed verbosegc logs,
+      # remove all but the last 2 (only the last should be an open file)
+      # Assumes ls(1) in by name reverse order to obtain last date named file
+      for d in `find /logs/was?? \( -name verbosegc.\*\.txt -o \
+                                    -name verbosegc.\*\.txt.001 \) \
+                     -print 2>/dev/null | \
+                  sed 's%^\(/.*\)/.*%\1%' | \
+                  sort -u` ; do
+        for f in `ls -r $d/verbosegc.*txt \
+                        $d/verbosegc.*txt.001 2>/dev/null | \
+                    tail -n +3` ; do
+          if [ ! -s "$f" ] ; then
+            rm -f "$f"
+          fi
+        done
+      done
+    fi
+  endscript
+}
+

@@ -1,0 +1,17 @@
+#!/bin/ksh
+
+instance=$1
+
+if [ -z $instance ]; then
+	echo "instance name must be supplied"
+	exit
+fi
+if [ ! -d /db2_database/${instance}/idsslapd-${instance} ]; then
+        echo ldap instance ${instance} not found
+        exit
+fi
+
+sudo su - ${instance} <<ENDSU
+db2 connect to ${instance} 1>/dev/null 2>&1
+db2 'select id,substr(dn,1,40) as object,substr(data_long,1,256) as change from ${instance}.replchg10 order by id'
+ENDSU

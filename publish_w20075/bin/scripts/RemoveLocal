@@ -1,0 +1,1 @@
+echo "REMOVE $1" | POST http://localhost:6328/toEILocalDist/

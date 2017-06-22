@@ -1,0 +1,196 @@
+#!/bin/bash 
+
+usage() {
+  echo "USAGE: ${0##*/} -s <subscriber> [-P <port>] [-c <count>] [-T <topic>] [-S <j|m>] [-t <timeout>] [-v] [-d] [-f <file>]"
+  echo
+  echo "OPTIONS:"
+  echo "  -s <subscriber>     :  IP or hostname of the subscription target"
+  echo "  -c <count>          :  number of messages to publish/receive [default 0]"
+  echo "  -t <timeout>        :  timeout value [default 10000ms]"
+  echo "  -T <topic>          :  topic to subscribe to [default events/hpods/test/MSe2eprobe]"
+  echo "  -P <port>           :  port to connect on"
+  echo "  -S <[j|m]>          :  set subscription method to either (j)ms or (m)qtt [default MQTT]"
+  echo "  -f <file>           :  direct output to file"
+  echo "  -u <user>           :  user to connect as"
+  echo "  -p <pass>           :  password to connect with"
+  echo "  -v                  :  verbose output"
+  echo "  -d                  :  write PID to file"
+  echo "  -z                  :  use TLS"
+  echo "  -k <file>           :  cacerts file to use"
+  echo
+  exit 1
+}
+
+SUB_METHOD=MQTT
+APP_PATH=${0%/*}
+SSL_ARGS=
+JAVA_ARGS=
+
+while getopts k:s:p:vc:T:P:S:t:dzu: opt; do
+  case $opt in
+  k)
+    CACERT_FILE=$OPTARG
+    if [[ ! -f $CACERT_FILE ]] ; then
+      echo "File $CACERT_FILE does not exist"
+      exit
+    fi
+    ;;
+
+  z)
+    SSL_ARGS="-z"
+    ;;
+
+  d)
+    write_pid=1
+    ;;
+  s)
+    SUB=$OPTARG
+    ;;
+
+  u)
+    MS_USER=$OPTARG
+    ;;
+
+  p)
+    PASS=$OPTARG
+    ;;
+
+  P)
+    PORT=$OPTARG
+    ;;
+
+  v)
+    DEBUG="y"
+    ;;
+
+  t)
+    case $OPTARG in
+    ''|*[!0-9]*) 
+      echo "Invalid number argument to -t : $OPTARG"
+      exit 1
+      ;;
+    *) 
+      TIMER=$OPTARG
+      ;;
+    esac
+    ;;
+
+  c)
+    case $OPTARG in
+    ''|*[!0-9]*) 
+      echo "Invalid number argument to -c : $OPTARG"
+      exit 1
+      ;;
+    *) 
+      COUNT=$OPTARG
+      ;;
+    esac
+    ;;
+
+  T)
+    TOPIC=$OPTARG
+    ;;
+
+  f)
+    OUTFILE=$OPTARG
+    ;;
+
+  S)
+    case $OPTARG in
+    [jJ])
+      SUB_METHOD=JMS
+      ;;
+
+    [mM])
+      SUB_METHOD=MQTT
+      ;;
+
+    *)
+      usage
+      exit 1
+      ;;
+    esac
+    ;;
+
+  *)
+    usage
+    ;;
+  esac
+done
+
+## Set defaults if not set by user
+[[ -z $TOPIC ]] && TOPIC="events/hpods/test/MSe2eprobe"
+[[ -z $COUNT ]] && COUNT=0
+[[ -z $TIMER ]] && TIMER=10000
+[[ -z $MS_USER ]] && MS_USER=scoreboard
+[[ -z $PASS ]] && PASS=PA16h9lD3J7F1d2
+[[ -z $PORT ]] && [[ -n $SSL_ARGS ]] && PORT=443
+[[ -z $PORT ]] && [[ -z $SSL_ARGS ]] && PORT=8000
+[[ -z $SUB ]] && usage
+[[ -n $CACERT_FILE ]] && [[ -n $SSL_ARGS ]] && JAVA_SSL_ARGS=" -Djavax.net.ssl.trustStore=$APP_PATH/cacerts "
+
+JAVA_ARGS="$JAVA_SSL_ARGS"
+
+if [[ $SUB_METHOD == "JMS" && -n $SSL_ARGS ]] ; then
+  echo "SSL not implemented (yet?) for JMS connections"
+  exit
+fi
+
+IMAPATH=$APP_PATH/ImaClient/jms
+MQTTPATH=$APP_PATH/MQTTClient/
+JMS_CLASSPATH=$IMAPATH/lib/imaclientjms.jar:$IMAPATH/lib/jms.jar:$IMAPATH/lib/jmssamples.jar:$APP_PATH/
+MQTT_CLASSPATH=$MQTTPATH/com.ibm.micro.client.mqttv3.jar:$MQTTPATH/org.eclipse.paho.client.mqttv3.jar:$MQTTPATH
+
+PID_FILE=/tmp/${0##*/}.$$.pid
+
+OS=`uname`
+
+case "$OS" in
+  AIX)
+    JAVA="/usr/java7/jre/bin/java" 
+    ;;
+
+  Linux)
+    JAVA="/usr/bin/java"
+    ;;
+
+  *)
+    echo "Unknown OS type $OS. Exiting."
+    exit 1
+    ;;
+esac
+
+DATE=$(date +"%Y_%m_%d")
+
+LOGSTUB="/tmp/${0##*/}"
+SUBLOG="$LOGSTUB.sub.$$.$SUB"
+ 
+rm -f $SUBLOG
+
+printf "\n\n===========================================================\n"
+printf "Starting Subscription:\n Subscriber:\t\t$SUB\n Topics:\t\t$TOPIC\n Number of Messages:\t$COUNT\n"
+printf " Subscription Method:\t$SUB_METHOD\n"
+printf "\n===========================================================\n"
+
+if [[ $SUB_METHOD == "MQTT" ]] ; then 
+  SUBCMD="$JAVA $JAVA_ARGS -classpath $MQTT_CLASSPATH EIMQTTClient $SSL_ARGS -a subscribe -t $TOPIC -s 0 -b $SUB -p $PORT -u $MS_USER -P $PASS -T $TIMER -c $COUNT"
+elif [[ $SUB_METHOD == "JMS" ]] ; then 
+  SUBCMD="$JAVA $JAVA_ARGS -classpath $JMS_CLASSPATH com.ibm.ima.samples.jms.JMSSample $SSL_ARGS -v -s tcp://$SUB:$PORT -a subscribe -t $TOPIC -u $MS_USER -p $PASS -n $COUNT -x $TIMER"
+fi
+
+if [[ -n $DEBUG ]] ; then printf "\nDEBUG:: $SUBCMD\n\n"; fi
+
+#$SUBCMD |tee -a $SUBLOG
+
+if [[ -n $OUTFILE ]] ; then
+  $SUBCMD >> $OUTFILE
+else
+  $SUBCMD 
+fi
+
+javapid=$!
+
+if [[ $write_pid -eq 1 ]] ; then
+  echo $javapid > $PID_FILE
+fi
+

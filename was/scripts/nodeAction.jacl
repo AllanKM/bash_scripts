@@ -1,0 +1,203 @@
+#*******************************************************************************************************
+# nodeAction.jacl
+#
+#   Author: James Walton
+#   Revision Date: 04/12/2006
+#*******************************************************************************************************
+
+proc checkSync {nodeName} {
+	global AdminControl
+	global AdminConfig
+	if {[$AdminConfig getObjectName [$AdminConfig getid /Node:$nodeName/Server:nodeagent/]] != ""} {
+	  set nodeSync [$AdminControl completeObjectName type=NodeSync,node=$nodeName,*]
+	  set result [$AdminControl invoke $nodeSync isNodeSynchronized]
+	  if {$result == "true"} {
+	    puts "$nodeName: IN-SYNC"
+	  } else {
+	    puts "$nodeName: OUT-OF-SYNC"
+	  }
+	} else { puts "$nodeName: n/a" }
+}
+
+proc checkNode {nodeName} {
+	global AdminControl
+	global AdminConfig
+	if {[$AdminConfig getObjectName [$AdminConfig getid /Node:$nodeName/Server:nodeagent/]] != ""} {
+		set nodeUp 1
+	} else {
+		set nodeUp 0
+	}
+	return $nodeUp
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-action"} {
+    if {[incr i] < $argc} {
+      set actionName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+      set scope "node"
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-cell"} {
+    set nodeList [$AdminConfig list Node]
+    if {[llength $nodeList] > 0} {
+      set cellname [$AdminControl getCell]
+      set scope "cell"
+    }
+  } elseif {$arg == "-type"} {
+    if {[incr i] < $argc} {
+      set nodeType [lindex $argv $i]
+    } else {
+      set argerr 10
+    }
+  } else {
+    set argerr 5
+  }
+}
+
+if {![info exists actionName]} {
+  set argerr 6
+}
+if {[lsearch -exact "sync refresh setup status" $actionName] < 0} {
+  set argerr 7
+}
+if {[info exists nodeType]} {
+  if {[lsearch -exact "nodeagent dmgr server1" $nodeType] < 0} { set argerr 11 }
+} else {
+  set nodeType "nodeagent"
+}
+if {[info exists nodeName] && [info exists cellname]} {
+  set argerr 8
+}
+if {$actionName == "setup" && ![info exists nodeName] && ![info exists nodeType]} {
+  set argerr 9
+}
+if {$actionName == "status" && (![info exists nodeName] && ![info exists cellname])} {
+  set argerr 10
+}
+if {![info exists nodeName] && ![info exists cellname]} {
+  set nodeName $env(local.node)
+  set scope "node"
+}
+
+if { $argerr } {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f nodeAction.jacl -action <actionName> \[-node <nodeName> | -cell \]"
+  puts "   wsadmin -f nodeAction.jacl -action setup -node <nodeName> -type <nodeType>"
+  puts "Executes the selected action on node <nodeName> or for each node in the cell."
+  puts "If -node <nodeName> is not given, script will assume local node is to be used,"
+  puts "except for the setup action. For setup, node name and node type are required."
+  puts ""
+  puts "Actions:"
+  puts "         sync    -   Synchronize the configuration"
+  puts "         refresh -   Refresh the configuration repository (full synchronize)"
+  puts "         setup   -   Configure nodeagent with standard File synchronization and logging (-cell is invalid for this)"
+  puts "         status  -   Print synchronization status for a given node (synchronized or not)"
+  puts "Node Types:"
+  puts "         nodeagent  -   Setup EI common configurations for nodeagents"
+  puts "         dmgr       -   Setup EI common configurations for deployment managers"
+  puts "         server1    -   Setup EI common configurations for standalone node"
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+set errcnt 0
+if {$scope == "node"} {
+  if {$nodeType == "nodeagent"} {
+    set active [checkNode $nodeName]
+    if {! $active} {
+    	puts "ERROR: Node $nodeName is not currently running or does not exist"
+    	exit
+    }
+  }
+  if {$actionName == "sync"} {
+    # Synchronize one Node
+    set nodeSync [$AdminControl completeObjectName type=NodeSync,node=$nodeName,*]
+    set return [$AdminControl invoke $nodeSync sync]
+    if {$return != "true"} { incr errcnt }
+  } elseif {$actionName == "refresh"} {
+    # Run Full Synchronization on one Node
+    set nodeRepo [$AdminControl completeObjectName type=ConfigRepository,node=$nodeName,process=nodeagent,*]
+    set return [$AdminControl invoke $nodeRepo refreshRepositoryEpoch]
+    if {[llength $return] < 1} { incr errcnt }
+  } elseif {$actionName == "setup"} {
+    # Setup initial configuration for nodeagent/dmgr
+    ## Set file synch settings for nodeagent
+    if {$nodeType == "nodeagent"} {
+      set nodeagent [$AdminConfig getid /Node:$nodeName/Server:$nodeType/NodeAgent:/]
+      set fss [$AdminConfig showAttribute $nodeagent fileSynchronizationService]
+      $AdminConfig modify $fss {{autoSynchEnabled false}}
+      set serverName [$AdminConfig showAttribute $nodeagent server]
+    } else {
+      set serverName [$AdminConfig getid /Node:$nodeName/Server:$nodeType/]
+    }
+    ## Set log file rotation/retention
+    set outlog [$AdminConfig showAttribute $serverName outputStreamRedirect]
+    set errlog [$AdminConfig showAttribute $serverName errorStreamRedirect]
+    $AdminConfig modify $outlog {{rolloverType TIME} {maxNumberOfBackupFiles 14} {rolloverPeriod 24} {baseHour 24}}
+    $AdminConfig modify $errlog {{rolloverType TIME} {maxNumberOfBackupFiles 14} {rolloverPeriod 24} {baseHour 24}}
+    ## Set process execution
+    set procexec [$AdminConfig showAttribute [$AdminConfig getid /Node:$nodeName/Server:$nodeType/JavaProcessDef:/] execution]
+    $AdminConfig modify $procexec {{runAsUser webinst} {runAsGroup mqm}}
+    puts "Saving configuration..."
+    $AdminConfig save
+    if {$nodeType == "nodeagent"} {
+      puts "Ensure that the updated configuration has been synchronized to node: $nodeName"
+    }
+    puts "Server $nodeType on $nodeName will need to be restarted for the changes to take effect."
+  } elseif {$actionName == "status"} {
+    checkSync $nodeName
+  } else {
+    puts "Invalid action specified and somehow slipped under the radar - please try again."
+  }
+} elseif {$scope == "cell"} {
+  set nodes [$AdminConfig list Node]
+  foreach nodeID $nodes {
+  	set nodename [lindex [split $nodeID (] 0]
+  	set active [checkNode $nodeName]
+	if {! $active} {
+  	  puts "SKIPPING: $nodeName - not currently running"
+  	  continue
+	}
+	if {[regexp "Manager" $nodename] == 0} {
+		if {$actionName == "sync"} {
+		  # Run Synchronization on all Nodes in Cell
+		  set nodeSync [$AdminControl completeObjectName type=NodeSync,node=$nodename,*]
+		  set return [$AdminControl invoke $nodeSync sync]
+		  if {$return != "true"} { incr errcnt }
+		} elseif {$actionName == "refresh"} {
+		  # Synchronize all Nodes in Cell
+	      set nodeRepo [$AdminControl completeObjectName type=ConfigRepository,node=$nodename,process=nodeagent,*]
+	      set return [$AdminControl invoke $nodeRepo refreshRepositoryEpoch]
+		  if {[llength $return] < 1} { incr errcnt }
+		} elseif {$actionName == "status"} {
+		    checkSync $nodename
+		} else {
+		  puts "Invalid action specified and somehow slipped under the radar - please try again."
+		}
+	}
+  }
+} else {
+  puts "Invalid scope specified and somehow slipped under the radar - please try again."
+}
+
+if {$errcnt > 0} {
+  puts "Warning: $errcnt nodes did not successfully complete $actionName"
+} else {
+  puts "Success!"
+}

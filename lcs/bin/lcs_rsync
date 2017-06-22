@@ -1,0 +1,556 @@
+#!/usr/local/bin/perl
+
+use strict;
+use Getopt::Long;
+use File::Basename;
+use File::Copy;
+use File::Find;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+use Data::Dumper;
+$Data::Dumper::Indent = 1;
+
+my $dfltumask = "022";
+
+umask(oct($dfltumask));
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mypath = $mylname;
+$mypath =~ s%$mysname$%%;
+$mypath = './' if ($mypath eq '');
+$mypath =~ s%/$%%g;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+my ($osver,$osrel,$osnodename) = (uname)[$[+3,$[+2,$[+1];
+my $wparid = 0;
+if ($os eq "AIX" && $osver >= 6) {
+  # uname -W only available on AIX 6+
+  chomp($wparid = `uname -W 2>/dev/null`);
+  $wparid = 0 if ($wparid eq "");
+}
+my $iosflg = 0;
+$iosflg = 1 if (-x "/usr/ios/cli/ioscli");
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Set/export COLUMNS to get longer commands
+$ENV{COLUMNS} = 300;
+
+my $lcs_ctl = "lcs_ctl";
+my $cfgdir = "/opt/HPODS/LCS/conf";
+my $cfgdiralt = "/lfs/system/tools/lcs/conf";
+my $cfgext = ".conf";
+my $logdir = "/var/log/lcs";
+my $piddir = "/var/run";
+
+# Define log file directives
+my %logarr = (
+  'auditlog' => "",
+  'errorlog' => "",
+  'tracelog' => "",
+);
+
+my $dfltsite = "  $$ LCS";
+my $site = $dfltsite;
+my %clargs = ();
+my $rc = &main::GetOptions(
+  'date:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},
+                          split(/[,;]/,$_[1])) },
+  'debug+' => sub { $clargs{$dfltsite}{$_[0]}++ },
+  'destination|dst:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},
+                                     split(/[,;]/,$_[1])) },
+  'nocheck' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'nologging' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'site:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},
+                          split(/[,;]/,$_[1])) },
+  'skipsite:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},
+                              split(/[,;]/,$_[1])) },
+  'source|src:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'unique' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'verbose+' => sub { $clargs{$dfltsite}{$_[0]}++ },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+my $debug = $clargs{$dfltsite}{debug} || 0;
+my @destination = $clargs{$dfltsite}{destination} || ();
+my $nocheck = $clargs{$dfltsite}{nocheck} || 0;
+my $nologging = $clargs{$dfltsite}{nologging} || 0;
+my $source = $clargs{$dfltsite}{source} || "";
+my $unique = $clargs{$dfltsite}{unique} || 0;
+my $verbose = $clargs{$dfltsite}{verbose} || 0;
+my $tmp = "/tmp";
+my $mytime = time();
+my $fullday = 60*60*24;
+my $rsync = "rsync";
+my $ssh = "ssh";
+
+# Turn off logging if specified
+if ($nologging) {
+  foreach my $l (keys %logarr) {
+    $logarr{$l} = "";
+  }
+}
+
+my %allsites = ();
+my %cfgs = ();
+my @cfglst = ();
+if (opendir(DIR,$cfgdir)) {
+  @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+  closedir(DIR);
+  if (! @cfglst) {
+    # Try alternate config dir
+    $cfgdir = $cfgdiralt;
+    if (opendir(DIR,$cfgdir)) {
+      @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+      closedir(DIR);
+    }
+  }
+  if (@cfglst) {
+    foreach my $cfg (sort @cfglst) {
+      my $i = $cfg;
+      $i =~ s/$cfgext$//;
+      logit($mysname,\%logarr,64+($verbose>2),
+            "Loading $lcs_ctl $cfg $i");
+      loadfile(\%cfgs,"$cfgdir/$cfg",$i,1);
+      foreach my $key (keys %cfgs) {
+        if (! defined $allsites{$key}) {
+          $allsites{$key} = $i;
+        }
+      }
+    }
+  }
+}
+
+# Create dates lookup of key: YYYYMMDD key to value: seconds since epoch
+my $date = "";
+my %dates = ();
+if (defined $clargs{$dfltsite}{date}) {
+  foreach $date (@{$clargs{$dfltsite}{date}}) {
+    # Validate date - do not try to process today/future date
+    my ($year,$mon,$mday,$hour,$min,$sec);
+    if ($date !~ /^[1-9]\d\d\d\d\d\d\d$/) {
+      logit($mysname,\%logarr,98,
+            "Date must be of the form YYYYMMDD");
+      usage($mysname);
+      exit 1;
+    }
+    ($year,$mon,$mday) = unpack("a4a2a2",$date);
+    my $datets = timelocal(0,0,0,$mday,$mon-1,$year-1900);
+    if ($mytime < $datets) {
+      logit($mysname,\%logarr,98,
+            "Date must not be today or in the future");
+      usage($mysname);
+      exit 1;
+    }
+    $dates{$date} = $datets;
+  }
+}
+
+# Pre-load sites to skip when processing
+my %skipsite = ();
+grep($skipsite{$_}++,@{$clargs{$dfltsite}{skipsite}})
+  if (defined $clargs{$dfltsite}{skipsite});
+
+# Pre-load sites to keep when processing
+my %syncsite = ();
+if (@ARGV && ! grep("\U$_" eq "ALL", @ARGV)) {
+  foreach my $s (@ARGV) {
+    grep($syncsite{$_}++,(split(/[,;]/,$s)));
+  }
+}
+
+# Build valid sites list based on control files
+my $inst;
+my %work = ();
+foreach $site (sort keys %cfgs) {
+  if (defined $cfgs{$site}{aggregate}) {
+    if (grep($host eq $_ || $host =~ /$_/, @{$cfgs{$site}{aggregate}})) {
+      $inst = $allsites{$site};
+      logit($mysname,\%logarr,64+($debug>2),
+            "Control file parse for $site");
+      if (defined $skipsite{$site}) {
+        logit($mysname,\%logarr,80+($verbose>0),
+              "$site requested to be skipped");
+        next;
+      }
+      if (defined keys %syncsite) {
+        if (grep($site ne $_ && $site !~ m/^${_}$/, keys %syncsite)) {
+          logit($mysname,\%logarr,80+($verbose>0),
+              "$site does not match site(s) requested - ignoring");
+          next;
+        }
+      }
+      # Determine archive directory and subdirectory
+      my $datedir = "";
+      if (defined $cfgs{$site}{archivedirectory}) {
+        my $subdir = "%Y/%m/%d";  # Guess at subdirectory
+        $datedir = @{$cfgs{$site}{archivedirectory}}[$[];
+        $subdir = @{$cfgs{$site}{subdirectory}}[$[]
+          if (defined $cfgs{$site}{subdirectory});
+        $datedir = "$datedir/$subdir";
+      }
+      if ($datedir eq "") {
+        logit($mysname,\%logarr,80+($verbose>0),
+              "$site has no viable archive directory or subdirectory");
+        next;
+      }
+      # Validate source and destination(s)
+      my $src = "";
+      my @dst = ();
+      if ($source eq "" && ! @destination) {
+        $src = $host;
+        @dst = grep($src ne $_ && $src !~ /$_/,@{$cfgs{$site}{aggregate}});
+      } elsif ($source ne "") {
+        $src = (grep($source eq $_ || $source =~ /$_/,
+                     @{$cfgs{$site}{aggregate}}))[$[];
+        if ($src eq "") {
+          logit($mysname,\%logarr,80+($verbose>0),
+              "$site source $source does not match sites specified");
+          next;
+        }
+        if (@destination) {
+          @dst = grep($src ne $_,@destination);
+        } else {
+          @dst = grep($src ne $_,@{$cfgs{$site}{aggregate}});
+        }
+      } elsif ($source eq "" && @destination) {
+        my @srcs = ();
+        foreach my $agg (@{$cfgs{$site}{aggregate}}) {
+          if (grep($agg eq $_ || $agg =~ /$_/,@destination)) {
+            push(@dst,$agg);
+          } else {
+            push(@srcs,$agg);
+          }
+        }
+        if (@srcs > 1) {
+          logit($mysname,\%logarr,80+($verbose>0),
+                "$site has multiple sources: ".join(',',@srcs));
+          next;
+        }
+        $src = $srcs[$[];
+        if (@dst > 1 && $src ne $host) {
+          logit($mysname,\%logarr,80+($verbose>0),
+                "$site has remote source and multiple destinations: ".
+                join(',',@dst));
+          next;
+        }
+      } else {
+        logit($mysname,\%logarr,80+($verbose>0),
+              "$site unable to determine source and destination");
+        next;
+      }
+      if (! @dst) {
+        logit($mysname,\%logarr,80+($verbose>0),
+              "$site has no viable destination");
+        next;
+      }
+      # Build source and destinations
+      foreach my $date (keys %dates) {
+        $work{$site}{src}{$src}{$datedir}++;
+        my $srcdate = POSIX::strftime($datedir,localtime($dates{$date}));
+        $work{$site}{srcdate}{$src}{$srcdate}++;
+        foreach my $d (@dst) {
+          my $dd = dirname($datedir)."/";
+          my $dstdate = POSIX::strftime($dd,localtime($dates{$date}));
+          $work{$site}{dst}{$d}{$dd}++;
+          $work{$site}{dstdate}{$d}{$dstdate}++;
+        }
+      }
+    }
+  }
+}
+
+# Loop on all the sources to ensure they exist and build rsync commands
+my $rsynccmd = "$rsync";
+$rsynccmd .= " -a";
+$rsynccmd .= "n" if ($debug > 0);
+$rsynccmd .= "v" if ($debug > 0 || $verbose > 1);
+$rsynccmd .= "e ssh";
+foreach $site (sort keys %work) {
+  foreach my $dst (sort keys %{$work{$site}{dstdate}}) {
+    my $dstpath = (sort keys %{$work{$site}{dstdate}{$dst}})[$[];
+    my $dsthost = "";
+    $dsthost = "$dst:" if ($host ne $dst && $host !~ /$dst/);
+    foreach my $src (sort keys %{$work{$site}{srcdate}}) {
+      my $srchost = "";
+      $srchost = "$src:" if ($host ne $src && $host !~ /$src/);
+      my %foundsrcs = ();
+      if ($nocheck > 0) {
+        # Assume all sources are valid
+        grep($foundsrcs{$_}++,keys %{$work{$site}{srcdate}{$src}});
+      } else {
+        my $cmd = "ls -d '".
+                  join("' '",sort keys %{$work{$site}{srcdate}{$src}})."'";
+        $cmd = "$ssh $src $cmd" if ($srchost);
+        if (open(CHK,"$cmd 2>&1|")) {
+          while(<CHK>) {
+            chomp;
+            my ($d,$rest) = split(' ',$_,2);
+            $foundsrcs{$d}++
+              if (defined $work{$site}{srcdate}{$src}{$d});
+          }
+        }
+        close(CHK);
+        # Report on any sources not found
+        foreach my $srcpath (sort keys %{$work{$site}{srcdate}{$src}}) {
+          if (! defined $foundsrcs{$srcpath}) {
+            logit($mysname,\%logarr,80+($verbose>1),
+                  "$site did not find source $srchost$srcpath");
+          }
+        }
+      }
+      if (keys %foundsrcs) {
+        if ($unique > 0) {
+          foreach my $srcpath (sort keys %foundsrcs) {
+            $work{$site}{cmds}{"$rsynccmd $srchost$srcpath $dsthost$dstpath"}++;
+          }
+        } else {
+          $work{$site}{cmds}{"$rsynccmd $srchost".
+                             join(" $srchost",sort keys %foundsrcs).
+                             " $dsthost$dstpath"}++;
+        }
+      } else {
+        logit($mysname,\%logarr,80+($verbose>1),
+              "$site found no viable sources");
+        next;
+      }
+    }
+  }
+}
+
+print Dumper(%work) if ($debug > 2);
+
+# Set pidfile pid for "lock"
+my $pidfile = "$tmp/$mysname.pid";
+
+# Already running, verify, then just bail out, otherwise create pidfile "lock"
+my $found;
+if (-f $pidfile) {
+  my ($pid,$p);
+  $found = 0;
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+system( "echo $$ >$pidfile" );
+
+# Process each site
+my $exitrc;
+foreach my $site (sort keys %work) {
+  logit($mysname,\%logarr,80+($debug > 0 || $verbose>0),
+        "Synchronizing site $site");
+  my $rc = 0;
+  if (defined $work{$site}{cmds}) {
+    foreach my $cmd (sort keys %{$work{$site}{cmds}}) {
+      logit($mysname,\%logarr,80+($debug > 0 || $verbose>0),
+            "Executing: $cmd");
+      if (open(CMD,"$cmd 2>&1|")) {
+        while(<CMD>) {
+          chomp;
+          logit($mysname,\%logarr,80+($debug > 0 || $verbose>0),
+                "$_");
+          $rc++ if ($_ =~ /rsync[ :]/io);
+        }
+        close(CMD);
+      }
+    }
+  }
+  $exitrc += $rc;
+}
+
+# Clean up PID "lock" file
+unlink($pidfile) if (-e $pidfile);
+
+exit $exitrc;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-date date[,...]][-debug][-destination dsthost[,...]]\n",
+        "    [-nocheck][-nologging][-skipsite skipsite[,...]]\n",
+        "    [-source srchost][-unique][-verbose]\n",
+        "    [site ...]\n",
+        "  where: date       - day(s) to rsync (format: YYYYMMDD)\n",
+        "         dsthost    - destination host for synchronization\n",
+        "         skipsite   - do not synchronize sites in this list\n",
+        "         site       - list of sites to synchronize\n",
+        "                        (default: all sites)\n",
+        "         srchost    - source host for synchronization\n",
+        "                        (default: $host)\n",
+        "         -debug     - debug mode only - DRY RUN\n",
+        "         -nocheck   - do not verify source path first\n",
+        "         -nologging - do not log to log files\n",
+        "         -unique    - use unique command for each src/dst pair\n",
+        "         -verbose   - describe events each step of the way\n";
+}
+
+sub logit {
+  my($me,$laref,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority,$filetype);
+  my(%logarr) = %$laref;
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+    "auditlog" => 16,
+    "errorlog" => 32,
+    "tracelog" => 64,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle file logs
+  foreach $filetype (sort keys %logarr) {
+    if ($logarr{$filetype} ne "") {
+      if ($logtype & $logtypes{$filetype}) {
+        my $logfile = $logarr{$filetype};
+        $logfile = POSIX::strftime($logfile,localtime());
+        if (open(LOGFILE,">>$logfile")) {
+          if (@myargs) {
+            printf LOGFILE "$date $me\[$$\]: $format\n", @myargs;
+          } else {
+            print LOGFILE "$date $me\[$$\]: $format\n";
+          }
+          close(LOGFILE);
+        }
+      }
+    }
+  }
+
+  1;
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+

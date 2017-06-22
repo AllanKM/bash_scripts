@@ -1,0 +1,186 @@
+<?xml version="1.0"?>
+<wmm name="member manager"
+    description="member manager"
+    defaultRealmName="wmmRealm"
+    horizontalPartitioning="false"
+    lookAside="false"
+    configurationFile="xml/wmmAttributes.xml"
+    uniqueIdGeneratorClassName="com.ibm.ws.wmm.uniqueid.WMMUniqueMemberIdentifierGenerator"
+    maximumSearchResults="2000"
+    searchTimeOut="600000"
+    maximumSearchResultsForSortingAndPaging="500"
+    maximumTotalSearchResultsForSortingAndPaging="1000"
+    pagingMemberObject="true"
+    timeToRemovePagedCacheEntry="900"
+    userSecurityNameAttribute="uid"
+    passwordAttribute="userPassword">
+
+    <supportedMemberTypes>
+
+       <supportedMemberType name="Person"  
+           rdnAttrTypes="uid" 
+           defaultParentMember="ou=persons,o=ibm.com"
+           defaultProfileRepository="LDAP1"/>
+           
+       <supportedMemberType name="Group"  
+           rdnAttrTypes="cn" 
+           defaultParentMember="cn=groups,o=ibm.com"
+           defaultProfileRepository="LDAP1"/>
+           
+       <supportedMemberType name="Organization"  
+           rdnAttrTypes="o" 
+           defaultParentMember="ou=persons,o=ibm.com"
+           defaultProfileRepository="LDAP1"/>
+           
+       <supportedMemberType name="OrganizationalUnit"  
+           rdnAttrTypes="ou"
+           defaultParentMember="ou=persons,o=ibm.com"
+           defaultProfileRepository="LDAP1"/>
+
+    </supportedMemberTypes>
+    
+
+    <repositories>
+
+      <!--
+           ***************************************************************************************************************
+                ldapType         adapterClassName                                         configurationFile  
+           ***************************************************************************************************************
+                ids              com.ibm.ws.wmm.ldap.ibmdir.IBMDirectoryAdapterImpl           xml/wmmLDAPAttributes_IDS.xml
+                ids5             com.ibm.ws.wmm.ldap.ibmdir.IBMDirectory5AdapterImpl          xml/wmmLDAPAttributes_IDS.xml
+                sunone           com.ibm.ws.wmm.ldap.sunone.SunOneDirectoryAdapterImpl        xml/wmmLDAPAttributes_SO.xml
+                activedir        com.ibm.ws.wmm.ldap.activedir.ActiveDirectoryAdapterImpl     xml/wmmLDAPAttributes_AD.xml
+                activedir2003    com.ibm.ws.wmm.ldap.activedir.ActiveDirectory2003AdapterImpl xml/wmmLDAPAttributes_AD.xml
+                domino5          com.ibm.ws.wmm.ldap.domino.DominoLdapAdapterImpl             xml/wmmLDAPAttributes_DM.xml
+                domino6          com.ibm.ws.wmm.ldap.domino.Domino6LdapAdapterImpl            xml/wmmLDAPAttributes_DM.xml
+                nds              com.ibm.ws.wmm.ldap.novell.NovelleDirectoryAdapterImpl       xml/wmmLDAPAttributes_NDS.xml
+           ***************************************************************************************************************
+
+           UUID - The universal unique identifier of the repository
+           adapterClassName - The implementation class name of the repository adapter
+           supportDynamicAttributes - Whether or not support dynamic attributes. Should be set to false for LDAP repository.
+           configurationFile - The LDAP attributes mapping XML file
+           wmmGenerateExtId - need to set to true if the LDAP server needs WMM to generate extId (for example, when extId is mapped to ibm-appuuid); otherwise, set to false. Default value is false.
+           supportGetPersonByAccountName - Whether or not the getPersonByAccountName API is supported
+           profileRepositoryForGroups - Defines the UUIDs of the repositories which can contains members in this repository.
+           supportTransactions - Whether or not the repository supports transaction. Should be set to false for LDAP repository.
+           
+           adminId - The DN of the LDAP administrator which will be used to create the LDPA connection
+           adminPassword - The password of the LDAP administrator
+           ldapHost - The host name or IP address of the LDAP server
+           ldapPort - The LDAP port of the LDAP server
+           ldapTimeOut - The time limit for LDAP search in milliseconds. If the value is 0, this means to wait indefinitely
+           ldapAuthentication - A string specifying the type of authentication to use; one of "none", "simple", "strong", or a provider-specific string
+           ldapType - Reserved for IBM internal use
+	   sslEnabled - Whether or not enable SSL
+           sslTrustStore - The absolute path to the truststore used for SSL server authentication. 
+           
+           dirContextsMaxSize - Maximum number of DirContexts in the pool. If the value is 0, dirContexts pool is disabled.
+           dirContextsMinSize - Minimum number of DirContexts  in the pool
+           dirContextTimeToLive - The number of seconds a DirContext in the pool can live. -1 means the DirContext is reused forever until its unerlying connection is stale.
+           com.sun.jndi.ldap.connect.pool - Set to true will enable the connection pool function provided by JDK. By enable it, different Dirconexts can share the same connection. 
+                                            JDK connection pool and WMM DirContext pool can be used together. For instruction on how to configure JDK connection pool, please refer to the JDK document.
+           
+           cacheAttributes - Whether or not enable Attributes Cache. Attribute Cache stores attributes of the LDAP entries. Attributes Cache is enabled by default.
+           attributesCacheSize - The maximum size of Attributes Cache. 
+           attributesCacheTimeOut - How long the cached entries can stay in the Attributes Cache before being invalidated (in seconds)
+           
+           cacheNames - Whether or not enable Names Cache. Names Cache stores the results of LDAP searches. Names Cache is enabled by default.           
+           namesCacheSize - The maximum size of Names Cache. 
+           namesCacheTimeOut - How long the cached entries can stay in the Names Cache before being invalidated (in seconds)
+
+           cacheGroups - Whether or not enable Group Cache. Group Cache caches the names (DNs), membership relationships and attributes of all groups under WMM nodes on the LDAP server. Group Cache is disabled by default.
+                         If there are large amount of groups (>5000), it is recommended to turn off Groups Cache.  
+           groupsCacheTimeOut - How frequently the Group Cache should be refreshed (in seconds).
+           
+           groupMembershipAttributeMap - The name and scope of the membership attribute. Scope includes: direct (default), nested and all.
+       -->
+       <ldapRepository name="wmmLDAP"
+           UUID="LDAP1"
+           adapterClassName="com.ibm.ws.wmm.ldap.ibmdir.IBMDirectoryAdapterImpl"
+           supportDynamicAttributes="false"
+           configurationFile="/usr/WebSphere51/PortalServer/wmm/wmmLDAPAttributes.xml"
+           wmmGenerateExtId="false"
+           ignoreReadOnlyUpdate="true"
+           supportGetPersonByAccountName="true"
+           profileRepositoryForGroups="LDAP1"
+           supportTransactions="false"
+
+           adminId="uid=7A6671897ED,ou=persons,o=ibm.com"
+           adminPassword="snXURjqTowHVYVdKhcIJ6w=="
+           ldapHost="d03xldcl201g.gwa.boulder.ibm.com"
+           ldapPort="636"
+           ldapTimeOut="6000"
+           ldapAuthentication="SIMPLE"
+           ldapType="0"
+           
+           sslEnabled="true"
+           sslTrustStore="/usr/WebSphere51/AppServer/etc/ei_yz_was.jks"
+           sslTrustStorePassword="Esc+h3ll"
+
+           dirContextsMaxSize="20"
+           dirContextsMinSize="5"
+           dirContextTimeToLive="-1"
+
+           cacheGroups="false"                                                 
+           groupsCacheTimeOut="600"
+           
+           cacheAttributes="true"
+           attributesCacheSize="2000"
+           attributesCacheTimeOut="600"
+
+           cacheNames="true"
+           namesCacheSize="2000"
+           namesCacheTimeOut="600">
+       
+           <readMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </readMemberType>
+           <createMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </createMemberType>
+           <updateMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </updateMemberType>
+           <deleteMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </deleteMemberType>
+           <renameMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </renameMemberType>
+           <moveMemberType>
+               <memberType name="Person" /> <memberType name="Group" /> <memberType name="Organization" /> <memberType name="OrganizationalUnit" />
+           </moveMemberType>
+           
+           <nodeMaps>
+               <nodeMap node="o=ibm.com" pluginNode="o=ibm.com" />
+               <nodeMap node="ou=persons,o=ibm.com" pluginNode="ou=persons,o=ibm.com" />
+               <nodeMap node="ou=groups,o=ibm.com" pluginNode="ou=groups,o=ibm.com" />
+           </nodeMaps>
+                       
+           <supportedLdapEntryTypes>
+               <supportedLdapEntryType name="Person"
+                    rdnAttrTypes="uid" 
+                    objectClassesForRead="udPerson"
+                    objectClassesForWrite="udPerson"
+                    searchBases="ou=persons,o=ibm.com"/>
+               <supportedLdapEntryType name="Group"
+                   rdnAttrTypes="cn" 
+                    objectClassesForRead="UDgroupOfUniqueNames"
+                    objectClassesForWrite="UDgroupOfUniqueNames"
+                    searchBases="ou=groups,o=ibm.com"/>
+               <supportedLdapEntryType name="Organization"
+                    rdnAttrTypes="o" 
+                    objectClassesForRead="organization"
+                    objectClassesForWrite="organization"/>
+               <supportedLdapEntryType name="OrganizationalUnit"
+                    rdnAttrTypes="ou" 
+                    objectClassesForRead="organizationalUnit"
+                    objectClassesForWrite="organizationalUnit"/>
+           </supportedLdapEntryTypes>
+           
+       </ldapRepository>
+        
+    </repositories>
+    
+</wmm>

@@ -1,0 +1,43 @@
+# Place for the team to share bashrc lines that work well in the EI
+# Just copy this file to ~/.bashrc and it will be used each time as you log in if bash is set as your shell
+# .bashrc
+
+# User specific aliases and functions
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+        . /etc/bashrc
+fi
+
+hostname=`/bin/hostname -s`
+#Determine if this realm is located in yellow, green or blue zone by looking in /etc/resolv.conf
+set -- $(grep search /etc/resolv.conf)
+
+while [[ "$1" != "" ]]; do
+	if [[ "$1" = [bgy].*.p?.event.ibm.com ]] 
+ 	then
+		REALM=`echo "$1" | cut -d. -f1-3`
+	fi
+   	shift
+done
+
+ROLE=`lssys -lrole $hostname | grep role | cut -f2 -d=`
+
+wazzat=`grep role /usr/local/etc/nodecache | cut -f2 -d=`
+PS1='\n\[\e[32m\][\u \@ ($ROLE) in $REALM]\n\[\e[33m\][\h]\W \[\e[0m\]=>'
+
+PROMPT_COMMAND='echo -ne "\033]0;${HOSTNAME} ($ROLE):$PWD\007"'
+export CVS_RSH=ssh
+export CVSROOT=:ext:russcadd@cvs.opensource.ibm.com:/cvsroot/hpodstools
+
+alias pss="ps -eo pid,%cpu,vsz,args,wchan"
+alias netstatt="netstat -a -n|grep -E \"^(tcp)\"| cut -c 68-|sort|uniq -c|sort -n"
+alias lst="ls -lt | head"
+alias role="lssys -q -e"
+alias cdportal="cd /usr/WebSphere*/PortalServer/config"
+alias cdwas="cd /usr/WebSphere*/AppServer/profiles/${hostname}/config"
+alias cdwaslog="cd /logs/was*/${hostname}"
+alias motd="view /etc/motd"
+
+unset INPUTRC
+set -o emacs

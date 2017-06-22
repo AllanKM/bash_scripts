@@ -1,0 +1,176 @@
+#!/bin/ksh
+#
+#	rc.daedalus
+#
+#	start/stop daedalus for franklin publishing
+#
+#	RBC 2/2/01
+#
+
+JAVA_BIN=/usr/java131/bin
+JAVA="java -Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,address=8111,server=y,suspend=n -Djava.compiler=NONE"
+JAVA_CLASSPATH=/usr/java131/jre/lib
+DAEDALUS_CLASSPATH=/opt/IBM/daedalus_dikran/lib/daedalus.jar
+DAEDALUS=com.ibm.webos.daedalus.Daedalus
+DAEDALUS_LOG=/logs/daedalus_dikran/output.log
+USER=pubinst
+GROUP=apps
+
+CONFIG_PARAM=$2
+echo "$CONFIG_PARAM"
+CONFIGSTRIPPED=`echo $CONFIG_PARAM | sed s/\.ini$//`
+echo "$CONFIGSTRIPPED"
+CONFIGEXT=.ini
+DAEDALUS_CONFIG=${CONFIGSTRIPPED}${CONFIGEXT}
+echo "Requested CONF: $DAEDALUS_CONFIG"
+
+if [ ! -f $DAEDALUS_CONFIG ]; then
+   echo "Requested configuration file does not exist, aborting"
+   exit 2
+fi
+
+#Setup temporary config file location
+MAIN_SITE=`cat $DAEDALUS_CONFIG                         \
+           | grep -E "^[[:space:]]*#[[:space:]]"    \
+           | grep -E MAIN_SITE                             \
+           | awk '{print $NF}'`
+RUNDIR="/tmp/daedalus$$"
+mkdir -p $RUNDIR/$MAIN_SITE/config
+chmod -R a+r,a+x $RUNDIR
+CONFIGFILE=`echo $DAEDALUS_CONFIG | sed s/[/]/#/g | awk -F"#" '{print $NF}'`
+FOO=`echo $CONFIGFILE | sed s/[/]/\./g`
+USETHIS="$RUNDIR/$MAIN_SITE/config/$CONFIGFILE"
+
+cp $DAEDALUS_CONFIG $USETHIS
+
+if [ $1 != "print" ]; then
+  chown $USER $USETHIS
+fi
+chmod 600 $USETHIS
+
+#########################################################################
+print_msg ()
+{
+	print "$STAMP $MESSAGE"
+	su - $USER "print "$STAMP $MESSAGE" >> $DAEDALUS_LOG"
+}
+
+
+#########################################################################
+print_usage ()
+{
+	MESSAGE="USAGE: $0 {start|stop|restart|statusi|print} <pubconfig>\n"
+        STAMP="`date '+%m/%d %T` $0:"
+	print "$STAMP $MESSAGE"
+}
+
+#########################################################################
+run_start_cmds ()
+{
+	ps auwwx | grep $DAEDALUS | grep .ini | wc -l
+	if [[ `ps auwwx | grep $DAEDALUS | grep .ini | wc -l` -gt 0 ]] ; then
+		MESSAGE="Daedalus appears to be running. Try restarting it."
+                STAMP="`date '+%m/%d %T` $0:"
+                print "$STAMP $MESSAGE"
+		EXIT_CODE=1
+		return
+	fi
+
+	MESSAGE="Starting daedalus service."
+        STAMP="`date '+%m/%d %T`[$0] (    Init)"
+        print_msg "$STAMP $MESSAGE"
+
+	RUNTHIS="$RUNDIR/daedalus$$"
+        cd $RUNDIR
+        echo "cd $RUNDIR" > $RUNTHIS
+        chown $USER $RUNTHIS
+        chmod u+x $RUNTHIS
+	echo "$JAVA_BIN/$JAVA -classpath $JAVA_CLASSPATH:$DAEDALUS_CLASSPATH $DAEDALUS ${MAIN_SITE}/config/$CONFIGFILE >> $DAEDALUS_LOG" > $RUNTHIS
+	echo "sudo -u $USER $RUNTHIS" | at now
+        echo "Giving daedalus 5 seconds to get started."
+        sleep 5
+        echo "Number of procs: \c"
+        ps auwwx| grep $CONFIGFILE | grep daedalus | grep -v grep | grep -v rc.daedalus | wc -l 
+        echo ""
+}
+
+#########################################################################
+run_stop_cmds ()
+{
+	MESSAGE="Shutting down the daedalus service for Franklin"
+        STAMP="`date '+%m/%d %T`[$0] (    Exit)"
+        print_msg "$STAMP $MESSAGE"
+	
+        # figure out the pid of any running daedalus and kill them.
+	for PID in `ps -ef | grep $DAEDALUS | grep ${MAIN_SITE}/config/$CONFIGFILE | awk '{print $2}'`
+	do
+		kill -9 $PID
+	done
+	echo "Giving daedalus 5 seconds to stop"
+        sleep 5
+	echo "Number of procs: \c"
+        ps auwwx| grep $CONFIGFILE | grep daedalus | grep -v grep | grep -v rc.daedalus | wc -l 
+        echo ""
+
+	EXIT_CODE=0
+}
+
+#######################################################################
+status ()
+{
+	print "daedalus processes:"
+    print "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
+    ps auwwx | grep $DAEDALUS | grep ${MAIN_SITE}/config/$CONFIGFILE | grep -v grep
+}
+
+########################################################################
+print_config ()
+{
+    cat $DAEDALUS_CONFIG
+    EXIT_CODE=0
+}
+
+#########################################################################
+# Main Script
+#########################################################################
+EXIT_CODE=0
+
+#################################
+# What are we going to do today?#
+#################################
+if (($# ==  2)) ; then
+	# Use the first parameter if present
+	# as input to the case statement
+	MODE=$1
+	case "$MODE" in
+		'start')
+			run_start_cmds
+		;;
+		'stop')
+			run_stop_cmds
+		;;
+		'restart')
+			run_stop_cmds
+			sleep 1
+			run_start_cmds
+		;;
+		'status')
+			status
+		;;
+                'print')
+                        print_config
+                ;;
+		*)
+			# unknown
+			print_usage
+		;;
+	esac
+else
+	print_usage
+fi
+
+exit $EXIT_CODE
+
+#########################################################################
+# EOF
+#########################################################################

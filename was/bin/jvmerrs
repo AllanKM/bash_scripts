@@ -1,0 +1,192 @@
+#!/bin/ksh
+#today=`date +%Y%m%d`
+wasday=`date +"%d" | sed -e s/^0//g`
+wasmonth=`date +"%m" | sed -e s/^0//g`
+wasdate="$wasmonth/$wasday/`date +"%y"`"
+wastime=`date +"%T" | sed -e s/^0//g | cut -f1-2 -d :`
+print $wasdate $wastime
+head=${lines:-10}
+#ignore_msg="DCSV|HMGR|CWRLS0030W"
+exec 3>&1  
+
+# process commandline arguments
+
+while [[ $# -gt 0 ]]; do
+   case $1 in
+		all) action=all
+			sev="[WE]"
+		;;
+		warn) action=all
+			sev="W"
+		;;
+		err*) action=all
+			sev="E"
+		;;
+      log*|show|text)
+         action=$1
+         ;;
+      min*|now)
+         minute=1
+         ;;
+      hour)
+         hour=1
+         ;;
+      byhour)
+         byhour=1
+         ;;
+      day)
+         day=1
+         ;;
+      *)
+         # is it a jvm or a msg code or just a number
+			if [[ ${1} == +([0-9]) ]]; then
+				 hour=1
+				 want_hour=$1
+			elif [[ ${1} == +([0-9])\:+([0-9]) ]]; then
+				wastime=$1
+				minute=1
+			elif [[ ${1} == +([0-9])/+([0-9])/+([0-9]) ]]; then
+				wasdate=$1
+				day=1
+         elif [ -d /logs/was61/*/*$1* ]; then
+            jvm=$1
+         else
+            msg=$1
+         fi
+         ;;
+   esac
+   shift
+done
+
+[[ -z $jvm ]] && jvm="*"
+
+print -u2 -- "action=$action format=$format jvm=$jvm byhour=$byhour hour=$hour want_hour=$want_hour wastime=$wastime  minute=$minute day=$day day=$wasdate msg=$msg"
+logspec() {
+	logs=$(echo /logs/was6*/*/*${jvm}*/SystemOut.log )
+	if [ -e  /logs/wp6*/SystemOut.log ] ; then
+		logs="$logspec /logs/wp6*/SystemOut.log"
+	fi
+	[ -z "$logs" ] && exit
+	print $logs
+}
+
+logscan() {
+	logspec=$(logspec)
+	awk '{
+				if ( $7~/^[[:alpha:]]{4,5}[[:digit:]]{4}[WE]/ ||  $9~/^[[:alpha:]]{4,5}[[:digit:]]{4}[WE]/ ) {
+					print FILENAME" "$0
+				}
+			}' $logspec 
+}
+
+summary(){
+	awk '{ if ( $8~/^[[:alpha:]]{4,5}[[:digit:]]{4}[WE]/ ) {
+					print $8" "$1
+				} 
+				else { 
+					print $10" "$1 
+				}
+		}' 
+}
+
+filtersev() {
+	awk '{ if ( $8 ~ /'$1':$/ ||  $10 ~/'$1':$/ ) {
+                  print $0
+               }
+		}'
+}
+
+filterhour() {
+	[[ -z "$want_hour" ]] && want_hour=`echo $wastime | awk -F \: '{ print $1 }'`
+	awk '{ if ($3 ~/^'$want_hour':/) { print $0 } }'
+}
+
+filtermin() {
+	awk '{ if ($3 ~/^'$wastime'/) { print $0 } }'
+}
+
+byhour() {
+	awk '{
+		if ( $8~/^[[:alpha:]]{4,5}[[:digit:]]{4}[WE]/ ) {
+			 msg=$8
+		}
+		else {
+			 msg=$10
+		}
+		split($3,t,":")
+		split(substr($2,2),d,"/")
+		sortable=sprintf( "20%02d%02d%02d",d[3],d[1],d[2])
+		printf "%8s %02d:00 %11s %s\n", sortable,t[1],msg,$1
+
+	}'
+}
+ffdc() {
+	logspec=$(logspec)
+	grep "closed incident stream file" $logspec
+}
+doUsage() {
+cat <<EOF 1>&3
+Usage: ${1##*/} ( [show <event>] | <event> | - | + )  <verb> <noun>]
+${1##*/} analyses WAS jvm SystemOut.logs and categorises based on them
+
+	err|errs|errors: Show summary of error and warning messages
+	           list: Show summary of error messages
+	  log|logs|show: Display which logs will be processed
+	           text: Search log for text
+	           warn: Show summary of warning messages
+	              +: Strip hostname header inserted by dsh from output lines
+
+EOF
+exit 1
+}
+
+case $action in
+	log|logs|show)
+		jvm=${2:-*}
+		logspec=$(logspec)
+		print -u2 "A call to ${0##*/} with jvm name=${jvm:-"blank"} will find these logs for analysis"
+		 for log in $logspec; do
+			[ -f $log ] && ( [ -r $log ] && print -- "\t$log" || print -- "\t$log (unable to read as $USER)" )
+		done
+		;;
+
+	+)	echo "plus"; sed -e 's/^\([adg][dt][0-9][0-9]*[a-z]: \)\(.*\)/\2 \1/' -e 's/\(^[vw][123][0-9][0-9]*: \)\(.*\)/\2 \1/';;
+
+	all*) 
+		if [ "$minute" = "1" ]; then
+			logscan | grep "\[$wasdate" | filtermin | filtersev $sev | summary | sort | uniq -c | sort -k 3 -k 2
+		elif [ "$hour" = "1" ]; then
+			logscan | grep "\[$wasdate" | filterhour | filtersev $sev | summary | sort | uniq -c | sort -k 3 -k 2
+		elif [ "$day" = "1" ]; then
+			if [ "$byhour" = "1" ]; then 
+				logscan | grep "\[$wasdate" | filtersev $sev | byhour | sort | uniq -c | sort -k 2 -k 3 -k 5 -k 4
+			else
+				logscan | grep "\[$wasdate" | filtersev $sev | summary | sort | uniq -c | sort -k 3 -k 2
+			fi
+		elif [ "$byhour" = "1" ]; then
+			logscan | filtersev $sev | byhour | sort | uniq -c | sort -k 2 -k 3 -k 5 -k 4
+		else
+			logscan | filtersev $sev | summary |  sort | uniq -c | sort -k 3 -k 2
+		fi
+		exit
+		logscan WE | sort | uniq -c | awk -v ORS="" 'BEGIN {t=0} { t=t+$1 } END {print "#( "t" errors/warnings"}'
+		ffdc | sort | uniq -c | wc -l | awk -v ORS="" '{print $0" FFDC files"}'
+		ls -l /usr/WebSph*/AppServer/profiles/*/heap* 2>/dev/null | wc -l | awk -v ORS="" '{print $0" heapdumps"}'
+		ls -l /usr/WebSph*/AppServer/profiles/*/core* 2>/dev/null | wc -l | awk '{print $0" coredumps\t)"}'
+	;;
+
+	text)
+		logscan | awk -v ORS=" " '{ 
+			if ($0 ~ /'$msg'/) { 
+				for ( x=8;x<=NF;x++ ) { 
+					print $(x)
+				}
+				print "\n"
+			}
+		} ' | sort -u 2>/dev/null 
+	;;
+	*)
+		doUsage ;;
+
+esac
+exit

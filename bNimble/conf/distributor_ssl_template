@@ -1,0 +1,73 @@
+#####################
+# param         BNIMBLE_JAR     bNimblePublishing<version>.jar
+# param         MEM_MIN         128
+# param         MEM_MAX         512
+# param         USER            pubinst
+# param         USE_SSL         true
+# param         KEYSTORE        <full path to keystore>
+# param         TRUSTSTORE      <full path to truststore>
+#######################
+
+
+#####################
+# These parameters are replaced by rc.bNimble2 before daedalus is called
+# define PORT                   <port in the range of 6320-6329>
+# define NUM_LISTEN_THREADS     <sum of all Simultaneous-Threads + 25>
+# define DISKQUEUE_ROOT         diskqueue
+# define LOG_PATH               /logs/bNimble<version>/
+# define LOG_NAME               bNimble.log
+# define MAIN_SITE              <custtag or cstenvtag>
+#####################
+
+{
+  Name                    = daedalus
+  port                    = %PORT%
+  home                    = %LOG_PATH%%MAIN_SITE%
+  logger                  = logger
+  decode-url              = true
+  num-listen-threads      = %NUM_LISTEN_THREADS%
+  keystore                = %KEYSTORE%
+  keystore-pass           = %KEYSTOREPASS%
+  truststore              = %TRUSTSTORE%
+  truststore-pass         = %TRUSTSTOREPASS%
+  ssl                     = true
+}
+
+{
+  Name                    = logger
+  Interface               = logger
+  Log-Name                = %LOG_NAME%
+  Log-Include-Millisecs   = false
+  Log-Include-ThreadID    = true
+  Log-ThreadID-Len        = 10
+  suffix                  = yyyyMMdd
+
+  #---------------------------------------------------------------
+  # Logging level is configured below.  For any other logging
+  # level besides Log Standard
+  # the DEBUG_STANZA parameter above must be set to "true".
+  #---------------------------------------------------------------
+
+  ### To enable standard log level uncomment line below:
+  Log-Flags = TYPE_ALWAYS -TYPE_LEVEL2 -TYPE_LEVEL1 -TYPE_KEEPALIVE
+  ### To enable debug log level uncomment line below:
+  #Log-Flags = TYPE_ALWAYS -TYPE_LEVEL2 -TYPE_KEEPALIVE
+  ### To enable trace log level uncomment line below:
+  #Log-Flags = TYPE_ALWAYS
+}
+
+###################################################################
+# Main Distributor
+###################################################################
+{
+  Name                            = <label in accordance with pub standard>
+  Class                           = com.ibm.events.bnimble.plugin.distributor.Distributor
+  Site                            = <group label for this pub path>
+  Disk-Queue-Directory            = /%DISKQUEUE_ROOT%/%MAIN_SITE%/<value of Namefield above>
+  Requeue-Disk-Content            = true
+  Target-URL-List                 = <list of either endpoints or local distributors in the form of http_method://node:port/path each separated by a space>
+  Transmission-Threads-Per-Target = 10
+  Simultaneous-Threads            = 20
+  Debug                           = false
+}
+

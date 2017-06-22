@@ -1,0 +1,227 @@
+#*******************************************************************************************************
+# clusterAction.jacl
+#
+#   Author: James Walton
+#   Revision Date: 03/08/2006
+#*******************************************************************************************************
+
+proc postCreationMemberEdit {nodeName memberName vhostName cookieName serverTemplate} {
+	global AdminConfig
+	
+	# Modify the virtual host if one was specified as an argument.
+    if {[info exists vhostName]} {
+      set vhosts [$AdminConfig list VirtualHost]
+      foreach host $vhosts {
+        set vhname [lindex [lindex [$AdminConfig show $host name] 0] 1]
+        if {$vhname == $vhostName} {
+          break
+        } else {
+          set vhname ""
+        }
+      }
+      if {$vhname == ""} {
+        puts "Error: Virtual Host specified does not exist and was therefore not modified."
+        puts "Defaulted to virtual host as configured in: $serverTemplate"
+      } else {
+        set webcontainer [$AdminConfig getid /Node:$nodeName/Server:$memberName/ApplicationServer:/WebContainer:/]
+        puts [$AdminConfig modify $webcontainer "{defaultVirtualHostName $vhostName}"]
+      }
+    }
+    # Modify the session cookie if one was specified as an argument.
+    if {[info exists cookieName]} {
+	  set asCookie [$AdminConfig getid /Node:$nodeName/Server:$memberName/ApplicationServer:/WebContainer:/SessionManager:/Cookie:/]
+	  set result [$AdminConfig modify $asCookie "{name $cookieName}"]
+  	  if {$result != ""} {
+		puts "Error: modifying session cookie name failed - all other changes will be saved"
+		puts $result
+   	  }
+    }
+}
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-action"} {
+    if {[incr i] < $argc} {
+      set actionName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-cluster"} {
+    if {[incr i] < $argc} {
+      set clusterName [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-member"} {
+    if {[incr i] < $argc} {
+      set memberName [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+    } else {
+      set argerr 5
+    }
+  } elseif {$arg == "-template"} {
+    if {[incr i] < $argc} {
+      set templateName [lindex $argv $i]
+    } else {
+      set argerr 6
+    }
+  } elseif {$arg == "-vhost"} {
+    if {[incr i] < $argc} {
+      set vhostName [lindex $argv $i]
+    } else {
+      set argerr 7
+    }
+  } elseif {$arg == "-cookie"} {
+    if {[incr i] < $argc} {
+      set cookieName [lindex $argv $i]
+    } else {
+      set argerr 8
+    }
+  } else {
+    set argerr 9
+  }
+}
+
+if {[info exists actionName] && ![info exists clusterName] && $actionName != "list"} {
+  set argerr 10
+}
+if {$actionName == "add" && ![info exists clusterName] && ![info exists memberName] && ![info exists nodeName]} {
+  set argerr 11
+}
+if {[lsearch -exact "start stop list status members create add" $actionName] < 0} {
+  set argerr 12
+}
+
+if { $argerr } {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f clusterAction.jacl -action <actionName> -cluster <clusterName>"
+  puts "   wsadmin -f clusterAction.jacl -action list"
+  puts "   wsadmin -f clusterAction.jacl -action add -cluster <clusterName> -member <memberName> -node <nodeName> \[-template <templateName>\] \[-vhost <vhostName>\] \[-cookie <cookieName>\]"
+  puts "Executes the selected action on cluster <clusterName>."
+  puts "The list action requires no additional arguments as it lists all clusters in the cell."
+  puts "The add action will create a new member <memberName> on node <nodeName> in cluster <clusterName>"
+  puts "using template <templateName>, but if no template is given ei_template_all will be used by default."
+  puts "If a cluster has existing members, the template is not needed as the new member will use the cluster's default."
+  puts "Specifying a virtual host will override the default_host that the EI templates provide."
+  puts "Specifying the cookie will override the default session cookie name (JSESSIONID) that WebSphere provides."
+  puts ""
+  puts "Actions: start | stop | list | status | members | create | add"
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+
+if {$actionName == "start"} {
+  # Start entire Cluster
+  set clusterMgr [$AdminControl completeObjectName type=ClusterMgr,*]
+  $AdminControl invoke $clusterMgr retrieveClusters
+  set cluster [$AdminControl completeObjectName type=Cluster,name=$clusterName,*]
+  $AdminControl invoke $cluster start
+} elseif {$actionName == "stop"} {
+  # Stop entire Cluster
+  set cluster [$AdminControl completeObjectName type=Cluster,name=$clusterName,*]
+  $AdminControl invoke $cluster stopImmediate
+} elseif {$actionName == "list"} {
+  # Get list of AppServers
+  set clusterlist [$AdminConfig list ServerCluster]
+  foreach cluster $clusterlist {
+    set cname [lindex [split $cluster (] 0]
+    puts "$cname"
+  }
+} elseif {$actionName == "status"} {
+  # Determine cluster status
+  set cluster [$AdminControl completeObjectName type=Cluster,name=$clusterName,*]
+  set status [$AdminControl getAttribute $cluster state]
+  set cname [$AdminControl invoke $cluster getClusterName]
+  puts "$cname: $status"
+} elseif {$actionName == "members"} {
+  # Show cluster members
+  set cluster [$AdminConfig getid /ServerCluster:$clusterName/]
+  set memberList [lindex [lindex [$AdminConfig show $cluster {members}] 0] 1]
+  foreach member $memberList {
+    set mname [lindex [split $member (] 0]
+    puts "$mname"
+  }
+} elseif {$actionName == "create"} {
+  # Create New Cluster
+  set cellname [$AdminControl getCell]
+  set cellID [$AdminConfig getid /Cell:$cellname/]
+  set args "{name $clusterName}"
+  set clusterID [$AdminConfig create ServerCluster $cellID $args]
+  puts "$clusterID"
+  puts [$AdminConfig modify $clusterID "{nodeGroupName DefaultNodeGroup}"]
+  puts "Saving configuration..."
+  $AdminConfig save
+  puts "You must synchronize your changes across the cell for them to fully take effect."
+} elseif {$actionName == "add"} {
+  # Deploy Cluster Member to new Node
+  set clusterID [$AdminConfig getid /ServerCluster:$clusterName/]
+  set memberList [lindex [lindex [$AdminConfig show $clusterID {members}] 0] 1]
+  set nodeID [$AdminConfig getid /Node:$nodeName/]
+  if {$nodeID == ""} {
+  	#Possibly bad node name given (or node has e1), check list of nodes for a possible match
+  	set nodeList [$AdminConfig list Node]
+	foreach n $nodeList {
+		set nName [lindex [lindex [$AdminConfig show $n name] 0] 1]
+		if {[regexp "^$nodeName" $nName]} {
+			#Found a matching node, check if the member name has the bad name (and change it)
+			if {![regexp "^$nName" $memberName] && [regexp "^$nodeName" $memberName]} {
+				if {[regsub "^$nodeName" $memberName $nName newMember]} {
+					set memberName $newMember
+				} else {
+					puts "Node name given did not match actual node name, could not edit cluster member name to match."
+					exit
+				}
+			}
+			set nodeName $nName
+			break
+		}
+	}
+	set nodeID [$AdminConfig getid /Node:$nodeName/]
+	if {$nodeID == ""} { puts "Could not find given node ($nodeName), exiting..."; exit; }
+  }
+  set args "{memberName $memberName}"
+  if {[llength $memberList] < 1} {
+    if {[info exists templateName]} {
+      set sTemplate [$AdminConfig listTemplates Server $templateName]
+      if {[llength $sTemplate] == 0} {
+        set serverTemplate [$AdminConfig listTemplates Server ei_template_all]
+      } elseif {[llength $sTemplate] > 1} {
+        foreach template $sTemplate {
+          set tName [$AdminConfig showAttribute $template name]
+          if {$tName == $templateName} {
+            set serverTemplate $template
+          }
+        }
+      } else {
+        set serverTemplate $sTemplate
+      }
+    } else {
+      set serverTemplate [$AdminConfig listTemplates Server ei_template_all]
+    }
+    puts [$AdminConfig createClusterMember $clusterID $nodeID $args $serverTemplate]
+    postCreationMemberEdit $nodeName $memberName $vhostName $cookieName $serverTemplate
+  } else {
+    set mName [lindex [split [lindex $memberList 0] (] 0]
+    set serverTemplate [$AdminConfig getid /Server:$mName/]
+    puts [$AdminConfig createClusterMember $clusterID $nodeID $args $serverTemplate]
+    postCreationMemberEdit $nodeName $memberName $vhostName $cookieName $serverTemplate
+  }
+  puts [$AdminConfig modify $clusterID "{nodeGroupName DefaultNodeGroup}"]
+  puts "Saving configuration..."
+  $AdminConfig save
+  puts "You must synchronize your changes across the cell for them to fully take effect."
+} else {
+  puts "Invalid action specified and somehow slipped under the radar - please try again."
+}

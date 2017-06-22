@@ -1,0 +1,83 @@
+#!/bin/ksh
+#
+# The purpose of this script is for testing only
+#
+# Run this script from the statelite node itself as root
+#
+# Create the LCS configurations for WWSM statelite nodes
+
+type=${1:-""}
+shift
+
+# All types get the lcs_ctl.conf
+/fs/system/images/lcs/scripts/mklcs_ctl.sh
+
+if [ "$type" = "SWS" -o "$type" = "sws" ] ; then
+  # Unique LCS instance for shared web service (SWS)
+  while [ "$1" != "" ] ; do
+    case "$1" in
+      cmauso-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmausoe.sh ;;
+      cmauso-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmausoo.sh ;;
+      cmmast-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmaste.sh ;;
+      cmmast-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasto.sh ;;
+      cmmast-tickets)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasttkt.sh ;;
+      cmmast-tickets-ws)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasttktw.sh ;;
+      cmrolg-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmrolge.sh ;;
+      cmrolg-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmrolgo.sh ;;
+      cmtony-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmtonye.sh ;;
+      cmtony-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmtonyo.sh ;;
+      cmusga-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmusgae.sh ;;
+      cmusga-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmusgao.sh ;;
+      cmusta-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmustae.sh ;;
+      cmusta-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmustao.sh ;;
+      cmwimb-even)
+        /fs/system/images/lcs/scripts/mklcs_clientcmwimbe.sh ;;
+      cmwimb-odd)
+        /fs/system/images/lcs/scripts/mklcs_clientcmwimbo.sh ;;
+      jamext)
+        /fs/system/images/lcs/scripts/mklcs_clientjamext.sh ;;
+      p1.cmmast-tickets_email)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasttkte1.sh ;;
+      p2.cmmast-tickets_email)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasttkte2.sh ;;
+      p3.cmmast-tickets_email)
+        /fs/system/images/lcs/scripts/mklcs_clientcmmasttkte3.sh ;;
+      uwwc)
+        /fs/system/images/lcs/scripts/mklcs_clientuwwc.sh ;;
+      cmcnop)
+        /fs/system/images/lcs/scripts/mklcs_clientcmcnop.sh ;;
+      cmdcap)
+        /fs/system/images/lcs/scripts/mklcs_clientcmdcap.sh ;;
+      *)
+        echo "$0: Unknown eventid '$eventid'"
+        exit 1
+    esac
+    shift
+  done
+else
+  # Assuming old style Event setup
+  /fs/system/images/lcs/scripts/mklcs_clienthsrv.sh
+  /fs/system/images/lcs/scripts/mklcs_clientweo.sh
+fi
+
+# Reset LCS default log directory ownership
+dir="/var/log/lcs"
+if [ -d "$dir" ] ; then
+  chown 0:0 /var/log/lcs
+fi
+
+exit 0

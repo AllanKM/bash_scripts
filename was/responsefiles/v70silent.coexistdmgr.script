@@ -1,0 +1,17 @@
+-OPT silentInstallLicenseAcceptance="true"
+-OPT disableOSPrereqChecking="true"
+-OPT installType="installNew"
+-OPT feature="noFeature"
+-OPT installLocation="/usr/WebSphere70/AppServer"
+-OPT profileType="management"
+-OPT PROF_serverType="DEPLOYMENT_MANAGER"
+-OPT PROF_enableAdminSecurity="false"
+-OPT PROF_profileName=<profilename>
+-OPT PROF_profilePath=/usr/WebSphere70/AppServer/profiles/<profilename>
+-OPT PROF_isDefault="true"
+-OPT PROF_hostName=<profilename>
+-OPT PROF_nodeName=<profilename>
+-OPT PROF_cellName=<cellname>
+-OPT PROF_defaultPorts="false"
+-OPT PROF_validatePorts="true"
+-OPT PROF_portsFile=/lfs/system/tools/was/conf/v70ports.dmgr.prop

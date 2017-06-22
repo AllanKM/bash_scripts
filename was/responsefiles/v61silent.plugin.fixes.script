@@ -1,0 +1,52 @@
+################################################################################
+#
+# This is the silent install response file for installing maintenance packages
+# using the update installer.
+#
+# A common use of an options file is to run the wizard in silent mode. This lets
+# the options file author specify wizard settings without having to run the
+# wizard in graphical or console mode. To use this options file for silent mode
+# execution, *uncomment* and modify the parameters defined within.
+#
+# Use the following command line when running the wizard from the update
+# installer directory:
+#
+#    update -options responsefiles/install.txt -silent
+#
+# Please enclose all values within a single pair of double quotes.
+#
+################################################################################
+
+
+################################################################################
+#
+# Used to input the maintenance package full filename specification to be installed.
+# Edit as appropriate.
+#
+# ie. -W maintenance.package="C:\Program Files\IBM\WebSphere\AppServer\updateinstaller\maintenance\PQ20029.pak"
+#
+# Note: If no package is specified, a default of the last downloaded maintenance
+# package will be used (based on timestamp).
+#
+-W maintenance.package="package/dir/goes/here"
+
+
+################################################################################
+#
+# Used to input the product install location that will be updated.
+#
+# ie. -W product.location="C:\Program Files\IBM\WebSphere\AppServer"
+#
+# Note: The product install location should always been specified, and it should
+# always be the full path.
+#
+-W product.location="base/product/path/here"
+
+
+
+################################################################################
+#
+# Do not edit these values.
+#
+#
+-W update.type="install"

@@ -1,0 +1,658 @@
+#!/usr/bin/perl
+#
+# CommandExit example for taking hourly-based Akamai cache filename
+# and moving it to a relative dated subdirectory (example: %Y/%m/%d)
+# Strip the LCS NODE from the transferred filename (this removes all but
+# the rightmost 3 decimal-based fields or 4 fields if "compressed")
+# Success/Failure logged to stdout and syslog (daemon.notice)
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Set defaults
+my $mvcmd = "mv";
+my $datedir = "%Y/%m/%d";
+my $dflttype = "bz2";
+
+# Obtain arguments
+my $rc = &main::GetOptions(
+  # Script options
+  'b|nobzip2',
+  'c|nocompress',
+  'd|datedirectory:s',
+  'l|nosyslog',
+  's|nostrip',
+  't|type:s',
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+# Set known compression types and determine compression capabilities
+my %zdata = (
+  "type2ext" => {   # Translation of type to extension
+    "F" => "F",
+    "Z" => "Z",
+    "bz2" => "bz2",
+    "bzip" => "bz2",
+    "bzip2" => "bz2",
+    "compress" => "Z",
+    "gz" => "gz",
+    "gzip" => "gz",
+    "lz" => "lz",
+    "lzip" => "lz",
+    "lzma" => "lzma",
+    "lzo" => "lzo",
+    "lzop" => "lzo",
+    "pbzip" => "bz2",
+    "pbzip2" => "bz2",
+    "plzip" => "lz",
+    "rz" => "rz",
+    "tbz2" => "tbz2",
+    "tgz" => "tgz",
+    "tlz" => "tlz",
+    "tlzma" => "tlzma",
+    "tlzo" => "tlzo",
+    "txz" => "txz",
+    "uncompress" => "Z",
+    "xz" => "xz",
+    "z" => "z",
+    "zip" => "zip",
+    "zoo" => "zoo",
+    "zz" => "zz",
+    "zzip" => "zz",
+  },
+  "ext" => {        # Known compress extensions
+    "F" => 0,
+    "Z" => 1,
+    "bz2" => 1,
+    "gz" => 1,
+    "lz" => 1,
+    "lzma" => 1,
+    "lzo" => 1,
+    "tbz2" => 1,
+    "tgz" => 1,
+    "tlz" => 1,
+    "tlzma" => 1,
+    "tlzo" => 1,
+    "txz" => 1,
+    "xz" => 1,
+    "z" => 0,
+    "zip" => 0,
+    "zoo" => 0,
+    "zz" => 0,
+  },
+);
+if (isexec("compress") && isexec("uncompress")) {
+  %{$zdata{meth}{"Z"}} = (
+    "multiple" => 0,                    # concatenate compressed files
+    "ccmd" => "compress",               # compress command
+    "cargs" => "",                      # arguments to compress file
+    "ucmd" => "uncompress",             # uncompress command
+    "uargs" => "-c",                    # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("gzip")) {
+  %{$zdata{meth}{"gz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tgz",                  # special tar extension
+    "ccmd" => "gzip",                   # gzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "gzip",                   # gzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tgz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tgz",                  # special tar extension
+    "ccmd" => "gzip",                   # gzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "gzip",                   # gzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  $zdata{meth}{"Z"}{"multiple"} = 0;     # concatenate compressed files
+  $zdata{meth}{"Z"}{"ucmd"} = "gzip";    # gzip can uncompress .Z files
+  $zdata{meth}{"Z"}{"uargs"} = "-d -c "; # arguments assume uncompress
+}                                       #  from a file and sent to a pipe
+if (isexec("bzip2")) {
+  %{$zdata{meth}{"bz2"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tbz2",                 # special tar extension
+    "ccmd" => "bzip2",                  # bzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "bzip2",                  # bzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tbz2"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tbz2",                 # special tar extension
+    "ccmd" => "bzip2",                  # bzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "bzip2",                  # bzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("pbzip2")) {
+  %{$zdata{meth}{"bz2"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tbz2",                 # special tar extension
+    "ccmd" => "pbzip2",                 # pbzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "pbzip2",                 # pbzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tbz2"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tbz2",                 # special tar extension
+    "ccmd" => "pbzip2",                 # pbzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "pbzip2",                 # pbzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("lzip")) {
+  %{$zdata{meth}{"lz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tlz",                  # special tar extension
+    "ccmd" => "lzip",                   # lzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "lzip",                   # lzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tlz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tlz",                  # special tar extension
+    "ccmd" => "lzip",                   # lzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "lzip",                   # lzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("lzma")) {
+  %{$zdata{meth}{"lzma"}} = (
+    "multiple" => 0,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tlzma",                # special tar extension
+    "ccmd" => "lzma",                   # lzma compress command
+    "cargs" => "-7",                    # arguments to compress file
+    "ucmd" => "lzma",                   # lzma uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tlzma"}} = (
+    "multiple" => 0,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tlzma",                # special tar extension
+    "ccmd" => "lzma",                   # lzma compress command
+    "cargs" => "-7",                    # arguments to compress file
+    "ucmd" => "lzma",                   # lzma uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("lzop")) {
+  %{$zdata{meth}{"lzo"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tlzma",                # special tar extension
+    "ccmd" => "lzop",                   # lzop compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "lzop",                   # lzop uncompress command
+    "uargs" => "-d -c -q",              # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"tlzo"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "tlzo",                 # special tar extension
+    "ccmd" => "lzop",                   # lzop compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "lzop",                   # lzop uncompress command
+    "uargs" => "-d -c -q",              # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+if (isexec("xz")) {
+  %{$zdata{meth}{"xz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 0,                         # special tar extension in use
+    "tarext" => "tlzo",                 # special tar extension
+    "ccmd" => "xz",                     # xz compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "xz",                     # xz uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+  %{$zdata{meth}{"txz"}} = (
+    "multiple" => 1,                    # concatenate compressed files
+    "tar" => 1,                         # special tar extension in use
+    "tarext" => "txz",                  # special tar extension
+    "ccmd" => "xz",                     # xz compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "xz",                     # xz uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  );                                    #  a file and sent to a pipe
+}
+
+# Validate options
+my $type = $dflttype;
+$type = $zdata{type2ext}{$type}
+  if (defined $zdata{type2ext} &&
+      defined $zdata{type2ext}{$type});
+if ($main::opt_t) {
+  if (defined $zdata{type2ext} &&
+      defined $zdata{type2ext}{$main::opt_t}) {
+    $type = $zdata{type2ext}{$main::opt_t};
+  } else {
+    logit($mysname,2,"Unknown compression type '$main::opt_t'");
+    exit 1;
+  }
+}
+
+# Revert to gzip if -b specified and trying to use bzip2 
+if ($main::opt_b) {
+  if ($type eq "bz2") {
+    # Flip type back to gzip
+    if (defined $zdata{type2ext} &&
+        defined $zdata{type2ext}{"gz"}) {
+      $type = $zdata{type2ext}{"gz"};
+    } else {
+      logit($mysname,2,"Unable to use gzip instead of bzip2");
+      exit 1;
+    }
+  }
+}
+
+# Make sure datedir is not fully-qualified
+#  Should be relative for easier moving, if not crossing filesystems
+#    Assuming no symlinks of one of these subdirs to another filesystem
+if ($main::opt_d) {
+  if ($main::opt_d !~ /^\//) {
+    $datedir = $main::opt_d;
+  }
+}
+
+# Loop on filenames to process
+my $mycwd = getcwd;
+my $file;
+foreach $file (@ARGV) {
+
+  next if (! -e $file);
+
+  # Fully qualify pathname of file
+  $file = "$mycwd/$file" if ($file !~ /^\//);
+  $file =~ s%\/\/%/%g;
+
+  # Determine basename and dirname
+  my $base = $file;
+  $base =~ s%^.*/%%;
+  my $dir = $file;
+  $dir =~ s%\/$base$%%;
+  if (! -d $dir) {
+    logit($mysname,2,"Base directory \'%s\' not found for file \'$file\'",
+          $dir,$file);
+    next;
+  }
+  
+  # Obtain ownership/permissions of main directory
+  my($uid,$gid,$mode) = (stat($dir))[4,5,2];
+  
+  # Parse file name (or mtime) for date-based subdirectory timestamp and
+  # strip NODE from $base (rightmost 3 decimal-based fields or 4 fields
+  # if "compressed")
+  # Assumes Akamai format of NODE.LOGNAME.FORMAT.YYYYmmddHHMM-HHMM-INSTANCE.gz
+  # NODE may/may not be a fully-qualified hostname
+  my @b = split(/\./,$base);
+  my $nocompressflg = 0;
+  $nocompressflg = 1 if ($b[$#b] =~ /^\d+$/);
+  $base = join('.',(@b)[(($#b+$nocompressflg-3)..$#b)]) if (! $main::opt_s);
+  my ($year,$mon,$mday,$hour,$min,$endhour,$endmin,$instance) =
+       ((@b)[$#b+$nocompressflg-1] =~
+          m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)\-(\d\d)(\d\d)\-(\d+)/);
+  my $ts;
+  # Rudimentary check of parsed value
+  if ($year =~ /^\d\d\d\d$/ && $mon =~ /^\d+$/ && $mday =~ /^\d+$/ &&
+      $hour =~ /^\d+$/ && $min =~ /^\d+$/) {
+    my $sec = 0;
+    $ts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+  } else {
+    # Use file mtime as time stamp
+    $ts = (stat($file))[9];
+  }
+
+  # Create date-based subdirectory
+  my $destdir = "$dir/$datedir";
+  $destdir = POSIX::strftime($destdir, localtime($ts));
+  mkdirs($destdir,$uid,$gid,$mode);
+
+  # Move the file to the dated directory
+  my $rc = 0;
+
+  my ($rcode,$rsrcext,$rsrcsize,$rtime,
+      $rdstext,$rdstsize,$rdstfile,$rmsg,$rpct) =
+     (0,"",0,0,$type,0,"","Failed - No compression attempt made",0);
+  if (-d $destdir) {
+    rename($file,"$destdir/$base") ||
+      system($mvcmd,$file,"$destdir/$base");
+    $rc = $? >> 8;
+    if ($rc != 0) {
+      logit($mysname,2,"Unable to rename \'$file\' to \'$destdir/$base\'");
+    } else {
+      # Compress the file, unless the -c option is specified
+      if (! defined $main::opt_c) {
+        ($rcode,$rsrcext,$rsrcsize,$rtime,
+         $rdstext,$rdstsize,$rdstfile,$rmsg,$rpct) =
+          compress("$destdir/$base",\%zdata,$type,0,0);
+        if ($rcode != 1) {
+          logit($mysname,2,"Unable to compress \'$destdir/$base\'");
+        }
+      }
+    }
+  } else {
+    logit($mysname,2,"Unable to create date directory \'$destdir\'");
+  }
+
+  # Log success/failure to syslog
+  my $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " Move: $file \=\> $destdir/$base";
+  if ($rc == 0) {
+    $out .= " succeeded";
+  } else {
+    $out .= " failed";
+  }
+  $out .= " Compress: $rmsg ($rcode) - $destdir/$base";
+  $out .= " ($rsrcext)" if ($rsrcext ne "");
+  $out .= " size $rsrcsize byte" . ($rsrcsize != 1 ? "s" : "");
+  if ($rdstfile ne "") {
+    $out .= " to $rdstfile";
+    $out .= " ($rdstext)" if ($rdstext ne "");
+    $out .= " size $rdstsize byte" . ($rdstsize != 1 ? "s" : "");
+    $out .= " in $rtime second" . ($rtime != 1 ? "s" : "");
+    if ($rpct > 0) {
+      $out .= " increased " . $rpct;
+    } else {
+      $out .= " reduced " . abs($rpct);
+    }
+    $out .= " percent";
+  }
+  if ($main::opt_l) {
+    logit($mysname,1,$out);
+  } else {
+    logit($mysname,9,"daemon","notice",$out);
+  }
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-b][-c][-d datedir][-l][-s][-t type] filename [filename ...]\n",
+        "  where: filename - full path to log file\n",
+        "         datedir  - date subdirectory format (default: %Y/%m/%d)\n",
+        "         type     - type of compression (default: $dflttype)\n",
+        "         -b       - do not (re)compress the log file to bzip2\n",
+        "         -c       - do not compress the log file\n",
+        "         -l       - do not log to syslog\n",
+        "         -s       - do not strip LCS NODE from destination file\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      syslog($priority,$format,@myargs);
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        syslog($priority,$format,@myargs);
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+  return if ($dir !~ /^\//);
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+sub isexec {
+  my ($file, @vpaths) = @_;
+  my $ps = ':';
+
+  @vpaths = ($ENV{PATH}) if (! @vpaths);
+
+  my @paths = (split($ps,join($ps,@vpaths)));
+
+  my $found = "";
+  foreach my $d (@paths) {
+    my $f = "$d/$file";
+    if (-x $f && ! -d $f) {
+      $found = $f;
+      last;
+    }
+  }
+
+  if ($found ne "") {
+    return $found;
+  } else {
+    return undef;
+  }
+}
+
+sub compress {
+  my ($file,$zhshref,$dsttype,$verbose,$debug) = @_;
+  my %zhsh = %$zhshref;
+  my $dstext = "";
+  my ($taradd,$tardel) = ("","");
+  my ($rcode,$rsrcext,$rsrcsize,$rtime,$rdstext,
+      $rdstsize,$rdstfile,$rmsg,$rpct) = (0,"",0,0,"",0,"","",100);
+  my $cmd = "";
+
+  if (-f $file) {
+    my ($uid,$gid,$mode) = (0,0,0);
+    ($uid,$gid,$mode,$rsrcsize) =
+       (stat($file))[$[+4,$[+5,$[+2,$[+7];
+    my $srcext = $file;
+    $srcext =~ s%^.*\.%%;
+    $rsrcext = $srcext;
+    if (defined $zhsh{type2ext} &&
+        defined $zhsh{type2ext}{$dsttype}) {
+      $dstext = $zhsh{type2ext}{$dsttype};
+    } else {
+      $dstext = $dsttype;
+    }
+    if ($srcext ne "" &&
+        defined $zhsh{meth}{$srcext} &&
+        defined $zhsh{meth}{$srcext}{tar} &&
+        $zhsh{meth}{$srcext}{tar} > 0) {
+      # Using special tar extension for source file
+      if (defined $zhsh{meth}{$dstext} &&
+          defined $zhsh{meth}{$dstext}{tar} &&
+          defined $zhsh{meth}{$dstext}{tarext}) {
+        # Use special tar extension for destination file
+        $dstext = $zhsh{meth}{$dstext}{tarext};
+      } else {
+        # Will also add tar extension for destination file
+        $taradd = "tar";
+      }
+    } elsif ($dstext ne "" &&
+             defined $zhsh{meth}{$dstext} &&
+             defined $zhsh{meth}{$dstext}{tar} &&
+             $zhsh{meth}{$dstext}{tar} > 0) {
+      # Using special tar extension for destination file
+      # Will strip tar extension from source to destination file
+      $tardel = "tar";
+    }
+    if ($file !~ /\.$dstext$/) {
+      my $dstfile = $file;
+      $dstfile =~ s%\.$srcext$%%;
+      $dstfile =~ s%\.$tardel$%% if ($tardel);
+      $dstfile .= ".$taradd" if ($taradd);
+      $dstfile .= ".$dstext";
+      $rdstfile = $dstfile;
+      $rdstext = "$taradd." if ($taradd);
+      $rdstext .= "$dstext";
+      if (! -f $dstfile) {
+        if ($srcext ne "") {
+          if (defined $zhsh{meth}{$srcext} &&
+              defined $zhsh{meth}{$srcext}{ucmd} &&
+              defined $zhsh{meth}{$srcext}{uargs}) {
+            $cmd = "$zhsh{meth}{$srcext}{ucmd}".
+                   " $zhsh{meth}{$srcext}{uargs} < $file";
+          } elsif (defined $zhsh{ext} &&
+                   defined $zhsh{ext}{$srcext}) {
+            # Looks compressed, but unsupported
+            $rmsg = "Unsupported compression type ($srcext)";
+          } else {
+            # Unrecognized extension... assuming uncompressed
+            $rsrcext = "",
+            $cmd = "cat $file";
+          }
+          if ($cmd ne "" &&
+              defined $zhsh{meth}{$dstext} &&
+              defined $zhsh{meth}{$dstext}{ccmd} &&
+              defined $zhsh{meth}{$dstext}{cargs}) {
+            $cmd .= " 2>/dev/null".
+                    " | $zhsh{meth}{$dstext}{ccmd}".
+                    " $zhsh{meth}{$dstext}{cargs} > $dstfile";
+            my $btime = time();
+            if ($debug == 0) {
+              system($cmd);
+              my $rc = $? >> 8;     # Exit code from system call
+              $rtime = abs(time() - $btime);
+              if ($rc == 0) {
+                # Success
+                if (-f $dstfile && -s $dstfile) {
+                  chown($uid,$gid,$dstfile);
+                  chmod($mode,$dstfile);
+                  unlink($file);
+                  $rcode = 1;
+                  $rmsg = "Succeeded";
+                  ($rdstsize) = (stat($dstfile))[$[+7];
+                  $rpct = int((($rdstsize - $rsrcsize) / $rsrcsize) * 100)
+                    if ($rsrcsize > 0);
+                } else {
+                  $rmsg = "Failed - Removed invalid destination file";
+                  unlink($dstfile);
+                }
+              } else {
+                $rmsg = "Failed";
+              }
+            } else {
+              print "DEBUG: Would run: $cmd\n";
+              $rmsg = "DEBUG - Command to run: $cmd";
+            }
+          } else {
+            $rmsg = "Failed - Unable to compress";
+          }
+        }
+      } else {
+        $rmsg = "Failed - Unable to overwrite destination file";
+      }
+    } else {
+      # Already compressed the way we want
+      $rcode = 1;
+      $rmsg = "Succeeded - File already compressed";
+    }
+  } else {
+    $rmsg = "Failed - Source file does not exist";
+  }
+
+  if (wantarray) {
+    return ($rcode,$rsrcext,$rsrcsize,$rtime,
+            $rdstext,$rdstsize,$rdstfile,$rmsg,$rpct);
+  } else {
+    return $rcode;
+  }
+}
+
+print "$main::running_under_some_shell\n";
+print "$main::opt_b\n";
+print "$main::opt_c\n";
+print "$main::opt_d\n";
+print "$main::opt_l\n";
+print "$main::opt_s\n";
+print "$main::opt_t\n";

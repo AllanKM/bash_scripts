@@ -1,0 +1,83 @@
+#!/bin/ksh
+
+#  This script:
+#        - Checks to see if rewuested userid and group exist, 
+#            creating as necessary
+#        - Sets appropriate perms on site_tag directorys
+#
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 3 ]; then
+  CONFIG=$1
+  PUBUSER_ID=$2
+  USER_GROUP=$3
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event"
+  echo "   Format is <Configuration File> <Pub User ID> <User Group>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   CONFIG, PUBUSER_ID, and USER_GROUP were"
+  echo "   not added to configuration script for this event."
+  echo "   Format is <Configuration File> <Pub User ID> <User Group>"
+  echo ""
+  exit 1
+fi
+
+echo "Checking to see if requested configuration file exist"
+if [ ! -f /lfs/system/tools/ihs/conf/$CONFIG ]; then
+  echo "$CONFIG file does not exist"
+  exit 2
+fi
+ 
+echo "Checking existance of $USER_GROUP group creating it as needed"
+lsgroup $USER_GROUP > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    /fs/system/tools/auth/bin/mkeigroup -r local -f $USER_GROUP
+fi
+
+echo "Checking existance of $PUBUSER_ID user creating it as needed"
+id $USER_ID > /dev/null 2>&1
+if [  $? -ne 0 ]; then
+    /fs/system/tools/auth/bin/mkeiuser  -r local -f $PUBUSER_ID $USER_GROUP
+fi
+
+echo "Changing ownership and perms of site_tag dirs"
+{ while read MYLINE; do
+    SITE_TAG=${MYLINE%\:*}
+    LONG_NAME=${MYLINE#*\:}
+    echo "   Acting on site_tag $SITE_TAG and long name $LONG_NAME"
+    if [ ! -d /projects/$SITE_TAG -o ! -L /projects/$LONG_NAME ]; then
+      echo "     One or both of these is missing, skipping"
+    else
+      chown root.eiadm /projects/$SITE_TAG
+      chmod 775 /projects/$SITE_TAG
+
+      chown -R root.eiadm /projects/$SITE_TAG/cgi-bin /projects/$SITE_TAG/fcgi-bin
+      find /projects/$SITE_TAG/cgi-bin -type d -exec chmod 775 {} \;
+      find /projects/$SITE_TAG/fcgi-bin -type d -exec chmod 775 {} \;
+
+      chown -R ${PUBUSER_ID}.${USER_GROUP} /projects/$SITE_TAG/content /projects/$SITE_TAG/data /projects/$SITE_TAG/etc
+      
+      find /projects/$SITE_TAG/content -type d -exec chmod 755 {} \;
+      find /projects/$SITE_TAG/content -type f -exec chmod 644 {} \;
+
+      find /projects/$SITE_TAG/data -type d -exec chmod 755 {} \;
+      find /projects/$SITE_TAG/data -type f -exec chmod 644 {} \;
+
+      chmod 750 /projects/$SITE_TAG/etc
+
+      if [ `ls -l /projects/$SITE_TAG/etc | grep -v "total 0" | wc -l` -gt 0 ]; then
+        find /projects/$SITE_TAG/etc/* -type d -exec chmod 755 {} \;
+        find /projects/$SITE_TAG/etc/* -type f -exec chmod 644 {} \;
+        find /projects/$SITE_TAG/etc/* \( -name '*.jks' -o -name '*.kdb' -o -name '*.sth' \) -exec chown root.$USER_GROUP {} \;
+        find /projects/$SITE_TAG/etc/* \( -name '*.jks' -o -name '*.kdb' -o -name '*.sth' \) -exec chmod 640 {} \;
+      fi
+    fi
+  done } < /lfs/system/tools/ihs/conf/$CONFIG

@@ -1,0 +1,23 @@
+#!/bin/ksh
+
+if [[ $# -eq 0 ]]
+  then
+    print "Usage: $(basename $0) DBName [args...]"
+    exit -1
+fi
+
+DB="$1"
+shift 1
+
+if [[ ! -d $HOME/repl ]]
+  then
+    mkdir $HOME/repl
+fi
+cd $HOME/repl
+if [[ $? -ne 0 ]]
+  then
+    print "Error: couldn't cd to $HOME/repl"
+    exit 1
+fi
+
+asnccp $DB $* >/tmp/$DB.capture.log 2>&1 &

@@ -1,0 +1,52 @@
+#!/bin/bash
+
+OIFS=$IFS
+IFS=":"
+
+usage() {
+  echo "USAGE: ${0##*/} -w <host>"
+  echo
+  echo "OPTIONS:"
+  echo "  -w <host>     :  hostname to get user list from"
+  echo "  -u <user>     :  user to connect as"
+  echo
+  exit 1
+}
+
+while getopts u:w: opt; do
+  case $opt in
+  w)
+    TARGHOST=$OPTARG
+    ;;
+  
+  u)
+    USER=$OPTARG
+    ;;
+  
+  *)
+    usage
+    ;;
+  esac
+done
+
+[[ -z $TARGHOST ]] && usage
+[[ -z $USER ]] && USER=$(whoami)
+
+for type in WebUI Messaging
+do
+  ssh -l $USER $TARGHOST imaserver user list "Type=$type"|while read tag value
+  do
+    if [[ $tag == "" ]] ; then
+      echo "$user,$type,$description,$group"
+    elif [[ $tag == "UserID" ]] ; then
+      user=$(echo $value|sed 's/^ *//')
+    elif [[ $tag == "Description" ]] ; then
+      description=$(echo $value|sed 's/^ *//')
+    elif [[ $tag == "Group Membership" ]] ; then
+      group=$(echo $value|sed 's/^ *//')
+    fi
+  done
+done
+
+IFS=$OIFS
+

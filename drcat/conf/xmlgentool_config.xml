@@ -1,0 +1,81 @@
+<ProdList>
+    <Prod name="WAS">
+      <StartSequence>2</StartSequence>
+      <StopSequence>2</StopSequence>
+      <StartCommand>/lfs/system/bin/rc.was start $appname$</StartCommand>
+      <StopCommand> /lfs/system/bin/rc.was stop $appname$</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_was.sh $appname$</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/tools/configtools/countprocs.sh 1 WebSphere</VerifyStopCommand>
+      <AppSequence>
+        <App name="default">
+          <StartSequence>3</StartSequence>
+          <StopSequence>1</StopSequence>          
+        </App>
+        <App name="nodeagent">
+          <StartSequence>1</StartSequence>
+          <StopSequence>3</StopSequence>          
+        </App>
+        <App name="m2m">
+          <StartSequence>2</StartSequence>
+          <StopSequence>2</StopSequence>          
+        </App>
+      </AppSequence>
+    </Prod>
+    <Prod name="IHS">
+      <StartSequence>1</StartSequence>
+      <StopSequence>4</StopSequence>
+      <StartCommand>export SUDO_USER=root;/lfs/system/bin/rc.ihs start</StartCommand>
+      <StopCommand>export SUDO_USER=root;/lfs/system/bin/rc.ihs stop</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_ihs.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/tools/configtools/countprocs.sh 2 httpd</VerifyStopCommand>
+    </Prod>
+    <Prod name="ITM">
+      <StartSequence>-1</StartSequence>
+      <StopSequence>1</StopSequence>
+      <StartCommand>/etc/rc.itm start all</StartCommand>
+      <StopCommand>/etc/rc.itm stop all</StopCommand>
+      <VerifyStartCommand>ps -ef | grep -i agent</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/tools/configtools/countprocs.sh 1 kynagent</VerifyStopCommand>
+    </Prod>
+    <Prod name="LCS">
+      <StartSequence>6</StartSequence>
+      <StopSequence>3</StopSequence>
+      <StartCommand>/opt/HPODS/LCS/bin/rc.lcs_client start</StartCommand>
+      <StopCommand>/opt/HPODS/LCS/bin/rc.lcs_client stop</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_lcs.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/bin/check_lcs.sh</VerifyStopCommand>
+    </Prod>
+    <Prod name="bNimble">
+      <StartSequence>3</StartSequence>
+      <StopSequence>5</StopSequence>
+      <StartCommand>/lfs/system/bin/rc.bNimble start $configfile$</StartCommand>
+      <StopCommand>/lfs/system/bin/rc.bNimble stop $configfile$</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_bNimble.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/bin/check_bNimble.sh</VerifyStopCommand>
+    </Prod>            
+    <Prod name="SPONG">
+      <StartSequence>4</StartSequence>
+      <StopSequence>3</StopSequence>
+      <StartCommand>/etc/rc.spong start</StartCommand>
+      <StopCommand>/etc/rc.spong stop</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_spong.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/bin/check_spong.sh</VerifyStopCommand>
+    </Prod>
+    <Prod name="MQ">
+      <StartSequence>2</StartSequence>
+      <StopSequence>2</StopSequence>
+      <StartCommand>/lfs/system/bin/rc.mq start all</StartCommand>
+      <StopCommand>/lfs/system/bin/rc.mq stop all</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_mq.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/bin/check_mq.sh</VerifyStopCommand>
+    </Prod>    
+    <Prod name="WBIMB">
+      <StartSequence>2</StartSequence>
+      <StopSequence>2</StopSequence>
+      <StartCommand>/lfs/system/bin/rc.wbimb start</StartCommand>
+      <StopCommand>/lfs/system/bin/rc.wbimb stop</StopCommand>
+      <VerifyStartCommand>/lfs/system/bin/check_wbimb.sh</VerifyStartCommand>
+      <VerifyStopCommand>/lfs/system/bin/check_wbimb.sh</VerifyStopCommand>
+    </Prod>
+
+</ProdList>

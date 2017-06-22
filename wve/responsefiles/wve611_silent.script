@@ -1,0 +1,197 @@
+################################################################################
+#
+# V6.1 InstallShield Options File
+#
+# Wizard name: Install
+# Wizard source: setup.jar
+#
+# This file can be used to configure Install with the options specified below
+# when the wizard is run with the "-options" command line option. Read each
+# setting's documentation for information on how to change its value.
+# Please enclose all values within a single pair of double quotes.
+# 
+# A common use of an options file is to run the wizard in silent mode. This lets
+# the options file author specify wizard settings without having to run the
+# wizard in graphical or console mode. To use this options file for silent mode
+# execution, use the following command line arguments when running the wizard:
+# 
+#    -options "D:\installImage\XD\xdsetup.response" -silent
+#
+################################################################################
+
+#################################################################################
+#
+# License Acceptance
+#
+# Valid Values:
+#	true - Accepts the license. Will install the product.
+#	false - Declines the license. Install will not occur.  
+#
+# If no install occurs, this will be logged to a temporary log file in the 
+# user's temporary directory.
+#
+# By changing the silentInstallLicenseAcceptance property in this response file 
+# to "true", you agree that you have reviewed and agree to the terms of the 
+# IBM International Program License Agreement accompanying this program, which is 
+# located at CD_ROOT\XD\xd.common.dir.pak\repository\legal.xd\license.xd.  If you do not agree 
+# to these terms, do not change the value or otherwise download, install, copy, access, 
+# or use the program and promptly return the program and proof of entitlement to 
+# the party from whom you acquired it to obtain a refund of the amount you paid.
+#
+# 
+-OPT silentInstallLicenseAcceptance="true"
+
+################################################################################
+# Operating System Prerequisite Checking
+#
+# If you want to disable operating system prerequisite checking, uncomment
+# the following line. This will notify the installer to continue with
+# the installation and log the warnings even though the prerequisite checking
+# has failed.
+#
+-OPT disableOSPrereqChecking="true"
+
+################################################################################
+# Non-blocking Prerequisite Checking
+#
+# If you want to disable non-blocking prerequisite checking, uncomment
+# the following line. This will notify the installer to continue with
+# the installation and log the warnings even though the prerequisite checking
+# has failed.
+#
+#-OPT disableNonBlockingPrereqChecking="true"
+
+
+
+################################################################################
+#
+# Install Location
+#
+# The install location of the product. Specify a valid directory into which the
+# product should be installed. If the directory contains spaces, enclose it in
+# double-quotes as shown in the Windows example below. Note that spaces in the
+# install location is only supported on Windows operating systems. Maximum path 
+# length is 60 characters for Windows.
+# 
+# Below is the list of default install locations for each supported operating
+# system when you're installing as a root user.  By default, in this response file, 
+# the Windows install location is used.  If you want to use the default install 
+# location for another operating system, uncomment the appropriate default install 
+# location entry (by removing '#') and then comment out (by adding '#') the 
+# Windows operating system entry below.
+#
+# AIX Default Install Location:
+#
+-OPT installLocation="/usr/WebSphere61/AppServer"
+#
+# HP-UX, Solaris or Linux Default Install Location:
+#
+#  -OPT installLocation="/opt/IBM/WebSphere/XD"	
+#
+#
+# Windows Default Install Location:
+#
+
+#-OPT installLocation="C:\Program Files\IBM\WebSphere\XD"
+
+# If you are installing as non-root user on Unix or non-administrator on Windows, 
+# the following default install locations are suggested. Be sure you have write 
+# permission for the install location chosen.
+# 
+# AIX Default Install Location:
+#
+#  -OPT installLocation="<user's home>/IBM/WebSphere/XD"
+#
+# HP-UX, Solaris or Linux Default Install Location:
+#
+#  -OPT installLocation="<user's home>/IBM/WebSphere/XD"
+#
+# Windows Default Install Location: 
+#
+# -OPT installLocation="C:\IBM\WebSphere\XD"
+
+
+
+################################################################################
+#  Profile list for augmentation
+#
+# Specify which of the existing profiles you wish to augment or comment the
+# line to augment every existing profiles detected by the intallation.
+#
+# To specify multiple profiles, use comma to separate different profile names. For
+# example, "AppSrv01,Dmgr01,Custom01". The list must not contain any spaces.
+#
+-OPT profileAugmentList=""
+
+
+################################################################################
+#
+# Centralized Installation Manager Repository Location
+#
+# The location of the Centralized Installation Manager repository.  The Centralized
+# Installation Manager installs WebSphere Extended Deployment packages from its
+# repository, which is located on the deployment manager, to the nodes.
+# 
+# There are two parameters for this option: installCimgrRepository and cimgrInstallLocation.
+# installCimgrRepository must equal "true" to install the repository. 
+# Leave this parameter commented out if you would not like to install the repository.
+# If this is the first time that the repository is being installed, you must also set
+# the cimgrInstallLocation parameter. Otherwise, cimgrInstallLocation cannot be set. 
+# In this case, the repository will be installed to the existing repository location.
+#
+# Specify a valid directory into which the repository should be installed. 
+# If the directory contains spaces, enclose it in double-quotes. Note that including 
+# spaces in the repository location is supported on Windows operating systems only. 
+# The Maximum path length is 60 characters for Windows.
+# 
+# Below is the list of default repository locations for each supported operating
+# system.  By default, both the installCimgrRepository and cimgrInstallLocation 
+# options are commented out.  
+#
+# 
+-OPT installCimgrRepository="true"
+#
+# AIX, HP-UX, Solaris or Linux Default Repository Location:
+#
+#-OPT cimgrInstallLocation="/usr/WebSphere61/AppServer/cimgr"
+#
+# Windows Default Repository Location: 
+#
+# -OPT cimgrInstallLocation="<install location>\cimgr"
+
+
+
+################################################################################
+# Tracing Control
+#
+# The trace output format can be controlled via the option 
+# -OPT traceFormat=ALL 
+#
+# The choices for the format are 'text' and 'XML'. By default, both formats will be produced, in two different trace files. 
+#
+# If only one format is required, use the traceFormat option to specify which one, as follows:
+#
+# Valid Values:
+#	text -	Lines in the trace file will be in a plain text format for easy readability. 
+#	XML -	Lines in the trace file will be in the standard Java logging XML format which can be viewed using any text or XML editor or using the Chainsaw tool from Apache (http://logging.apache.org/log4j/docs/chainsaw.html).
+#
+#
+#
+# The amount of trace info captured can be controlled using the option:
+# -OPT traceLevel=INFO
+#
+# Valid Values:
+# 
+#	Level	   Numerical Level	Description
+#	OFF	   	0		No trace file is produced
+#	SEVERE	   	1		Only severe errors are output to trace file
+#	WARNING   	2		Messages regarding non-fatal exceptions and warnings are added to trace file
+#	INFO	   	3		Informational messages are added to the trace file (this is the default trace level)
+#	CONFIG	   	4		Configuration related messages are added to the trace file
+#	FINE	   	5		Tracing method calls for public methods
+#	FINER	   	6		Tracing method calls for non public methods except getters and setters
+#	FINEST	   	7		Trace all method calls, trace entry/exit will include parameters and return value
+
+
+
+

@@ -1,0 +1,161 @@
+#!/usr/bin/perl
+# Copyright IBM Corp. 2001, 2003
+#
+# script to list queue depths
+#
+# History - 08/15/2002 - SJB - changed code a bit to remove dependency on
+#                        perl getopt libraries.  Changes marked with SJB_changes
+#                        comments.
+#         - 01/09/2003 - SJB - added -s arg to "skip" display of headers - 
+#                        useful when using this tool in other scripts.
+
+my $STATUS   = "";
+my $cmd      = "";
+$queue       = "";
+$sortorder   = "alphabetic";		# default sort order
+my $qmgr      = "";
+my %queues   = ();
+my $formatStr= "%-48s%10s%10s%10s\n";
+
+#SJB_changes
+my $showHeaders  = "1"; # default - show headers
+
+
+#SJB_changes
+#commented out the require statement below - not needed when not using the
+#getopts perl lib.
+#require "getopt.pl";
+##use Getopt::Std;
+
+if ($ARGV[0] eq "-?" | $ARGV[0] =~ /-h/i ) {
+  &showHelp;
+    exit;
+}
+
+#SJB_changes
+#Changed Getopt routines to loop parsing ARGV to remove Getopt perl lib
+# dependency.
+while(<@ARGV>){
+  $arg=$_;
+  if($arg =~ /-m/i){
+        $junk=shift(@ARGV);
+        $opt_m=shift(@ARGV);
+  }
+  if($arg =~ /-a/i){
+        $opt_a=shift(@ARGV);
+  }
+  if($arg =~ /-d/i){
+        $opt_d=shift(@ARGV);
+  }
+#SJB_changes - added -s arg to "skip" headers
+  if($arg =~ /-s/i){ $showHeaders="0";
+        $opt_s=shift(@ARGV);
+  }
+}
+
+# get options (-m QMgr; -a ascending sort; -d descending sort)
+#Getopt('m');
+
+# set sortorder to ascending numeric if -a switch used
+$sortorder = "ascending" if $opt_a;
+
+# set sortorder to descending numeric if -a switch used
+$sortorder = "descending" if $opt_d;
+
+# get qmgr name if specified
+# this is kinda klugey (position dependent) since Getopts is unavailable
+#if ($#ARGV >= 0) {
+#  if ($ARGV[0] eq "-?") {
+#    &showHelp;
+#    exit;
+#  }
+#  else {
+#    $qmgr = $ARGV[0];
+#  }
+#}
+
+# build command line
+#$cmd .= "echo dis q(\*) type(qlocal) curdepth | runmqsc ";
+$cmd .= "echo \"dis q(\*) type(qlocal) curdepth, ipprocs, opprocs\" | runmqsc ";
+$cmd .= $opt_m if ($opt_m);
+#$cmd .= $qmgr;
+$cmd .= "|";
+
+# run command and pipe into $STATUS
+open STATUS, $cmd;
+
+while(<STATUS>) {
+  # if not AMQ8409 code, must be an error
+  if ((/^(AMQ.*)\s+/) && ((index $1, "AMQ8409") < 0)) {
+    print "$1\n\n"; 
+    close(STATUS);
+    exit;
+  }
+
+  # if queue name line, asign queue name
+  if (/^\s*QUEUE\((\S+)\)\s+.*$/) {
+    $queue = $1;
+  }
+
+  # populate %queue hash with CURDEPTH attribute
+  if ( /^.+CURDEPTH\((\S+)\).*$/ ) {
+    $queues{$queue}{CURDEPTH} = $1;
+  }
+
+  # populate %queue hash with IPPROCS attribute
+  if ( /^.+IPPROCS\((\S+)\).*$/ ) {
+    $queues{$queue}{IPPROCS} = $1;
+  }
+
+  # populate %queue hash with OPPROCS attribute
+  if ( /^.+OPPROCS\((\S+)\).*$/ ) {
+    $queues{$queue}{OPPROCS} = $1;
+  }
+}
+
+close(STATUS);
+
+#SJB_changes - added if-then to check if headers desired
+# write header
+if($showHeaders){
+print `date`,  "host = ", `hostname`, "\n";
+printf $formatStr, "Queue Name", "depth", "iprocs", "oprocs";
+}
+
+# display queues using %queues hash
+foreach $queue ( sort $sortorder keys %queues ) {
+  printf $formatStr, $queue, $queues{$queue}{CURDEPTH}, 
+         $queues{$queue}{IPPROCS}, 
+         $queues{$queue}{OPPROCS}; 
+}
+
+# sort routine for displaying hash alphabeically
+sub alphabetic {
+  $a cmp $b;
+}
+
+# sort routine for displaying hash in ascending order of depth
+sub ascending {
+  $queues{$a}{CURDEPTH} <=> $queues{$b}{CURDEPTH}
+    or
+  # if a tie, sort alphabetically
+  $a cmp $b;
+}
+
+# sort routine for displaying hash in descending order of depth
+sub descending {
+  $queues{$b}{CURDEPTH} <=> $queues{$a}{CURDEPTH}
+    or
+  # if a tie, sort alphabetically
+  $a cmp $b;
+}
+
+
+sub showHelp {
+  print "USAGE: $0 [-m QMGR_NAME] [-a | -d] [-s]\n";
+  print "Display queue depths for queue manager.\n";
+  print "  -m queue mgr, if blank then default queue manager is queried.\n"; 
+  print "  -a display sorted in ascending depth.\n";
+  print "  -d display sorted in descending depth.\n";
+  print "  -s (skip) display of header lines - useful when scripts call this tool.\n";
+}

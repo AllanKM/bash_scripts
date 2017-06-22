@@ -1,0 +1,81 @@
+#!/usr/bin/perl
+
+# Author  : Thad Hinz 
+# Date    : 01/23/2009
+# Name    : socketcheck
+# Purpose : check connection state of multiple ip:port combinations 
+
+use IO::Socket;
+use Net::hostent;
+use Getopt::Std;
+
+# set the timeout for the socket connect
+$timeout = "5";
+
+# Common Error messages and typical causes
+# - A remote host refused an attempted connect operation. Hint: usually remote port is not listening
+# - A system call received a parameter that is not valid. Hint: usually firewall blocking in ei
+# - Connect timeouts. Hint: usually firewall blocking or routing issue
+
+# switch to resolving hostname into ip and use that in socket test
+sub sock_conn {
+  my ($myServer, $myPort) = @_;
+  chomp $myServer;
+  chomp $myPort;
+  $ipaddress = inet_ntoa(inet_aton($myServer));
+  $sock = IO::Socket::INET->new(PeerAddr => $ipaddress,
+                                     PeerPort => $myPort,
+                                     Proto    => 'tcp',
+                                     Timeout  => $timeout);
+  close($sock);
+  if ($sock == undef){
+    # filter out extra parts of error message
+    $@ =~ s/IO::Socket::INET: connect: //;
+    printf '%-4s %-17s %-18s %-7s %-25s', "\nNA", $myServer, $ipaddress, $myPort, $@;
+  } else {
+    printf '%-4s %-17s %-18s %-7s %-25s', "\nOK", $myServer, $ipaddress, $myPort, $@;
+  }
+}
+
+# MAIN
+getopts('t:');
+
+#set default timeout for socket at 5 seconds unless timeout is specified, some connections could take longer than 5 to establish
+my $timeout;
+# must use "our" to declare opt args under strict or they won't work
+our($opt_t);
+if ($opt_t) {
+  $timeout = $opt_t;
+ } else {
+  $timeout = 5;
+}
+
+$numargs = @ARGV;
+
+if ($numargs < 1) { 
+  print "Usage: sockcheck [-t timeout] <ip1,port1,port2,portN..> <ip2,port1,port2,portN..> <ip3,port1,port2,portN..>....\n";
+  exit;
+}
+
+foreach $element (@ARGV) {
+  $_ = $element;
+  @ipports = split(/\,/, $_);
+  $numparts = @ipports;
+  # make sure they have ports along with ip
+  if ($numparts > 1) {
+    # check that hostname is resolvable, if not continue on to next arg element
+    if (gethostbyname($ipports[0]) == undef) {
+      print "\nUnable to resolve host \"$ipports[0]\"\n";
+      next;
+    }
+    for ($count = 1; $count < $numparts ; $count++) {
+      $Output =  &sock_conn($ipports[0], $ipports[$count]);
+    } 
+    print "\n"
+  } else {
+    print "\nMissing ports for host \"$ipports[0]\"\n";
+    next;
+  }
+}
+
+print "\n"

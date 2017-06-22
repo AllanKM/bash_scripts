@@ -1,0 +1,15 @@
+#!/bin/ksh
+for f in ~/*support*.log; do 
+	tac $f | sed '/Configuration saved successfully/q'; 
+done | tac | \
+grep -iE "\[error\]|\[crypto\]\[warn\]|\[warn\]" | \
+sed -e 's/[[0-9]*T[0-9]*Z //' \
+	-e 's/tid.*validation failed for //' \
+	-e 's/tid([0-9]*)//'  \
+	-e 's/[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:[0-9]*//' \
+	-e 's/[[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*]//' | \
+grep -viE "log upload|maximum number of concurrent|rejected by filter|default rule selected| while compiling" | \
+sort | uniq -c | sort -k2 -k1
+	# -e 's/in .*\[//' \
+	# -e 's/^.*HTTP f/HTTP f/' \
+	# -e 's/\]//' -e 's/^.*valcred(//' \

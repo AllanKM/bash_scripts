@@ -1,0 +1,1180 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+my $bindir = "/opt/HPODS/LCS/bin";
+my $daemon = "lcs_ctl";
+my $cfgdir = "/opt/HPODS/LCS/conf";
+my $cfgbase = "$cfgdir/";
+my $cfgext = ".conf";
+my $cmddir = $bindir;
+my $cmdbase = "$cmddir/mk";
+my $cmdext = ".sh";
+my $oldext = ".Old";
+my $logdir = "/var/log/lcs";
+my $piddir = "/var/run";
+my $lcsbrowse = "lcsbrowse";
+my $instance = "instance";
+my $fullcommand = "";
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Other settings
+my $require = "REQUIRE";
+my $optional = "OPTIONAL";
+my $generate = "GENERATE";
+my $depth = 2;
+my $maxcfglen = 0;
+
+# Define single argument values
+my %onearr = (
+  'addlcsnodelist' => 1,
+  'archiveonly' => 1,
+  'bgcommandexit' => 1,
+  'cleanarchiveonly' => 1,
+  'compress' => 1,
+  'dirstore' => 1,
+  'generatenodelist' => 1,
+  'notifysuccess' => 1,
+  'syslogsuccess' => 1,
+  'tar' => 1,
+);
+
+# Define automatic %generate% directives
+my %genarr = (
+  #'browserpassword' => 1,
+);
+
+# Define log file directives
+my %logarr = (
+  'auditlog' => 1,
+  'errorlog' => 1,
+  'tracelog' => 1,
+);
+
+# Define option array directives
+my %optarr = (
+  'aggregate' => 1,
+  'alias' => 1,
+  'collector' => 1,
+  'ignore' => 1,
+  'logprefix' => 1,
+  'logroot' => 1,
+  'node' => 1,
+  'noignore' => 1,
+  'nonode' => 1,
+  'notifymailto' => 1,
+  'notifypageto' => 1,
+);
+
+my $allsites = "ALLSITEDEFS";
+my $ignore = "ignore";
+my $noignore = "noignore";
+my $node = "node";
+my $nonode = "nonode";
+
+my %cfgsiteorder = (
+  'Alias'             => [ 500, $optional ],
+  'Aggregate'         => [ 505, $optional ],
+  'ArchiveDirectory'  => [ 510, $optional ],
+  'Target1Aggregate'  => [ 515, $optional ],
+  'Target1ArchDir'    => [ 520, $optional ],
+  'Target2Aggregate'  => [ 525, $optional ],
+  'Target2ArchDir'    => [ 530, $optional ],
+  'Target3Aggregate'  => [ 535, $optional ],
+  'Target3ArchDir'    => [ 540, $optional ],
+  'Target4Aggregate'  => [ 545, $optional ],
+  'Target4ArchDir'    => [ 550, $optional ],
+  'Target5Aggregate'  => [ 555, $optional ],
+  'Target5ArchDir'    => [ 560, $optional ],
+  'Target6Aggregate'  => [ 565, $optional ],
+  'Target6ArchDir'    => [ 570, $optional ],
+  'Target7Aggregate'  => [ 575, $optional ],
+  'Target7ArchDir'    => [ 580, $optional ],
+  'Target8Aggregate'  => [ 585, $optional ],
+  'Target8ArchDir'    => [ 590, $optional ],
+  'Target9Aggregate'  => [ 595, $optional ],
+  'Target9ArchDir'    => [ 600, $optional ],
+  'Collector'         => [ 605, $optional ],
+  'ExternalPort'      => [ 610, $optional ],
+  'SSLExternalPort'   => [ 615, $optional ],
+  'BrowserUsername'   => [ 620, $optional ],
+  'BrowserPassword'   => [ 625, $optional ],
+  'BrowserTimeout'    => [ 630, $optional ],
+  'DateBegin'         => [ 635, $optional ],
+  'DateEnd'           => [ 640, $optional ],
+  'LogPrefix'         => [ 645, $optional ],
+  'LogRoot'           => [ 650, $optional ],
+  'LogExtension'      => [ 655, $optional ],
+  'LogInterval'       => [ 660, $optional ],
+  'PartialExtension'  => [ 665, $optional ],
+  'Node'              => [ 670, $optional ],
+  'ArchiveOnly'       => [ 675, $optional ],
+  'CleanArchiveOnly'  => [ 680, $optional ],
+  'GenerateNodeList'  => [ 685, $optional ],
+  'AddLCSNodeList'    => [ 690, $optional ],
+  'NodesDirectory'    => [ 695, $optional ],
+  'Timeout'           => [ 700, $optional ],
+  'CleanDirectories'  => [ 705, $optional ],
+  'CleanFiles'        => [ 710, $optional ],
+  'CleanMatch1Files'  => [ 715, $optional ],
+  'CleanMatch1Regex'  => [ 720, $optional ],
+  'CleanMatch2Files'  => [ 725, $optional ],
+  'CleanMatch2Regex'  => [ 730, $optional ],
+  'CleanMatch3Files'  => [ 735, $optional ],
+  'CleanMatch3Regex'  => [ 740, $optional ],
+  'CleanMatch4Files'  => [ 745, $optional ],
+  'CleanMatch4Regex'  => [ 750, $optional ],
+  'CleanMatch5Files'  => [ 755, $optional ],
+  'CleanMatch5Regex'  => [ 760, $optional ],
+  'CleanMatch6Files'  => [ 765, $optional ],
+  'CleanMatch6Regex'  => [ 770, $optional ],
+  'CleanMatch7Files'  => [ 775, $optional ],
+  'CleanMatch7Regex'  => [ 780, $optional ],
+  'CleanMatch8Files'  => [ 785, $optional ],
+  'CleanMatch8Regex'  => [ 790, $optional ],
+  'CleanMatch9Files'  => [ 795, $optional ],
+  'CleanMatch9Regex'  => [ 800, $optional ],
+  'Subdirectory'      => [ 805, $optional ],
+  '24LogExtension'    => [ 810, $optional ],
+  '24Subdirectory'    => [ 815, $optional ],
+  'User'              => [ 820, $optional ],
+  'Group'             => [ 825, $optional ],
+  'Tar'               => [ 830, $optional ],
+  'Compress'          => [ 835, $optional ],
+  'NotifyCommand'     => [ 840, $optional ],
+  'NotifyMailOpt'     => [ 845, $optional ],
+  'NotifyMailTo'      => [ 850, $optional ],
+  'NotifyPageOpt'     => [ 855, $optional ],
+  'NotifyPageTo'      => [ 860, $optional ],
+  'NotifyEventOpt'    => [ 865, $optional ],
+  'NotifyEventID'     => [ 870, $optional ],
+  'NotifySuccess'     => [ 875, $optional ],
+  'SyslogFacility'    => [ 880, $optional ],
+  'SyslogPriority'    => [ 885, $optional ],
+  'SyslogSuccess'     => [ 890, $optional ],
+  'Umask'             => [ 895, $optional ],
+  'BGCommandExit'     => [ 900, $optional ],
+  'CommandExit'       => [ 905, $optional ],
+);
+
+my %cfgorder = (
+  'ExternalPort'      => [  10, $optional ],
+  'SSLExternalPort'   => [  20, $optional ],
+  'BrowserUsername'   => [  30, $optional ],
+  'BrowserPassword'   => [  40, $optional ],
+  'BrowserTimeout'    => [  50, $optional ],
+  'NotifyCommand'     => [  60, $optional ],
+  'NotifyMailOpt'     => [  70, $optional ],
+  'NotifyMailTo'      => [  80, $optional ],
+  'NotifyPageOpt'     => [  90, $optional ],
+  'NotifyPageTo'      => [ 100, $optional ],
+  'NotifyEventOpt'    => [ 110, $optional ],
+  'NotifyEventID'     => [ 120, $optional ],
+  'NotifySuccess'     => [ 130, $optional ],
+  'SyslogFacility'    => [ 140, $optional ],
+  'SyslogPriority'    => [ 150, $optional ],
+  'SyslogSuccess'     => [ 160, $optional ],
+  'AuditLog'          => [ 170, $optional ],
+  'ErrorLog'          => [ 180, $optional ],
+  'TraceLog'          => [ 190, $optional ],
+  'User'              => [ 200, $optional ],
+  'Group'             => [ 210, $optional ],
+  'Pidfile'           => [ 220, $optional ],
+  'Umask'             => [ 230, $optional ],
+  'PartialExtension'  => [ 240, $optional ],
+  'AllNodes'          => [ 250, $optional ],
+  'DirStore'          => [ 260, $optional ],
+  'LBCurrent'         => [ 270, $optional ],
+  'LBCost'            => [ 280, $optional ],
+  'LCSCurrent'        => [ 290, $optional ],
+  'BGCommandExit'     => [ 300, $optional ],
+  'CommandExit'       => [ 310, $optional ],
+  'Ignore'            => [ 320, $optional ],
+  $allsites           => [ 400, $optional ],
+);
+
+# Obtain arguments
+my %work = ();
+my %skipsite = ();
+my $dfltsite = "  $$ LCS";
+my $site = $dfltsite;
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'nosave' => \$clargs{$dfltsite}{nosave},
+  'instance:s' => \$clargs{$dfltsite}{$instance},
+  'configuration:s' => \$clargs{$dfltsite}{configuration},
+  'useconfig' => \$clargs{$dfltsite}{useconfig},
+  'useignore' => \$clargs{$dfltsite}{useignore},
+  'template:s' => \$clargs{$dfltsite}{template},
+  'merge' => \$clargs{$dfltsite}{merge},
+  'passphrase:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'preview' => \$clargs{$dfltsite}{preview},
+  'savecommand' => \$clargs{$dfltsite}{savecommand},
+  'verbose' => \$clargs{$dfltsite}{verbose},
+  'skipsite:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},split(/[,;]/,$_[1])) },
+
+  # LCS control directives
+  'allnodes:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'archiveonly' => sub { $clargs{$site}{$_[0]} = 1 },
+  'auditlog:s' => \$clargs{$dfltsite}{auditlog},
+  'bgcommandexit' => sub { $clargs{$site}{$_[0]} = 1 },
+  'browserpassword:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'browsertimeout:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'browserusername:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanarchiveonly' => sub { $clargs{$site}{$_[0]} = 1 },
+  'commandexit:s' => sub { $clargs{$site}{$_[0]} = $_{1} },
+  'dirstore' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'errorlog:s' => \$clargs{$dfltsite}{errorlog},
+  'externalport:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  "$ignore:s@" => sub { push(@{$clargs{$dfltsite}{$_[0]}},split(/[,;]/,$_[1])) },
+  'lbcost:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'lbcurrent:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'lcscurrent:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  "$noignore:s@" => sub { push(@{$clargs{$dfltsite}{$_[0]}},split(/[,;]/,$_[1])) },
+  'notifycommand:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'notifyeventid:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'notifyeventopt=s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'notifymailopt=s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'notifymailto:s' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'notifypageopt=s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'notifypageto:s' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'notifysuccess' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'partialextension:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'pidfile:s' => \$clargs{$dfltsite}{pidfile},
+  'sslexternalport:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'syslogfacility:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'syslogpriority:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'syslogsuccess' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'tracelog:s' => \$clargs{$dfltsite}{tracelog},
+  'umask:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+
+  'site:s' => \$site,
+  '24logextension:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  '24subdirectory:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'addlcsnodelist' => sub { $clargs{$site}{$_[0]} = 1 },
+  'aggregate:s@' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'alias:s@' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'archivedirectory:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleandirectories:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanfiles:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch1files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch1regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch2files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch2regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch3files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch3regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch4files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch4regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch5files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch5regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch6files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch6regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch7files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch7regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch8files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch8regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch9files:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'cleanmatch9regex:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'collector:s@' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'compress' => sub { $clargs{$site}{$_[0]} = 1 },
+  'datebegin:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'dateend:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'generatenodelist' => sub { $clargs{$site}{$_[0]} = 1 },
+  'group:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'logextension:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'loginterval:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'logprefix:s@' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'logroot:s@' => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  "$node:s@" => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'nodesdirectory:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  "$nonode:s@" => sub { push(@{$clargs{$site}{$_[0]}},split(/[,;]/,$_[1])) },
+  'subdirectory:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'tar' => sub { $clargs{$site}{$_[0]} = 1 },
+  'target1aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target1archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target2aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target2archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target3aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target3archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target4aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target4archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target5aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target5archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target6aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target6archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target7aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target7archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target8aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target8archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target9aggregate:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'target9archdir:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'timeout:i' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'user:s' => sub { $clargs{$site}{$_[0]} = $_[1] },
+  'endsite' => sub { $site = $dfltsite },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+# Qualify the specified instance with the daemon name
+if (defined $clargs{$dfltsite}{$instance}) {
+  my $i = $clargs{$dfltsite}{$instance};
+  $i = "$daemon$i" if ($i !~ /^$daemon/);
+  $clargs{$dfltsite}{$instance} = $i;
+} else {
+  $clargs{$dfltsite}{$instance} = $daemon;
+}
+
+# Determine configuration file to use
+my $cfgfile = $clargs{$dfltsite}{$instance};
+$cfgfile = "$cfgbase$cfgfile$cfgext";
+
+# Override configuration file specified with existing configuration
+$clargs{$dfltsite}{configuration} = $cfgfile
+  if (defined $clargs{$dfltsite}{useconfig} ||
+      defined $clargs{$dfltsite}{useignore});
+
+# Define the instance for substitution reasons
+$work{$dfltsite}{$instance} = $clargs{$dfltsite}{$instance}
+  if (defined $clargs{$dfltsite}{$instance});
+
+# Pre-load sites to skip when writing configuration file
+grep($skipsite{$_}++,@{$clargs{$dfltsite}{skipsite}})
+  if (defined $clargs{$dfltsite}{skipsite});
+
+# Load template file
+my %template = ();
+if (defined $clargs{$dfltsite}{template}) {
+  my $file = $clargs{$dfltsite}{template};
+  $file = "$cfgdir/$file" if ($file !~ /^\//);
+  logit($mysname,1,"Loading template file: $file")
+    if ($clargs{$dfltsite}{verbose});
+  if (-r $file) {
+    loadfile(\%template,$file,$dfltsite,1);
+  } else {
+    logit($mysname,2,"Unable to locate template file: $file");
+    exit 1;
+  }
+}
+
+# Load configuration file
+my %configuration = ();
+if (defined $clargs{$dfltsite}{configuration}) {
+  my $file = $clargs{$dfltsite}{configuration};
+  $file = "$cfgdir/$file" if ($file !~ /^\//);
+  logit($mysname,1,"Loading configuration file: $file")
+    if ($clargs{$dfltsite}{verbose});
+  if (-r $file) {
+    loadfile(\%configuration,$file,$dfltsite,1);
+  } else {
+    logit($mysname,2,"Unable to locate configuration file: $file");
+    exit 1;
+  }
+}
+
+# Generate working configuration:
+#   Set from template (if exists)
+#   Set (override) from configuration
+#   Set (override) from command line (optionally -merge for array-based values)
+logit($mysname,1,"Generating working configuration")
+  if ($clargs{$dfltsite}{verbose});
+my $d;
+my @cfglst = (map { $_->[0] }
+              sort { $a->[1] <=> $b->[1] }
+              map { [ $_, @{$cfgorder{$_}}[0] ] }
+              keys %cfgorder);
+foreach $d (@cfglst) {
+  my $valstr = "";
+  my @valarr = ();
+  my $ld = lc($d);
+  next if ($d eq $allsites);
+  $maxcfglen = length($ld) if (length($ld) > $maxcfglen);
+  if (defined $optarr{$ld}) {
+    @valarr = @{$template{$dfltsite}{$ld}}
+      if (defined $template{$dfltsite}{$ld});
+    if (defined $configuration{$dfltsite}{$ld}) {
+      if (defined $clargs{$dfltsite}{useignore}) {
+        @valarr = @{$configuration{$dfltsite}{$ld}}
+          if ($ld eq $ignore);
+      } else {
+        @valarr = @{$configuration{$dfltsite}{$ld}};
+      }
+    }
+    if (defined $clargs{$dfltsite}{$ld}) {
+      if (defined $clargs{$dfltsite}{merge}) {
+        my %seen;
+        grep($seen{$_}++,@valarr,@{$clargs{$dfltsite}{$ld}});
+        @valarr = sort keys %seen;
+      } else {
+        @valarr = @{$clargs{$dfltsite}{$ld}};
+      }
+      if ($ld eq $node && defined $clargs{$dfltsite}{$nonode}) {
+        my %seen = ();
+        grep($seen{$_}++,@{$clargs{$dfltsite}{$nonode}});
+        @valarr = grep(! defined $seen{$_},@valarr);
+        delete $work{$dfltsite}{$ld} unless (@valarr);
+      }
+    }
+    if ($ld eq $ignore && defined $clargs{$dfltsite}{$noignore}) {
+      my %seen = ();
+      grep($seen{$_}++,@{$clargs{$dfltsite}{$noignore}});
+      @valarr = grep(! defined $seen{$_},@valarr);
+      delete $work{$dfltsite}{$ld} unless (@valarr);
+    }
+    push(@valarr,"%$generate%") if (! @valarr && defined $genarr{$ld});
+    @{$work{$dfltsite}{$ld}} = @valarr if (@valarr);
+  } else {
+    $valstr = "\001";
+    $valstr = (@{$template{$dfltsite}{$ld}})[$[]
+      if (defined $template{$dfltsite}{$ld});
+    if (defined $configuration{$dfltsite}{$ld}) {
+      if (defined $clargs{$dfltsite}{useignore}) {
+        $valstr = (@{$configuration{$dfltsite}{$ld}})[$[]
+          if ($ld eq $ignore);
+      } else {
+        $valstr = (@{$configuration{$dfltsite}{$ld}})[$[];
+      }
+    }
+    $valstr = $clargs{$dfltsite}{$ld}
+      if (defined $clargs{$dfltsite}{$ld});
+    $valstr = "%generate%" if ($valstr eq "\001" && defined $genarr{$ld});
+    if ($valstr ne "\001") {
+      $valstr = "1" if (defined $onearr{$ld});
+      $work{$dfltsite}{$ld} = $valstr;
+    }
+  }
+  if ($valstr eq "\001" && @valarr == 0) {
+    if (@{$cfgorder{$d}}[1] eq $require) {
+      logit($mysname,2,"Configuration option '$d' is required");
+      exit 2;
+    }
+  }
+}
+
+# Resolve embedded %directive% values
+logit($mysname,1,"Resolving quoted directives")
+  if ($clargs{$dfltsite}{verbose});
+foreach (1..$depth) {
+  foreach $d (@cfglst,$instance) {
+    my $ld = lc($d);
+    foreach $a (@cfglst,$instance) {
+      my $la = lc($a);
+      my $v = "";
+      if (defined $optarr{$ld}) {
+        if (defined $work{$dfltsite}{$ld}) {
+          $v = join("\001",@{$work{$dfltsite}{$ld}});
+          if ($v =~ /%$generate%/i) {
+            my $x = genvalue($ld,$work{$dfltsite}{site},
+                             $clargs{$dfltsite}{passphrase});
+            $v =~ s/%$generate%/$x/ig;
+          } else {
+            $v =~ s/%$la%/${work{$dfltsite}{$la}}/ig;
+          }
+          @{$work{$dfltsite}{$ld}} = (split("\001",$v));
+          #print "$d $a ".join(",",@{$work{$dfltsite}{$ld}})."\n";
+        }
+      } else {
+        if (defined $work{$dfltsite}{$ld}) {
+          $v = $work{$dfltsite}{$ld};
+          if ($v =~ /%$generate%/i) {
+            my $x = genvalue($ld,$work{$dfltsite}{site},
+                             $clargs{$dfltsite}{passphrase});
+            $v =~ s/%$generate%/$x/ig;
+          } else {
+            $v =~ s/%$la%/${work{$dfltsite}{$la}}/ig;
+          }
+          $work{$dfltsite}{$ld} = $v;
+          #print "$d $a $work{$dfltsite}{$ld}\n";
+        }
+      }
+    }
+  }
+}
+
+# Generate working site list configuration:
+#   Set from template (if exists)
+#   Set (override) from configuration
+#   Set (override) from command line (optionally -merge for array-based values)
+my $s;
+my %sitelst;
+logit($mysname,1,"Generating site specific working configuration")
+  if ($clargs{$dfltsite}{verbose});
+grep($sitelst{$_}++,keys %clargs,keys %template,keys %configuration);
+my @cfgsitelst = (map { $_->[0] }
+                  sort { $a->[1] <=> $b->[1] }
+                  map { [ $_, @{$cfgsiteorder{$_}}[0] ] }
+                  keys %cfgsiteorder);
+foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+  $work{$s}{$instance} = $clargs{$dfltsite}{$instance}
+    if (defined $clargs{$dfltsite}{$instance});
+  foreach $d (@cfgsitelst) {
+    my $valstr = "";
+    my @valarr = ();
+    my $ld = lc($d);
+    $maxcfglen = length($ld) if (length($ld) > $maxcfglen);
+    if (defined $optarr{$ld}) {
+      @valarr = @{$template{$s}{$ld}}
+        if (defined $template{$s}{$ld});
+      if (defined $configuration{$s}{$ld}) {
+        if (defined $clargs{$dfltsite}{useignore}) {
+          @valarr = @{$configuration{$s}{$ld}}
+            if ($ld eq $ignore);
+        } else {
+          @valarr = @{$configuration{$s}{$ld}};
+        }
+      }
+      if (defined $clargs{$s}{$ld}) {
+        if (defined $clargs{$s}{merge}) {
+          my %seen;
+          grep($seen{$_}++,@valarr,@{$clargs{$s}{$ld}});
+          @valarr = sort keys %seen;
+        } else {
+          @valarr = @{$clargs{$s}{$ld}};
+        }
+        if ($ld eq $node && defined $clargs{$s}{$nonode}) {
+          my %seen = ();
+          grep($seen{$_}++,@{$clargs{$s}{$nonode}});
+          @valarr = grep(! defined $seen{$_},@valarr);
+          delete $work{$s}{$ld} unless (@valarr);
+        }
+      }
+      if ($ld eq $ignore && defined $clargs{$s}{$noignore}) {
+        my %seen = ();
+        grep($seen{$_}++,@{$clargs{$s}{$noignore}});
+        @valarr = grep(! defined $seen{$_},@valarr);
+        delete $work{$s}{$ld} unless (@valarr);
+      }
+      push(@valarr,"%$generate%") if (! @valarr && defined $genarr{$ld});
+      @{$work{$s}{$ld}} = @valarr if (@valarr);
+      #print "X $s $d ".join(",",@{$work{$s}{$ld}})."\n";
+    } else {
+      $valstr = "\001";
+      $valstr = (@{$template{$s}{$ld}})[$[]
+        if (defined $template{$s}{$ld});
+      if (defined $configuration{$s}{$ld}) {
+        if (defined $clargs{$dfltsite}{useignore}) {
+          $valstr = (@{$configuration{$s}{$ld}})[$[]
+            if ($ld eq $ignore);
+        } else {
+          $valstr = (@{$configuration{$s}{$ld}})[$[];
+        }
+      }
+      $valstr = $clargs{$s}{$ld}
+        if (defined $clargs{$s}{$ld});
+      $valstr = "%generate%" if ($valstr eq "\001" && defined $genarr{$ld});
+      if ($valstr ne "\001") {
+        $valstr = "1" if (defined $onearr{$ld});
+        $work{$s}{$ld} = $valstr;
+        #print "X $s $d $work{$s}{$ld}\n";
+      }
+    }
+    if ($valstr eq "\001" && @valarr == 0) {
+      if (@{$cfgsiteorder{$d}}[1] eq $require) {
+        logit($mysname,2,"Configuration option '$d' required for site '$s'");
+        exit 2;
+      }
+    }
+  }
+}
+
+# Resolve embedded %directive% values
+logit($mysname,1,"Resolving site specific quoted directives")
+  if ($clargs{$dfltsite}{verbose});
+foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+  $work{$s}{$instance} = $clargs{$dfltsite}{$instance}
+    if (defined $clargs{$dfltsite}{$instance});
+  $work{$s}{passphrase} = $clargs{$dfltsite}{passphrase}
+    if (defined $clargs{$dfltsite}{passphrase});
+  $work{$s}{passphrase} = $clargs{$s}{passphrase}
+    if (defined $clargs{$s}{passphrase});
+
+  foreach (1..$depth) {
+    foreach $d (@cfgsitelst,$instance) {
+      my $ld = lc($d);
+      foreach $a (@cfgsitelst,$instance) {
+        my $la = lc($a);
+        my $v = "";
+        if (defined $optarr{$ld}) {
+          if (defined $work{$s}{$ld}) {
+            $v = join("\001",@{$work{$s}{$ld}});
+            if ($v =~ /%$generate%/i) {
+              my $x = genvalue($ld,$s,$work{$s}{passphrase});
+              $v =~ s/%$generate%/$x/ig;
+            } else {
+              $v =~ s/%$la%/${work{$s}{$la}}/ig;
+            }
+            @{$work{$s}{$ld}} = (split("\001",$v));
+            #print "X $d $a ".join(",",@{$work{$s}{$ld}})."\n";
+          }
+        } else {
+          if (defined $work{$s}{$ld}) {
+            $v = $work{$s}{$ld};
+            if ($v =~ /%$generate%/i) {
+              my $x = genvalue($ld,$s,$work{$s}{passphrase});
+              $v =~ s/%$generate%/$x/ig;
+            } else {
+              $v =~ s/%$la%/${work{$s}{$la}}/ig;
+            }
+            $work{$s}{$ld} = $v;
+            #print "X $d $a $work{$s}{$ld}\n";
+          }
+        }
+      }
+    }
+  }
+
+  # Added configuration rules for any site
+  #  If {ssl}externalport defined, try to figure out missing values for:
+  #    browserusername
+  #    browserpassword
+  if (defined $work{$s}{externalport} ||
+      defined $work{$s}{sslexternalport}) {
+    $work{$s}{browserusername} = $lcsbrowse
+      if (! defined $work{$s}{browserusername});
+    $work{$s}{browserpassword} =
+      genvalue('password',$work{$s}{browserusername},
+               $work{$s}{passphrase})
+      if (! defined $work{$s}{browserpassword});
+  }
+}
+
+# Added configuration rules for default site
+#  If {ssl}externalport defined, try to figure out missing values for:
+#    browserusername
+#    browserpassword
+if (defined $work{$dfltsite}{externalport} ||
+    defined $work{$dfltsite}{sslexternalport}) {
+  $work{$dfltsite}{browserusername} = $lcsbrowse
+    if (! defined $work{$dfltsite}{browserusername});
+  $work{$dfltsite}{browserpassword} =
+    genvalue('password',$work{$dfltsite}{browserusername},
+             $work{$dfltsite}{passphrase})
+    if (! defined $work{$dfltsite}{browserpassword});
+}
+
+# Fully qualify log directories if needed
+foreach my $log (keys %logarr) {
+  if (defined $work{$dfltsite}{$log}) {
+    $work{$dfltsite}{$log} = "$logdir/${work{$dfltsite}{$log}}"
+      if ($work{$dfltsite}{$log} !~ /^\//);
+  }
+}
+
+# Fully qualify pidfile if needed
+if (defined $work{$dfltsite}{pidfile}) {
+  $work{$dfltsite}{pidfile} = "$piddir/${work{$dfltsite}{pidfile}}"
+    if ($work{$dfltsite}{pidfile} !~ /^\//);
+}
+
+# Clean up all phantom $instance keys created for all sites
+foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+  delete $work{$s}{$instance}
+    if (defined $work{$s}{$instance});
+}
+
+# Build multi-line command (if desired)
+if (defined $clargs{$dfltsite}{savecommand}) {
+  $fullcommand = "$0";
+  $fullcommand .= " -instance \'${clargs{$dfltsite}{$instance}}\'"
+    if (defined $clargs{$dfltsite}{$instance});
+  foreach $d (@cfglst) {
+    my $ld = lc($d);
+
+    if ($d eq $allsites) {
+      foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+        next if (defined $skipsite{$s} || ! keys %{$work{$s}});
+        $fullcommand .= " \\\n  -Site \'$s\'";
+        foreach $a (@cfgsitelst) {
+          my $la = lc($a);
+          if (defined $optarr{$la}) {
+            if (defined $work{$s}{$la}) {
+              foreach (sort @{$work{$s}{$la}}) {
+                $fullcommand .= " \\\n    -$a \'$_\'";
+              }
+            }
+          } else {
+            if (defined $onearr{$la}) {
+              $fullcommand .= " \\\n    -$a"
+                if (defined $work{$s}{$la});
+            } else {
+              $fullcommand .= " \\\n    -$a \'${work{$s}{$la}}\'"
+                if (defined $work{$s}{$la});
+            }
+          }
+        }
+        $fullcommand .= " \\\n  -EndSite";
+      }
+      next;
+    }
+    if (defined $optarr{$ld}) {
+      if (defined $work{$dfltsite}{$ld}) {
+        foreach (@{$work{$dfltsite}{$ld}}) {
+          $fullcommand .= " \\\n  -$d \'$_\'";
+        }
+      }
+    } else {
+      if (defined $onearr{$ld}) {
+        $fullcommand .= " \\\n  -$d"
+          if (defined $work{$dfltsite}{$ld});
+      } else {
+        $fullcommand .= " \\\n  -$d \'${work{$dfltsite}{$ld}}\'"
+          if (defined $work{$dfltsite}{$ld});
+      }
+    }
+  }
+  $fullcommand .= "\n";
+  if (defined $clargs{$dfltsite}{preview}) {
+    print $fullcommand;
+    exit 0;
+  }
+}
+
+# Preview configuration file and exit (if desired)
+if (defined $clargs{$dfltsite}{preview}) {
+  my $fmt = "%-".($maxcfglen+2)."s %s\n";
+  foreach $d (@cfglst) {
+    my $ld = lc($d);
+
+    if ($d eq $allsites) {
+      foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+        next if (defined $skipsite{$s} || ! keys %{$work{$s}});
+        print "\nSite $s\n";
+        foreach $a (@cfgsitelst) {
+          my $la = lc($a);
+          if (defined $optarr{$la}) {
+            if (defined $work{$s}{$la}) {
+              foreach (sort @{$work{$s}{$la}}) {
+                printf("  $fmt",$a,$_);
+              }
+            }
+          } else {
+            if (defined $onearr{$la}) {
+              print "  $a\n" if (defined $work{$s}{$la});
+            } else {
+              printf("  $fmt",$a,$work{$s}{$la})
+                if (defined $work{$s}{$la});
+            }
+          }
+        }
+        print "EndSite\n";
+      }
+      next;
+    }
+    if (defined $optarr{$ld}) {
+      if (defined $work{$dfltsite}{$ld}) {
+        foreach (@{$work{$dfltsite}{$ld}}) {
+          printf($fmt,$d,$_);
+        }
+      }
+    } else {
+      if (defined $onearr{$ld}) {
+        print "$d\n" if (defined $work{$dfltsite}{$ld});
+      } else {
+        printf($fmt,$d,$work{$dfltsite}{$ld})
+          if (defined $work{$dfltsite}{$ld});
+      }
+    }
+  }
+  exit 0;
+}
+
+# Create fullcomand file
+if (defined $clargs{$dfltsite}{savecommand}) {
+  my $cmdfile = "$cmdbase${work{$dfltsite}{$instance}}$cmdext";
+  logit($mysname,1,"Creating saved command file: $cmdfile")
+    if ($clargs{$dfltsite}{verbose});
+  my $err = 0;
+  unlink("$cmdfile.$$");
+  if (open(CMD,">$cmdfile.$$")) {
+    $err++
+      if (! print CMD $fullcommand);
+    close(CFG);
+  }
+  if ($err > 0) {
+    unlink("$cmdfile.$$");
+    logit($mysname,2,"Unable to create new command file");
+    exit 1;
+  }
+
+  # Rename the command file to put the new one in place
+  # Try to preserve the permissions of the previous command file
+  logit($mysname,1,"Replacing saved command file: $cmdfile")
+    if ($clargs{$dfltsite}{verbose});
+  my($u,$g,$p);
+  ($p,$u,$g) = (stat($cmdfile))[2,4,5] if (-f $cmdfile);
+  $u = 0 unless $u;
+  $g = 0 unless $g;
+  $p = oct("755") unless $p;
+  if (defined $clargs{$dfltsite}{nosave}) {
+    rename($cmdfile,"$cmdfile.$$.$$");
+    unlink("$cmdfile.$$.$$");
+  } else {
+    unlink("$cmdfile$oldext");
+    rename($cmdfile,"$cmdfile$oldext");
+  }
+  rename("$cmdfile.$$",$cmdfile);
+  chown($u,$g,$cmdfile);
+  chmod($p,$cmdfile);
+}
+
+# Create configuration file
+logit($mysname,1,"Creating new configuration file: $cfgfile")
+  if ($clargs{$dfltsite}{verbose});
+my $err = 0;
+unlink("$cfgfile.$$");
+if (open(CFG,">$cfgfile.$$")) {
+  my $fmt = "%-".($maxcfglen+2)."s %s\n";
+  foreach $d (@cfglst) {
+    my $ld = lc($d);
+
+    if ($d eq $allsites) {
+      foreach $s (grep($_ ne $dfltsite,sort keys %sitelst)) {
+        next if (defined $skipsite{$s});
+        $err++
+          if (! print CFG "\nSite $s\n");
+        foreach $a (@cfgsitelst) {
+          my $la = lc($a);
+          if (defined $optarr{$la}) {
+            if (defined $work{$s}{$la}) {
+              foreach (sort @{$work{$s}{$la}}) {
+                $err++
+                  if (! printf CFG "  $fmt",$a,$_);
+              }
+            }
+          } else {
+            if (defined $onearr{$la}) {
+              if (defined $work{$s}{$la}) {
+                $err++
+                  if (! print CFG "  $a\n");
+              }
+            } else {
+              if (defined $work{$s}{$la}) {
+                $err++
+                  if (! printf CFG "  $fmt",$a,$work{$s}{$la});
+              }
+            }
+          }
+        }
+        $err++
+          if (! print CFG "EndSite\n");
+      }
+      next;
+    }
+    if (defined $optarr{$ld}) {
+      if (defined $work{$dfltsite}{$ld}) {
+        foreach (sort @{$work{$dfltsite}{$ld}}) {
+          $err++
+            if (! printf CFG $fmt,$d,$_);
+        }
+      }
+    } else {
+      if (defined $onearr{$ld}) {
+        if (defined $work{$dfltsite}{$ld}) {
+          $err++
+            if (! print CFG "$d\n");
+        }
+      } else {
+        if (defined $work{$dfltsite}{$ld}) {
+          $err++
+            if (! printf CFG $fmt,$d,$work{$dfltsite}{$ld});
+        }
+      }
+    }
+  }
+  close(CFG);
+}
+if ($err > 0) {
+  unlink("$cfgfile.$$");
+  logit($mysname,2,"Unable to create new configuration file");
+  exit 1;
+}
+
+# Rename the configuration files to put the new one in place
+# Try to preserve the permissions of the previous configuration file
+logit($mysname,1,"Replacing configuration file: $cfgfile")
+  if ($clargs{$dfltsite}{verbose});
+my($u,$g,$p);
+($p,$u,$g) = (stat($cfgfile))[2,4,5] if (-f $cfgfile);
+$u = 0 unless $u;
+$g = 0 unless $g;
+$p = oct("644") unless $p;
+if (defined $clargs{$dfltsite}{nosave}) {
+  rename($cfgfile,"$cfgfile.$$.$$");
+  unlink("$cfgfile.$$.$$");
+} else {
+  unlink("$cfgfile$oldext");
+  rename($cfgfile,"$cfgfile$oldext");
+}
+rename("$cfgfile.$$",$cfgfile);
+chown($u,$g,$cfgfile);
+chmod($p,$cfgfile);
+
+# Obtain uid/gid for specified user/group (else set as 0/0);
+my $uid = 0;
+my $gid = 0;
+if (defined $work{$dfltsite}{user}) {
+  $uid = ($work{$dfltsite}{user} =~ /^[0-9]+$/ ?
+          $work{$dfltsite}{user} :
+          (getpwnam($work{$dfltsite}{user}))[2]);
+}
+if (defined $work{$dfltsite}{group}) {
+  $gid = ($work{$dfltsite}{group} =~ /^[0-9]+$/ ?
+          $work{$dfltsite}{group} :
+          (getgrnam($work{$dfltsite}{group}))[2]);
+}
+
+# Create auditlog, errorlog and tracelog directory/file
+foreach my $log (sort keys %logarr) {
+  if (defined $work{$dfltsite}{$log}) {
+    my $logdir;
+    logit($mysname,1,"Creating log file for $log")
+      if ($clargs{$dfltsite}{verbose});
+    ($logdir = $work{$dfltsite}{$log}) =~ s%^(/.*)/.*?$%$1%;
+    mkdirs($logdir,0,0,0755) if (! -d $logdir);
+    open(LOG,">${work{$dfltsite}{$log}}");
+    close(LOG);
+    #chown($uid,$gid,$logdir);
+    chown($uid,$gid,$work{$dfltsite}{$log});
+    chmod(0644,$work{$dfltsite}{$log});
+  }
+}
+
+# Create pidfile directory if needed
+if (defined $work{$dfltsite}{pidfile}) {
+  my $dir;
+  ($dir = $work{$dfltsite}{pidfile}) =~ s%^(/.*)/.*?$%$1%;
+  mkdirs($dir,0,0,0755);
+}
+
+# Log the command was run
+logit($mysname,1,"Logging the execution")
+  if ($clargs{$dfltsite}{verbose});
+my $out = "";
+$out = "User: $realuser";
+$out .= "($effuser)" if ($realuser ne $effuser);
+$out .= " TTY: $tty";
+$out .= " CMD: $0 ".join(" ",@allargv);
+if ($out ne "") {
+  logit($mysname,8,"daemon","notice","%s",$out);
+  #logit($mysname,2,"%s",$out);
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-instance name][-configuration config|-useconfig]\n",
+        "    [-template tfile][-passphrase phrase][-nosave]\n",
+        "    [-merge][-preview][-verbose][-OPTIONS...]\n",
+        "  where: name       - instance name to discern multiple daemons\n",
+        "         config     - file to use as base configuration\n",
+        "         tfile      - template file to use as base configuration\n",
+        "         phrase     - passphrase to jumble generated passwords\n",
+        "         -useconfig - use existing configuration for base\n",
+        "         -nosave    - do not save $oldext configuration file\n",
+        "         -merge     - merge in allowip/allowrange values\n",
+        "         -preview   - ONLY output configuration file and exit\n",
+        "         -verbose   - describe events each step of the way\n",
+        "         -OPTIONS   - any valid configuration file option\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub genvalue {
+  my($directive,$site,$passphrase) = @_;
+  my($ret,$s);
+
+  $passphrase = $directive if ($passphrase eq "");
+
+  $ret = lc($site);
+  $ret =~ s/^www\.//;
+  $ret =~ s/^w3\.//;
+  $ret =~ s/\.(org|net|com)$//;
+  $ret =~ s/\W//g;
+  $ret =~ s/[aeiouy]//g if (length($ret) > 25);
+
+  if ($directive =~ "user") {
+    return $ret;
+  } elsif ($directive =~ "pass") {
+    $s = "ABCDEFGH\+JKLMN\=PQRSTUVWXYZ\!\@";
+    $s .= "abcdefghijk\-mnopqrstuvwxyz\@\!";
+    $s .= "\?\_23456789";
+    $s = $s x (length($passphrase)+length($ret));
+
+    my @ss = split(//,$s);
+
+    my $maxlen = length($passphrase);
+    $maxlen = length($ret) if (length($ret) > $maxlen);
+
+    my $p = $passphrase x ($maxlen - length($passphrase) + 3);
+    my @sp = split(//,$p);
+    my $r = $ret x ($maxlen - length($ret) + 3);
+    my @sr = split(//,$r);
+
+    $ret = "";
+    foreach (0..($maxlen+2)) {
+      $ret .= $ss[(ord($sp[$_])+ord($sr[$_]))];
+    }
+
+    return $ret;
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+print "$main::running_under_some_shell\n";

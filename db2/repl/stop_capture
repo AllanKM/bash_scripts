@@ -1,0 +1,12 @@
+#!/bin/ksh
+
+if [[ $# -eq 0 ]]
+  then
+    print "Usage: $(basename $0) DBName"
+    exit -1
+fi
+
+
+DB="$1"
+
+asncmd $DB stop

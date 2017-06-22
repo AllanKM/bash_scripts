@@ -1,0 +1,14 @@
+-OPT silentInstallLicenseAcceptance="true"
+-OPT disableOSPrereqChecking="true"
+-OPT installType="installNew"
+-OPT profileType="custom"
+-OPT feature="noFeature"
+-OPT PROF_enableAdminSecurity="false"
+-OPT installLocation="/usr/WebSphere70/AppServer"
+-OPT PROF_profilePath=/usr/WebSphere70/AppServer/profiles/<profilename>
+-OPT PROF_profileName=<profilename>
+-OPT PROF_hostName=<host>
+-OPT PROF_cellName=<profilename>
+-OPT PROF_nodeName=<profilename>
+-OPT PROF_federateLater="true"
+-OPT PROF_isDefault="true"

@@ -1,0 +1,163 @@
+################################################################################
+#
+# FLEXnet Publisher Options File
+#
+# Wizard name: Install
+# Wizard source: assembly.dat
+# Created on: Fri Apr 25 00:54:39 UTC 2008
+# Created by: FLEXnet Publisher Options File Generator
+#
+# This file contains values that were specified during a recent execution of
+# Install. It can be used to configure Install with the options specified below
+# when the wizard is run with the "-options" command line option. Read each
+# setting's documentation for information on how to change its value.
+# 
+# A common use of an options file is to run the wizard in silent mode. This lets
+# the options file author specify wizard settings without having to run the
+# wizard in graphical or console mode. To use this options file for silent mode
+# execution, use the following command line arguments when running the wizard:
+# 
+#    -options "/tmp/v611itdi.script" -silent
+#
+################################################################################
+
+
+################################################################################
+#
+# Custom Dialog: License
+#
+# The initial state of the License panel. The accept and reject option states
+# are stored as Variables and must be set with -V
+#
+
+
+-V LICENSE_ACCEPT_BUTTON="true"
+
+
+################################################################################
+#
+# Custom Dialog: License
+#
+# The initial state of the License panel. The accept and reject option states
+# are stored as Variables and must be set with -V
+#
+
+
+-V LICENSE_REJECT_BUTTON="false"
+
+
+################################################################################
+#
+# Custom Dialog: TDIUpgradeMigrate
+#
+# TDIUpgradeMigrate panel Variable. This selection indicates this is a normal
+# install.
+#
+
+
+-V TDI_RadioButton_Install="true"
+
+
+################################################################################
+#
+# Custom Dialog: TDIUpgradeMigrate
+#
+# TDIUpgradeMigrate panel Variable. This selection indicates this is an upgrade
+# of an existing install.
+#
+
+
+-V TDI_RadioButton_Upgrade="false"
+
+
+################################################################################
+#
+#
+#
+
+
+-IU installGroup=TypicalInstallGroup
+
+
+################################################################################
+#
+#
+#
+
+
+-IUV _TARGETDIR="/opt/IBM/TDI/V6.1.1"
+
+
+################################################################################
+#
+# Custom Dialog: TDISoldir
+#
+# TDI_SOLDIR panel Variable. This selection causes the Solutions directory to be
+# created under the users home directory.
+#
+
+
+-V TDI_RadioButton_UnderHome="false"
+
+
+################################################################################
+#
+# Custom Dialog: TDISoldir
+#
+# TDI_SOLDIR panel Variable. This selection causes the Solutions directory to be
+# created under the install directory.
+#
+
+
+-V TDI_RadioButton_InstallDir="false"
+
+
+################################################################################
+#
+# Custom Dialog: TDISoldir
+#
+# TDI_SOLDIR panel Variable. Ths selection allows for specifying a user-selected
+# directory.
+#
+
+-V TDI_RadioButton_SelectDir="false"
+
+
+################################################################################
+#
+# Custom Dialog: TDISoldir
+#
+# TDI_SOLDIR panel Variable. This selection causes the Solutions directory to be
+# created in the current directory.
+#
+
+
+-V TDI_RadioButton_NoSpec="true"
+
+
+################################################################################
+#
+# Custom Dialog: TDIWebServer
+#
+# TDIWasDestination panel Variable. This IU Variable specifies whether or not a
+# WebServer was specified.
+#
+
+
+-IUV TDI_NOAPPSRV="true"
+
+
+################################################################################
+#
+# Custom Dialog: TDIMigrateInfo
+#
+# TDIMigrationInfo panel Variable. This selection indicates whether or not the
+# TDI System Store will be migrated.
+#
+
+
+-V TDI_Migrate_Cloudscape="false"
+
+
+################################################################################
+

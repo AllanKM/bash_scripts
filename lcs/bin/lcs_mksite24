@@ -1,0 +1,524 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Sys::Hostname;
+use POSIX;
+use Getopt::Long;
+use Time::Local;
+
+umask 002;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mypath = $mylname;
+$mypath =~ s%$mysname$%%;
+$mypath = './' if ($mypath eq '');
+$mypath =~ s%/$%%g;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+my $lcs_ctl = "lcs_ctl";                # Control configurations
+my $cfgdir = "/opt/HPODS/LCS/conf";     # Daemon configuration dir
+my $cfgbase = "$cfgdir/";               # Configuration base filespec
+my $cfgext = ".conf";                   # Configuration filespec extension
+
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'date:s' => sub { $clargs{$_[0]} = $_[1] },
+  'interval:i' => sub { $clargs{$_[0]} = $_[1] },
+  'poll:i' => sub { $clargs{$_[0]} = $_[1] },
+  'extension:s' => sub { $clargs{$_[0]} = $_[1] },
+  'subdir:s' => sub { $clargs{$_[0]} = $_[1] },
+  'clean' => sub { $clargs{$_[0]} = 1 },
+  'noalert' => sub { $clargs{$_[0]} = 1 },
+  'verbose' => sub { $clargs{$_[0]} = 1 },
+  'debug' => sub { $clargs{$_[0]} = 1 },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+if (! @ARGV) {
+  logit($mysname,2,"Must specify at least one site name");
+  usage($mysname);
+  exit 1;
+}
+
+my $date = $clargs{date} || &yesterday;
+my $fullday = 60*60*24;
+my $interval = $clargs{interval} || $fullday;
+my $poll = $clargs{poll} || $fullday;
+my $extension = $clargs{extension} || "%Y%m%d";
+my $subdir = $clargs{subdir} || "%Y%m%d";
+my $clean = $clargs{clean} || 0;
+my $noalert = $clargs{noalert} || 0;
+my $verbose = $clargs{verbose} || 0;
+my $debug = $clargs{debug} || 0;
+
+my $tmpext = "tmp";
+my $fnodes = "nodes";
+my %onelogroot = {                      # Only keep last interval for these
+     "httpd_conf" => 1,                 #  httpd.conf file
+     "rDeny_conf" => 1,                 #  rDeny.conf file
+   };
+my $cat = "cat";                        # cat command
+my $tar = "tar";                        # tar command
+my $tarcargs = "cdfp";                  # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+$tarcargs = "cdfpv" if ($debug);        #  and if debug, turn on verbose mode
+my $tarxargs = "xfp";                   # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+$tarxargs = "xfpv" if ($debug);         #  and if debig, turn on verbose mode
+my $rsync = "rsync";                    # rsync command
+my $rsyncargs = "-ltprq";               # arguments assume that file-list
+                                        #  and dest-dir directly follow
+$rsyncargs = "-ltprv" if ($debug);      #  and if debug, turn on verbose mode
+my $gzip = "gzip";                      # gzip command
+my $gzipcargs = "-9";                   # arguments to compress file 
+my $gzipuargs = "-d -c";                # arguments assume uncompress from
+                                        #  a file and sent to a pipe
+my $rm = "rm";                          # rm command
+my $rmargs = "-rf";                     # arguments assume file or directory
+
+my %allsites = ();
+my %cfgs = ();
+my @cfglst = ();
+if (opendir(DIR,$cfgdir)) {
+  @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+  closedir(DIR);
+  if (@cfglst) {
+    foreach my $cfg (sort @cfglst) {
+      my $i = $cfg;
+      $i =~ s/$cfgext$//;
+      #logit($mysname,1,"Loading $lcs_ctl $cfg $i") if ($clargs{verbose});
+      loadfile(\%cfgs,"$cfgbase$cfg",$i,1);
+      foreach my $key (keys %cfgs) {
+        if (! defined $allsites{$key}) {
+          $allsites{$key} = $i;
+        }
+      }
+    }
+  }
+}
+
+my $exitrc = 0;
+my $site;
+my @errsites = ();
+foreach $site (@ARGV) {
+  my $inst;
+
+  if (! defined $allsites{$site}) {
+    logit($mysname,2,"No configuration information found for $site");
+    next;
+  }
+
+  $inst = $allsites{$site};
+
+  # Obtain valid user id and group id with which
+  # to create directories and files
+  my $userid = "0";
+  $userid = (@{$cfgs{$inst}{user}})[$[]
+    if (defined $cfgs{$inst}{user});
+  $userid = (@{$cfgs{$site}{user}})[$[]
+    if (defined $cfgs{$site}{user});
+  my $uid = (getpwnam($userid))[2];
+  $uid = 0 if ($uid eq "");
+  my $groupid = "0";
+  $groupid = (@{$cfgs{$inst}{group}})[$[]
+    if (defined $cfgs{$inst}{group});
+  $groupid = (@{$cfgs{$site}{group}})[$[]
+    if (defined $cfgs{$site}{group});
+  my $gid = (getgrnam($groupid))[2];
+  $gid = 0 if ($gid eq "");
+
+  my $logprefix = "/logs/UNKNOWN";
+  $logprefix = (@{$cfgs{$site}{archivedirectory}})[$[]
+    if (defined $cfgs{$site}{archivedirectory});
+  my $logextension = "%Y%m%d%H%M";
+  $logextension = (@{$cfgs{$site}{logextenstion}})[$[]
+    if (defined $cfgs{$site}{logextenstion});
+  my $loginterval = 60;
+  $loginterval = (@{$cfgs{$site}{loginterval}})[$[]
+    if (defined $cfgs{$site}{loginterval});
+  my @logroots = ();
+  @logroots = @{$cfgs{$site}{logroot}}
+    if (defined $cfgs{$site}{logroot});
+
+  # Make sure we'll be able to write to logprefix
+  if (! -d $logprefix && ! -w $logprefix) {
+    logit($mysname,2,"Unable to find/write to log directory $logprefix");
+    next;
+  }
+  # Must have a consolidation interval as a multiple of log interval
+  if ($interval % $loginterval != 0) {
+    logit($mysname,2,"Required interval ($interval) not multiple of ".
+                     "log interval ($loginterval)");
+    next;
+  }
+  # Must have a set of logroots
+  if (! @logroots) {
+    logit($mysname,2,"No valid logroots found for site $site");
+    next;
+  }
+
+  my ($year,$mon,$mday) = unpack("a4a2a2",$date);
+  my $topts = timelocal(0,0,0,$mday,$mon-1,$year-1900);
+  my $bts = $topts;
+  my $endts = $topts + $fullday;
+  my $err = 0;
+  my $found = 1;
+  my %nhsh = ();
+  my @allfiles = ();
+  my $dir24 = POSIX::strftime("$logprefix/$subdir", localtime($topts));
+  my $dirbd = POSIX::strftime("$logprefix/bydate/$subdir", localtime($topts));
+  if (-d $dir24 && -d $dirbd) {
+    ($debug) and logit($mysname,1,"Skipping $site - already run");
+    next;
+  }
+  for (my $i = $topts; $i < $endts; $i += $loginterval) {
+    my @nlst = ();
+    my $ts = POSIX::strftime($logextension, localtime($i));
+    my $nts = $ts;
+    if (open(NTS, "<$logprefix/$fnodes.$nts")) {
+      chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+      close(NTS);
+    } else {
+      logit($mysname,2,
+        "Unable to find node list file: $logprefix/$fnodes.$nts");
+      $err++;
+      $found = 0;
+      last;
+    }
+    push(@allfiles,"$logprefix/$fnodes.$nts");
+    if ($debug) {
+      my $cts = POSIX::strftime("%H:%M %m/%d/%Y", localtime($i));
+      logit($mysname,1,"Checking timestamp $cts ($i)");
+    }
+    my $node;
+    foreach $node (@nlst) {
+      my $logroot;
+      foreach $logroot (@logroots) {
+        if (-f "$logprefix/$node.$logroot.$ts" &&
+            ! -f "$logprefix/$node.$logroot.$ts.gz") {
+          # Try compressing
+          system("$gzip $gzipcargs $logprefix/$node.$logroot.$ts");
+          my $rc = $? >> 8;     # Exit code from system call
+          if ($rc == 0) {
+            # Success
+          } else {
+            unlink("$logprefix/$node.$logroot.$ts.gz");
+            logit($mysname,2,"Unable to compress: ".
+                             "$logprefix/$node.$logroot.$ts");
+            $err++;
+          }
+        }
+        if (-f "$logprefix/$node.$logroot.$ts.gz") {
+          push(@{$nhsh{$node}{$logroot}},"$node.$logroot.$ts");
+        } else {
+          ### Possibly future check for handled skips
+          logit($mysname,2,"Missing log file: ".
+                           "$logprefix/$node.$logroot.$ts");
+          $err++;
+          $found = 0;
+        }
+        last if ($found == 0);
+      }
+      last if ($found == 0);
+    }
+    last if ($found == 0);
+    if (($found == 1) && (($i+$loginterval) % $interval == 0)) {
+      my $tdir = "$logprefix/tmp$$";
+      mkdirs($tdir,$uid,$gid,0755);
+      my $cdir = POSIX::strftime("$logprefix/$subdir", localtime($bts));
+      mkdirs($cdir,$uid,$gid,0755);
+      # Loop on node
+      foreach $node (sort keys %nhsh) {
+        # Loop on logroot
+        my $logroot;
+        ($debug) and logit($mysname,1,"Working on node $node");
+        foreach $logroot (sort keys %{$nhsh{$node}}) {
+          # Concatenate all timestamps for logroot to $extension .gz file
+          my $loglst;
+          push(@allfiles,(map { "$logprefix/$_.gz" } @{$nhsh{$node}{$logroot}}));
+          if (defined $onelogroot{$logroot}) {
+            $loglst = "$logprefix/".
+                      (reverse @{$nhsh{$node}{$logroot}})[$[].
+                      ".gz";
+          } else {
+            $loglst = join(' ',
+                      map { "$logprefix/$_.gz" } @{$nhsh{$node}{$logroot}});
+          }
+          system("$cat $loglst > $tdir/$node.$logroot.$tmpext");
+          my $rc = $? >> 8;     # Exit code from system call
+          if ($rc == 0) {
+            # Success
+          } else {
+            unlink("$tdir/$node.$logroot.$tmpext");
+            logit($mysname,2,"Unable to create $cdir/$node.$logroot.$tmpext");
+            $err++;
+            last;
+          }
+          last if ($err > 0);
+          chown($uid,$gid,"$tdir/$node.$logroot.$tmpext");
+          # Rename $node.$logroot.$tmpext to $node.$logroot.$extension.gz
+          my $nlog = "$tdir/$node.$logroot";
+          $nlog .= ".$extension"
+            if (($extension ne "") && ($interval != $fullday));
+          $nlog .= ".gz";
+          $nlog = POSIX::strftime("$nlog", localtime($bts));
+          if (rename("$tdir/$node.$logroot.$tmpext",$nlog)) {
+            if ($interval == $fullday) {
+              # Move it to $cdir
+              my $blog = $nlog;
+              $blog =~ s%^.*/%%g;
+              if (rename($nlog,"$cdir/$blog")) {
+                # Success
+              } else {
+                logit($mysname,2,"Unable to rename $nlog to $cdir/$blog");
+                $err++;
+                last;
+              }
+            } else {
+              logit($mysname,2,"WARNING - Interval ($i by $interval) ".
+                               "is not a full day ($fullday)");
+            }
+          } else {
+            logit($mysname,2,"Unable to rename ".
+                             "$tdir/$node.$logroot.$tmpext to $nlog");
+            $err++;
+            last;
+          }
+        } # End each logroot
+        last if ($err > 0);
+      } # End each node
+      last if ($err > 0);
+      # If interval is fullday then data in $cdir otherwise in $tdir
+      rmdir($tdir);
+      # Clear hash for next consolidation
+      %nhsh = ();
+      $bts = $i + $loginterval;
+    } # If found and need to consolidate
+  } # End each loginterval
+  if ($found == 1 && $err == 0) {
+    my $adir = POSIX::strftime("$logprefix/bydate/$subdir", localtime($topts));
+    mkdirs($adir,$uid,$gid,0755);
+    my $f = @allfiles;
+    ($debug) and logit($mysname,1,"Archiving original files ($f) to $adir");
+    foreach $f (@allfiles) {
+      my $blog = $f;
+      $blog =~ s%^.*/%%g;
+      if (rename($f,"$adir/$blog")) {
+        # Success
+      } else {
+        logit($mysname,2,"Unable to rename $f to $adir/$blog");
+        $err++;
+      }
+    } # End each @allfiles
+  } # If all files found and no errors
+  if ($err > 0) {
+    push(@errsites,$site);
+    $exitrc++;
+  } else {
+    if ($clean ne "0") {
+      if (-d $dir24 && $logprefix ne "" && $subdir ne "") {
+        ($debug) and logit($mysname,1,"Removing $dir24");
+        system("$rm $rmargs $dir24");
+        my $rc = $? >> 8;       # Exit code from system call
+        if ($rc == 0) {
+          # Success
+        } else {
+          logit($mysname,2,"Unable to remove $dir24");
+        }
+      } else {
+        logit($mysname,2,"Invalid 24hr directory '$dir24'");
+      }
+    }
+  }
+} # End each site
+
+if ($exitrc > 0) {
+  my $s = join(",",@errsites);
+  if ($noalert eq 0) {
+    my $cmd = "$mypath/lcs_notify -options '-p $poll -g \"$mysname\"".
+              " -k \"$s:$host\"' -eventid AN_000_W ".
+              "'PAGE-0472 - $mylname errors on $host for: $s'";
+    system($cmd);
+  } else {
+    logit($mysname,2,"$mysname errors on $host for: $s");
+  }
+}
+
+exit $exitrc;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-date date][-interval seconds][-poll poll][[-extension ext]\n",
+        "    [-subdir dir][-clean][-noalert][-verbose][-debug] site [...]\n",
+        "  where: date       - day to process\n",
+        "         seconds    - log interval\n",
+        "         poll       - how often script runs in seconds\n",
+        "         ext        - consolidated log extension\n",
+        "         dir        - consolidated log directory\n",
+        "         -clean     - remove 24hr directory when complete\n",
+        "         -noalert   - do not issue notifies\n",
+        "         -verbose   - verbose logging\n",
+        "         -debug     - debug mode\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub yesterday {
+  my ($day,$mon,$yr);
+  my $stime = time();
+
+  $stime -= 60*60*24;
+  ($day,$mon,$yr) = (localtime($stime))[3,4,5];
+  return sprintf("%04d%02d%02d\n", 1900+$yr, $mon+1, $day);
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+print "$main::running_under_some_shell\n";

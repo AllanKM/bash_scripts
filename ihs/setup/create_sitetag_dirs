@@ -1,0 +1,51 @@
+#!/bin/ksh
+#
+# This script:
+#       - Takes a list of site_tags from a config file
+#       - Creates the site_tag and full site name link to site_tag
+#       - Creates the standard 5 dirs: cgi-bin, content, data, etc, fcgi-bin 
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 1 ]; then
+  CONFIG=$1
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."
+  echo "   Format is <CONFIG>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   CONFIG was not added to the configuration"
+  echo "   script for this event."
+  echo "   Format is <config_file>"
+  echo ""
+  exit 1
+fi
+
+echo "Checking to see if requested configuration script exist"
+if [ ! -f /lfs/system/tools/ihs/conf/$CONFIG ]; then
+  echo "$CONFIG file does not exist"
+  exit 2
+fi
+
+echo "Creating site_tag dirs and symlinks"
+{ while read MYLINE; do
+    SITE_TAG=${MYLINE%\:*}
+    LONG_NAME=${MYLINE#*\:}
+    echo "   Acting on site_tag $SITE_TAG and long name $LONG_NAME"
+    if [ -e /projects/$SITE_TAG -o -e /projects/$LONG_NAME ]; then
+      echo "     One or both of these already exist, skipping"
+    else
+      mkdir -p /projects/$SITE_TAG/cgi-bin
+      mkdir -p /projects/$SITE_TAG/content
+      mkdir -p /projects/$SITE_TAG/data
+      mkdir -p /projects/$SITE_TAG/etc
+      mkdir -p /projects/$SITE_TAG/fcgi-bin
+      ln -sf $SITE_TAG /projects/$LONG_NAME
+    fi
+  done } < /lfs/system/tools/ihs/conf/$CONFIG 

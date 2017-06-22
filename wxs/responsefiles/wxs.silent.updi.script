@@ -1,0 +1,3 @@
+-OPT silentInstallLicenseAcceptance="true"
+-OPT disableOSPrereqChecking="true"
+-OPT installLocation="/usr/WebSphere/UpdateInstaller"

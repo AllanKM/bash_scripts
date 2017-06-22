@@ -1,0 +1,25 @@
+#!/bin/sh
+#---------------------------------------------------------------
+
+if [ $# -eq 1 ]; then
+  EVENT=$1
+else [ $# -gt 0 ];
+  echo ""
+  echo " Missing parameters. Usage:"
+  echo "  fix_whichnode <event>"
+  echo ""
+  exit
+fi
+
+ECHO="/bin/echo"
+SHORTHOST=`/bin/hostname -s`
+
+EVENT=$1
+
+
+$ECHO "Fixing Admin/whichnode"
+rm -rf /projects/$EVENT/content/Admin/whichnode 
+mkdir -p /projects/$EVENT/content/Admin
+echo "$SHORTHOST" > /projects/$EVENT/content/Admin/whichnode.txt
+# Can't have a .html file for whichnode cause all .html files
+# must have the ibm.com standard template.  .txt are exempt from this rule

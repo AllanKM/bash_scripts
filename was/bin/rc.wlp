@@ -1,0 +1,377 @@
+#!/bin/bash
+#
+# This script manages Life-cycle operations for Liberty servers
+#
+# USAGE: sudo /lfs/system/tools/was/bin/rc.wlp start|startclean|stop|restart|status|dump|javadump|list|setperms|version|help|delete|create|wxs [serverName|all|xscmd command]
+#
+# 20160304 - Add 'check' option for healthchecking based on uris listed in JVM/hc.txt
+# 20160223 - Account for SDE liberty base path
+# 20150331 - Added 'list' command to perform status on each
+#            server in the wlp/usr/servers dir#
+# 20150528 - Major rewrite to add new actions, list selection, process information etc.
+# 20150604 - Added support for eXtremeScale xscmd local catalog server commands.
+# 20150605 - Align ownership/permissions with ei_wlp cookbook.
+#
+
+if [ -d "/usr/WebSphere/wlp" ]; then
+  libby="/usr/WebSphere/wlp"
+fi
+if [ -d "/usr/WebSphere/liberty/wlp" ]; then
+  libby="/usr/WebSphere/liberty/wlp"
+fi
+serverCmd="${libby}/bin/server"
+wxsCmd="${libby}/bin/xscmd.sh"
+serversDir="${libby}/usr/servers"
+logsDir="/logs/wlp"
+configuredServers=""
+
+#Verify script is called via sudo
+if [[ $SUDO_USER == "" ]]; then
+   echo ""
+   echo "/////////////////////////////////////////////////////////////////"
+   echo "**********  Script rc.wlp needs to be run with sudo   ***********" 
+   echo "/////////////////////////////////////////////////////////////////"
+   echo ""
+   exit 1
+fi
+#
+# Start of Functions
+#
+
+healthCheck()
+{
+ RED=`echo -e '\033[31m'`
+ GREEN=`echo -e '\033[32m'`
+ NOC=`echo -e '\033[0m'`
+ echo -e "\033[1m JVM : $1 \033[0m"
+ echo
+ port=`echo "xpath string(//httpEndpoint/@httpsPort)" | xmllint --shell ${serversDir}/${1}/server.xml |grep Object |awk -F: {'print $2'} |tr -d ' '`
+ for url in $(cat ${serversDir}/${1}/hc.txt); do 
+   echo -e "\033[1m Checking: https://localhost:${port}/$url \033[0m"
+   echo
+   /lfs/system/tools/was/bin/hc.sh https://localhost:${port}/${url} | sed -e "s/PASS/${GREEN}PASS${NOC}/" | sed -e "s/FAIL/${RED}FAIL${NOC}/"
+   echo
+   echo '――――――――――――――――――――――――――――――――――――――――――――'
+   echo
+ done
+}
+
+executeCommand ()
+{ 
+  commandName=$1
+  postArgs=$2
+  
+  echo ""
+  echo "---  Executing command: ${action}  -----------------------------------------------------"
+  echo ""
+  
+  if [ -z "${serverList}" ]; then
+     if [[ "$commandName" == "version " || "$commandName" == "help " ]]; then
+        su - webinst -c "umask 0027; ${serverCmd} ${commandName}"
+        echo ""
+     else
+        echo "There are no WLP servers selected to ${commandName}"
+        echo ""
+     fi   
+  else  
+     for serverName in ${serverList}; do
+        if [ "$commandName" == "restart " ]; then
+           su - webinst -c "umask 0027; ${serverCmd} stop  ${serverName}"
+           su - webinst -c "umask 0027; ${serverCmd} start ${serverName}"
+        elif [ "$commandName" == "check " ]; then
+           healthCheck $serverName
+        else
+           su - webinst -c "umask 0027; ${serverCmd} ${commandName} ${serverName} ${postArgs}"
+        fi
+        echo ""
+     done
+  fi
+  
+  echo ""
+  echo "---  Completed command execution  ----------------------------------------------"
+  echo ""  
+}
+
+executeWXSCommand ()
+{
+
+  echo ""
+  echo "---  Executing eXtremeScale command: $1  ---------------------------"
+  echo ""
+  
+  if ! [[ -d "$serversDir/WXSCatalogServer" ]]; then
+        echo "WXSCatalogServer was not found on this node. Cannot execute command."
+        echo ""
+        exit 0
+  fi
+ 
+  wxsCommandName="-c $1" 
+  listenerHost=$(cat $serversDir/WXSCatalogServer/server.xml | grep xsServer | awk -F"=" '{for(i=1;i<=NF;i++) { if($i~/listenerHost/) v=$(i+1); } } END { gsub(/"|>/,"",v); print v; }' | awk '{ print $1 }')
+  listenerPort=$(cat $serversDir/WXSCatalogServer/server.xml | grep xsServer | awk -F"=" '{for(i=1;i<=NF;i++) { if($i~/listenerPort/) v=$(i+1); } } END { gsub(/"|>/,"",v); print v; }' | awk '{ print $1 }')
+  
+  if [[ -z "$listenerHost" || -z "$listenerPort" ]]; then
+     echo " Unable to find listenerHost and listenerPort"
+     exit 0 
+  fi
+  
+  postArgs=" -cep $listenerHost:$listenerPort"
+  
+  su - webinst -c "umask 0027; ${wxsCmd} ${wxsCommandName} ${postArgs}"
+  
+  echo ""
+  echo "---  Completed command execution  ----------------------------------------------"
+  echo ""  
+}
+
+findConfiguredServers ()
+{
+  servers=`ls ${libby}/usr/servers`
+  for serverName in ${servers}; do
+    if [ ${serverName:0:1} != "." ]; then
+       configuredServers=${configuredServers}" "${serverName}
+    fi
+  done
+}
+
+setPerms ()
+{
+  echo "Setting ownership and permissions for WLP"
+
+  chown -R webinst:apps ${libby} ${logsDir}    >/dev/null 2>&1
+
+  find ${libby} -type f -exec chmod 644 {} \; >/dev/null 2>&1
+  find ${logsDir}          -type f -exec chmod 640 {} \; >/dev/null 2>&1
+
+  find ${libby} -type d -exec chmod 775 {} \; >/dev/null 2>&1
+  find ${logsDir}          -type d -exec chmod 775 {} \; >/dev/null 2>&1
+
+  chmod g+s ${libby} ${libby}/usr ${logsDir} >/dev/null 2>&1
+
+  chmod u+rwx,go+rx ${libby}/bin/*            >/dev/null 2>&1
+  chmod ugo-x       ${libby}/bin/*.bat        >/dev/null 2>&1
+
+  echo "Completed"
+}
+
+deleteServers ()
+{  
+  if [ -z "${serverList}" ]; then
+     echo ""
+     echo "There are no WLP servers selected to delete."
+     echo ""
+     exit 0
+  fi
+    
+  echo "Please confirm you wish to delete the following servers:"
+  echo ""
+  
+  for serverName in ${serverList}; do   
+    echo "     ${serverName}"
+  done
+  
+  echo ""
+  echo "Enter 'y' to delete and 'n' or any other key to exit without deleting."
+  echo ""  
+  read confirmation
+  echo ""
+  
+  if [ "$confirmation" == "y" ]; then
+    for serverName in ${serverList}; do
+       if [ -d $serversDir/$serverName ]; then
+          command=" status "
+          su - webinst -c "umask 0027; ${serverCmd} ${command} ${serverName}" | grep "is running"  >/dev/null 2>&1
+          if [ $? == 0 ]; then
+             echo "Server ${serverName} must be stopped prior to deleting."
+          else
+             su - webinst -c "rm -R ${serversDir}/${serverName}"
+             echo "Deleted: $serversDir/$serverName"
+             if [ -d $logsDir/$serverName ]; then
+                 su - webinst -c "rm -R ${logsDir}/${serverName}"
+                 echo "Deleted: $logsDir/$serverName"
+             else
+                echo "Logs for server ${serverName} at ${logsDir}/${serverName} do not exist to be deleted."
+             fi
+          fi
+       else
+          echo "Server ${serverName} does not exist to be deleted." 
+       fi
+       echo ""
+    done
+  else
+    echo "Delete has been aborted."
+  fi  
+}
+
+usage ()
+{
+ echo ""
+ echo "USAGE: sudo ./rc.wlp start|startclean|stop|restart|status|dump|javadump|list|check|setperms|version|help|delete|create|wxs [serverName|all| xscmd command]"
+ echo ""
+ echo "      a)  If a 'serverName' is specified then only that server will be acted upon."
+ echo "      b)  If 'all' is specified then all the servers will be acted upon."
+ echo "      c)  If 'list', 'setperms', 'version' or 'help' is specified then '[serverName|all]' is ignored."
+ echo "      d)  If 'create' is specified then 'serverName' is required."
+ echo "      e)  If 'wxs' is specified then a supported eXtremeScale xscmd command must follow."
+ echo ""
+}
+
+#
+# End of Functions
+#
+
+
+# Begin Mainline
+
+echo ""
+if [[ $1 != "" ]]; then
+  action=$1
+  if ! [[ $action = "start" || $action = "startclean" || $action = "stop" || $action = "restart" || $action = "status" || $action = "version" || $action = "dump" || $action = "javadump" || $action = "list" || $action = "help" || $action = "setperms" || $action = "delete" || $action = "create" || $action = "wxs" || $action = "check" ]]; then
+      echo "Action $action not supported."
+      usage
+      exit 0
+  fi
+else
+  echo "An action must be specified."
+  usage
+  exit 0 
+fi
+
+if [[ "$action" == "create" && $2 == "" ]]; then
+    echo "Server name must be specified for server creation."
+    exit 0
+else    
+   if [[ "$action" == "create" && ${2,,} == "all" ]]; then
+        echo "Server name cannot be '$2' for server creation."
+        exit 0
+   fi
+fi
+
+if [[ "$action" == "wxs" && $2 == "" ]]; then
+    echo "A supported eXtremeScale xscmd command must be specified."
+    echo ""
+    echo "Enter one of: listHosts, listObjectGridNames, routetable, showInfo, showMapSizes, showPlacement"
+    echo ""
+    exit 0
+else    
+   if [[ "$action" == "wxs" ]]; then
+       if ! [[ "$2" == "listHosts" ||  "$2" == "listObjectGridNames" ||  "$2" == "routetable" ||  "$2" == "showInfo" ||  "$2" == "showMapSizes" ||  "$2" == "showPlacement" ]]; then
+            echo "eXtremeScale xscmd command $2 is not supported."
+            echo ""
+            echo "Enter one of: listHosts, listObjectGridNames, routetable, showInfo, showMapSizes, showPlacement"
+            echo ""
+            exit 0
+       else
+          wxsCommand=$2
+       fi
+   fi
+fi
+
+if [[ ! -d ${libby} ]]; then  
+   echo " WLP was not detected on this node. This script is to be run on WLP installations only."
+   echo ""
+   exit 0
+fi
+
+arg=$2
+#Make status command consistent 
+if [[ "$action" == "status" && "$arg" == "all" ]]; then
+     arg=""
+fi
+
+if [[ "$action" != "wxs" ]]; then
+   if [[ "$arg" != "" || "$action" == "list" ]]; then
+      serverName=$arg
+      if [[ "$serverName" == "all" || "$action" == "list" ]]; then
+         findConfiguredServers
+         serverList="${configuredServers}"
+      else
+         serverList="${serverName}"
+      fi
+   else 
+      if [[ "$action" != "setperms" && "$action" != "version" && "$action" != "help" ]]; then
+         ## Get the list of user specified servers to act on.
+         echo ""
+         findConfiguredServers
+         cnt=0
+         if [[ -n ${configuredServers} ]]; then
+             echo "==========================================================================="
+             printf "%4s %-20s %-14s %-8s %-10s %-12s \n" "ID" "Server Name" "Status" "PID" "Start Time  " "Elapsed Time"
+             echo "==========================================================================="
+         fi
+         for serverName in ${configuredServers}; do
+            cnt=$(($cnt+1))
+            #Obtain the run status and pid info and add to the printf
+            command=" status "
+            su - webinst -c "umask 0027; ${serverCmd} ${command} ${serverName}" | grep "is running"  >/dev/null 2>&1
+            if [ $? == 0 ]; then
+               status="Running"
+               pid=$(su - webinst -c "umask 0027; ${serverCmd} ${command} ${serverName}" | grep "ID" | awk '{print $8}')
+               pid=`echo ${pid%?}`
+               pidStart=`ps -o start=   -p $pid`
+               pidElapsed=`ps -o etime= -p $pid`
+            else
+               status="Stopped"
+               pid=""
+               pidStart=""
+               pidElapsed=""
+            fi
+            echo ""
+            printf "%3s) %-20s %-12s %-10s %10s %14s  \n" "${cnt}" "${serverName}" "${status}" "${pid}" "${pidStart}" "${pidElapsed}"
+         done
+         echo ""
+         if [ "$action" == "status" ]; then
+            exit 0 
+         else
+            echo ""
+            echo " Select the server ID's to ${action} separated by a space or comma then press Enter."
+            echo " Press Enter only to exit without taking action."
+            echo ""
+         fi
+         serverList=""
+         read -a serverArray <<<$configuredServers
+         read selectedServers    
+         selectedServers=`echo ${selectedServers} | sed 's/,/ /g'`
+         for serverNumber in ${selectedServers}; do
+            echo "$serverNumber" | grep '[0-9]' >/dev/null 2>&1
+            if [ $? != 0 ]; then
+               echo ""
+               echo "Server number: ${serverNumber} is invalid."
+               exit 0
+            fi
+            if [[ "$serverNumber" -ge 0 && "$serverNumber" -le "$cnt" ]]; then
+                idx=$(($serverNumber-1))            
+                serverName="${serverArray[$idx]}"
+                serverList=${serverList}" "${serverName}
+            else
+                echo "Server number: ${serverNumber} is invalid."
+                exit 0
+            fi
+         done
+      fi
+   fi
+fi   
+
+case "$action" in
+
+   "restart"    )   executeCommand "restart " ;;
+   "stop"       )   executeCommand "stop " ;;
+   "start"      )   executeCommand "start " ;;
+   "startclean" )   executeCommand "start "    " --clean " ;;
+   "status"     )   executeCommand "status " ;;
+   "version"    )   executeCommand "version " ;;
+   "dump"       )   executeCommand "dump "     " --include=heap,thread " ;;
+   "javadump"   )   executeCommand "javadump " " --include=heap,thread " ;;
+   "list"       )   executeCommand "status " ;;
+   "help"       )   executeCommand "help " ;;
+   "check"      )   executeCommand "check " ;;
+   "create"     )   executeCommand "create"
+                    setPerms ;;
+   "delete"     )   deleteServers ;;
+   "setperms"   )   setPerms ;;
+   "wxs"        )   executeWXSCommand "$wxsCommand" ;;
+   *            )   echo "Invalid action $action was entered"
+                    exit 0 ;;                    
+esac   
+
+echo ""
+exit 0

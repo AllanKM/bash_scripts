@@ -1,0 +1,163 @@
+#!/bin/ksh
+
+##################################################################
+#
+#  This script is used to set bNimble directory and file 
+#  ownership and permissions after an install or sync of bNimble 
+#  It first checks to make sure the user and group exist that
+#  you want to set ownership to and creates them if needed.
+# 
+##################################################################
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 5 ]; then
+  BNIMBLE_VERSION=$1
+  CUSTOMER_TAG=$2
+  PUBCONFIG=$3
+  USER_ID=$4
+  USER_GROUP=$5
+elif [ $# -eq 6 -a $1 -a $1 == "LDist" ]; then
+  LOCAL_DIST=$1
+  BNIMBLE_VERSION=$2
+  CUSTOMER_TAG=$3
+  SITE_PUBCONFIG=$4
+  USER_ID=$5
+  USER_GROUP=$6
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."
+  echo "   Format is [<local_dist>] <bNimble_version> <customer_tag>"
+  echo "   <pub_config> <user_id> <user_group>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   Script parameters were not added to configuration script"
+  echo "   for this event."
+  echo "   Format is [<local_dist>] <bNimble_version> <customer_tag>"
+  echo "   <pub_config> <user_id> <user_group>"
+  echo ""
+  exit 1
+fi
+
+if [ $LOCAL_DIST ]; then
+  SITE=`/lfs/system/tools/configtools/get_plex.sh`
+  if [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  fi
+  CONFIGFILEPATH=`echo $SITE_PUBCONFIG | awk -F / {'print "/" $2 "/" $3 "/" $4 "/"'}`
+  CONFIGFILE=`echo $SITE_PUBCONFIG | awk -F / {'print $NF'} | cut -c 3-`
+  PUBCONFIG=${CONFIGFILEPATH}${SITE}${CONFIGFILE}
+fi
+
+echo "Checking if bNimble code and customer files exist"
+if [ -d /projects/$CUSTOMER_TAG ]; then
+  if [ ! -f $PUBCONFIG ]; then
+    echo "   Customer files have been installed, but"
+    echo "    requested config file is not present, aborting"
+    exit 2
+  fi
+else
+  echo "   Customer files have not been installed, aborting"
+  exit 2
+fi
+
+if [ ! -e /etc/rc.bNimble -o ! -d /opt/IBM/$BNIMBLE_VERSION ]; then
+  echo "   Base bNimble code not installed, aborting"
+  exit 2
+fi
+
+echo "Checking existance of $USER_GROUP group creating it as needed"
+lsgroup $USER_GROUP > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    /fs/system/tools/auth/bin/mkeigroup -r local -f $USER_GROUP
+fi
+
+echo "Checking existance of $USER_ID user creating it as needed"
+id $USER_ID > /dev/null 2>&1
+if [  $? -ne 0 ]; then
+    /fs/system/tools/auth/bin/mkeiuser  -r local -f $USER_ID $USER_GROUP
+fi
+
+echo "Changing ownership and perms on $USER_ID home directory"
+chown -R ${USER_ID}.${USER_GROUP} /home/$USER_ID
+chmod 700 /home/$USER_ID
+
+echo "Changing ownership and perms of product files to be owned by root"
+echo "and group eiadm"
+chown -R root.eiadm /opt/IBM/${BNIMBLE_VERSION}   
+
+find /opt/IBM/${BNIMBLE_VERSION} -type d -exec chmod 775 {} \;
+find /opt/IBM/${BNIMBLE_VERSION} -type f -exec chmod 664 {} \;
+
+echo "Changing ownership/perms of config files to be owned by root/$USER_ID"
+echo "and group eiadm"
+chown root.eiadm /projects/${CUSTOMER_TAG}
+chmod 775 /projects/${CUSTOMER_TAG}
+chown root.eiadm /projects/${CUSTOMER_TAG}/config
+chmod 775 /projects/${CUSTOMER_TAG}/config
+chown root.eiadm $PUBCONFIG
+chmod 660 $PUBCONFIG
+
+if [ -d /projects/${CUSTOMER_TAG}/etc ]; then
+  chown root.eiadm /projects/${CUSTOMER_TAG}/etc
+  chmod 775 /projects/${CUSTOMER_TAG}/etc
+  if [ `ls -l /projects/$CUSTOMER_TAG/etc | grep -v "total 0" | wc -l` -gt 0 ]; then
+    find /projects/$CUSTOMER_TAG/etc/* -type d -exec chmod 755 {} \;
+    find /projects/$CUSTOMER_TAG/etc/* -type d -exec chown root.eiadm {} \;
+    find /projects/$CUSTOMER_TAG/etc/* -name '*pub*.jks' -exec chown root.$USER_GROUP {} \;
+    find /projects/$CUSTOMER_TAG/etc/* -name '*pub*.jks' -exec chmod 640 {} \;
+  fi
+fi
+
+echo "Changing ownership and perms of directories specified in config"
+/etc/rc.bNimble print ${PUBCONFIG} | grep -E 'home|Disk-Queue-Directory|Document-Root|Backup-Root' | awk '{print $3}'| sort | uniq > /tmp/init.$$
+
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+  echo "   Acting on $DIRECTORY"
+  if [ -d $DIRECTORY ]; then
+    if [ `echo $DIRECTORY | awk -F / {'print $2'}` == "logs" ]; then
+      chown ${USER_ID}.eiadm /logs/$BNIMBLE_VERSION
+      chown ${USER_ID}.eiadm $DIRECTORY
+      chmod 750 /logs/$BNIMBLE_VERSION
+      chmod 750 $DIRECTORY
+      chmod -R g-s /logs/$BNIMBLE_VERSION
+      chmod g+s $DIRECTORY
+      if [ `ls -l ${DIRECTORY}|grep -v "total 0" |wc -l` -gt 0 ]; then
+        chown -R ${USER_ID}.eiadm ${DIRECTORY}/*
+      fi
+    else
+      chown ${USER_ID}.${USER_GROUP} $DIRECTORY
+      chmod 755 $DIRECTORY
+      chmod g-s $DIRECTORY
+    fi
+  else
+    echo "      $DIRECTORY does not exist"
+  fi
+done
+
+rm -f /tmp/init.$$
+
+if [ -f /home/$USER_ID/.bNimble ]; then
+  echo "Changing perms on file containing storepass"
+  echo "   Acting on file /home/$USER_ID/.bNimble"
+  chown ${USER_ID}.${USER_GROUP} /home/$USER_ID/.bNimble
+  chmod 600 /home/$USER_ID/.bNimble
+fi
+
+if [[ -f /logs/pub_vars_per_node.log ]]; then
+   echo "Changing perms on pub var log"
+   echo "   Acting on file /logs/pub_vars_per_node.log"
+   chown ${USER_ID}.eiadm /logs/pub_vars_per_node.log
+   chmod 664 /logs/pub_vars_per_node.log
+fi
+
+#Ensure /opt/IBM is accessible to pubinst user
+chmod a+rx /opt/IBM

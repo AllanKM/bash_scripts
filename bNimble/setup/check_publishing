@@ -1,0 +1,26 @@
+#!/bin/ksh
+
+PUBCONFIG=$1
+BN="/etc/rc.bNimble2"
+
+if [ ! -e $BN ]; then
+	echo "Missing /etc/rc.bNimble2"
+	exit 1
+fi
+
+exit 0
+
+# skip the stuff below for now.  maybe add a check for the pub config file
+$BN -p status ${PUBCONFIG} | grep -E 'home|disk-queue-directory' | awk '{ print $3}' > /tmp/init.$$
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+        echo "Checking $DIRECTORY"
+        if [ ! -d $DIRECTORY ]; then
+		echo "$DIRECTORY doesn't exist"
+		exit 1
+        fi
+done
+
+exit 0

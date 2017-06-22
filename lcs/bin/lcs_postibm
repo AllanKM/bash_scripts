@@ -1,0 +1,288 @@
+#!/bin/ksh
+#
+# Post the IBM logs as the root user (prepall runs under "logs" userid)
+# Optional first argument is the date in the format: YYYYMMDD
+
+umask 002
+
+me=$0
+mepath=`dirname $me`
+[ "$mepath" = "." ] && mepath=`pwd`
+
+getip () {
+  h=`ping -c 1 -w 1 $1 2>/dev/null | grep PING`
+  h=${h#*\(}
+  h=${h%%\)*}
+  echo $h
+}
+
+myhost=`hostname`
+myip=`getip $myhost`
+
+# If $allfiles is > 0, then scp all files at once, otherwise,
+# use individual scp commands to ship each log
+allfiles=0
+
+# Default list of sites to process, space separated
+dsitelst="wireless.ibm.com www.ibm.com"
+
+mksite24="$mepath/lcs_mksite24"
+notify="$mepath/lcs_notify"
+
+NOALERT=0
+DFLG=0
+date=""
+host=""
+xferhost=""
+sitelst=""
+xferflg=1
+errflg=0
+
+while [ $# -gt 0 ] ; do
+  case "$1" in
+    -noalert)
+      NOALERT=1
+      ;;
+    -date)
+      if [ -n "$2" ] ; then
+        DFLG=1
+        date=$2
+        shift
+      else
+        errflg=1
+      fi
+      ;;
+    -host)
+      if [ -n "$2" ] ; then
+        host=$2
+        shift
+      else
+        errflg=1
+      fi
+      ;;
+    -poll)
+      if [ -n "$2" ] ; then
+        poll=$2
+        shift
+      else
+        errflg=1
+      fi
+      ;;
+    -xferhost)
+      if [ -n "$2" ] ; then
+        xferhost=$2
+        shift
+      else
+        errflg=1
+      fi
+      ;;
+    *)
+      sitelst="$sitelst $1"
+      ;;
+  esac
+  shift
+done
+if [ $errflg -ne 0 ] ; then
+  echo "Unexpected argument error" 1>&2
+  cat - <<EOF
+usage: $me [-noalert] [-host host] [-poll poll]
+          [-xferhost xferhost] [-date YYYYMMDD] [site ...]
+        where: site     - site name list (default: $dsitelst)
+               host     - only allow the script to run on this host name
+               poll     - interval this script runs in seconds
+               xferhost - only allow transfer from this host name
+               -noalert - do not send alerts on errors
+               -date    - override date to process (default: yesterday)
+EOF
+  exit 1
+fi
+
+# If -host argument exists, it is a host that the script
+# is allowed to proceed on, otherwise quietly exit
+if [ -n "$host" ] ; then
+  ip=`getip $host`
+  if [ "$ip" != "$myip" ] ; then
+    #echo "$1 ($ip) does not match local host $myhost ($myip)"
+    exit 0
+  fi
+fi
+
+# If -xferhost argument exists, it is a host that the script
+# is allowed to transfer 24-hour logs from, otherwise process
+# the 24-hour logs and clean them up
+if [ -n "$xferhost" ] ; then
+  xferip=`getip $xferhost`
+  if [ "$xferip" != "$myip" ] ; then
+    #echo "$xferhost ($xferip) does not match transfer host $myhost ($myip)"
+    xferflg=0
+  fi
+fi
+
+# Set date to yesterday if not already specified
+if [ -z "$date" ] ; then
+  # Get start time (minus 24 hours, plus 24 in TZ)
+  TZ=${TZ:-GMT}
+  TTZ=`echo $TZ | sed 's%\([A-Z]*\)\(\-*[0-9]*\)\([A-Z]*\)%\1 \2 \3%'`
+  OLDTZ=$TZ
+  TZ=`echo $TTZ | awk '{ print $1 ($2+24) $3 }'`
+  date=`date '+%Y %m %d' | awk '{ printf("%04d%02d%02d",$1,$2,$3) }'`
+  TZ=$OLDTZ
+fi
+
+# Set sitelst to default list if not specified
+if [ -z "$sitelst" ] ; then
+  sitelst="$dsitelst"
+fi
+
+echo "================================================================="
+echo "`date` - BEGIN Processing for $date ($allfiles)"
+
+RC=0
+[ $DFLG -ne 0 ] && DARG="-date=$date" || DARG=""
+[ $xferflg -eq 0 ] && cleanarg="-clean" || cleanarg=""
+
+# Convert all sites to 24 hour format first for verification
+for S in $sitelst ; do
+  echo "`date` - Combining $S to 24 hour log format"
+  $mksite24 -debug $cleanarg $DARG $S
+  RC=$?
+  if [ $RC -ne 0 ] ; then
+    echo "lcs_mksite24 ($RC) failure for $S" 1>&2
+    exit 1
+  fi
+done
+
+if [ $xferflg -ne 0 ] ; then
+
+  # Transfer 24 hour logs to SurfAid (w/nodes list)
+  for S in $sitelst ; do
+
+    echo "`date` - Working on site $S"
+
+    # Force to a bogus directory from slash (or ~root)
+    cd /tmp
+
+    DIR=""
+    if [ -d /logdrop/ibm/$S ] ; then
+      DIR="/logdrop/ibm/$S"
+    elif [ -d /ibm/logs/$S ] ; then
+      DIR="/ibm/logs/$S"
+    elif [ -d /fs/logs/$S ] ; then
+      DIR="/fs/logs/$S"
+    elif [ -d /logs/$S ] ; then
+      DIR="/logs/$S"
+    else
+      echo "`date` - $S directory does not exist... skipping $S"
+      continue
+    fi
+
+    XDIR="$DIR/xfer$$"
+    mkdir $XDIR
+    if [ ! -d "$XDIR" ] ; then
+      echo "`date` - Unable to create $XDIR... skipping $S"
+      continue
+    fi
+
+    cd $XDIR
+
+    echo "`date` - Symlinking the .gz files to $date.gz"
+    for F in ../$date/*access*.gz ; do
+      X=`basename $F`
+      X=`echo $X | sed "s/\.gz/.$date.gz/"`
+      echo "`date` - Linking $X to $F"
+      ln -s $F $X
+    done
+
+#    echo "`date` - Generating .tar files"
+#    for F in *access* ; do
+#      X=`echo $F | sed 's/\..*$//'`
+#      echo "`date` -   Working on $X.$date.tar"
+#      tar chf $X.$date.tar $X*.gz
+#      RC=$?
+#      if [ $RC -ne 0 ] ; then
+#        echo "`date` - Unable to create $X.$date.tar... aborting the rest"
+#        break
+#      fi
+#    done
+
+#    echo "`date` - Removing all .gz files in $XDIR"
+#    rm *.gz
+
+    echo "`date` - Generating nodes list file"
+    echo "BEGIN" >nodes.$date
+    for F in *access*.gz ; do
+      X=`echo $F | sed 's/\..*$//'`
+      echo $X
+    done | sort | uniq >>nodes.$date
+    echo "END" >>nodes.$date
+
+    #echo "`date` - Sending the $S logs to ibm2k@netminingftp.dfw.ibm.com"
+    echo "`date` - Sending the $S logs to ibmcom@scp.surfaid.ihost.com"
+    #su - logs -c "cd $XDIR && scp -q *.tar node* ibm2k@netminingftp.dfw.ibm.com:$S"
+    #su - logs -c "cd $XDIR && scp -q *.tar node* ibmcom@scp.surfaid.ihost.com:$S"
+
+    if [ $allfiles -ne 0 ] ; then
+      # All files at once
+      su - logs -c "cd $XDIR && scp -q *.gz node* ibmcom@scp.surfaid.ihost.com:$S"
+      rc=$?
+    else
+      # One file at a time
+      for F in *.gz node* ; do
+        X=`ls -lL $F 2>/dev/null | awk '{ print $5 }'`
+        [ -z "$X" ] && X="0"
+        echo "  `date` - Sending $F ($X)"
+        su - logs -c "cd $XDIR && scp -q $F ibmcom@scp.surfaid.ihost.com:$S"
+        rc=$?
+        if [ $rc -ne 0 ] ; then
+          break
+        fi
+        echo "  `date` - $F sent"
+      done
+    fi
+
+    # Cleanup $DIR/YYYYMMDD dirs after succesful scp to surfaid/coremetrics
+    if [ $rc -eq 0 ] ; then
+      echo "`date` - Transfer $S successful, deleting $S/$date"
+      if [ -z "$S" -o -z "$date" ] ; then
+        echo "`date` - Aborting rm -Rf $DIR/$date; S or date are not set correctly"
+      else
+        rm -Rf $DIR/$date
+      fi
+    else
+      echo "`date` - Transfer $S failed"
+      if [ $NOALERT -eq 0 ] ; then
+        # Warn of failure
+        $notify -eventid AN_000_W \
+          -options "-p $poll -g lcs_postibm -k \"$S:$myhost\"" \
+          "PAGE-0548 - lcs_postibm errors for $date"
+      fi
+    fi
+
+    cd /tmp
+
+    echo "`date` - Removing temporary transfer logs in $XDIR"
+    rm -rf $XDIR
+  done
+
+  ####################################################
+  # IMPORTANT NOTE: Turned off on April 28, 2003 - RAL
+  ###
+  ## Handle WMS prep work for www.ibm.com
+  #echo "`date` - Starting 'prepall' for GWA/WMS logs"
+  #[ $DFLG -ne 0 ] && DARG="$date" || DARG=""
+  #su - logs -c /logs/lfdftp/bin/prepall $DARG > /tmp/prep$$ 2>&1
+  #if [ -s /tmp/prep$$ ] ; then
+  #  echo "`date` - Mailing output of 'prepall'"
+  #  echo "-----------------------------------------------------------------"
+  #  cat /tmp/prep$$
+  #  echo "-----------------------------------------------------------------"
+  #  /logs/bin/mailit coreym@us.ibm.com rlocke@us.ibm.com melc1@us.ibm.com < /tmp/prep$$
+  #  sleep 5
+  #fi
+  #rm -f /tmp/prep$$
+fi
+
+echo "`date` - END Processing ($allfiles)"
+echo "================================================================="
+
+exit 0

@@ -1,0 +1,44 @@
+#
+# Runstats
+07 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed SNCOMM all >>/logs/lcibmdb/runstats.log 2>&1
+17 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed HOMEPAGE all >>/logs/lcibmdb/runstats.log 2>&1
+27 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed BLOGS all >>/logs/lcibmdb/runstats.log 2>&1
+47 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed DOGEAR all >>/logs/lcibmdb/runstats.log 2>&1
+07 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed OPNACT all >>/logs/lcibmdb/runstats.log 2>&1
+17 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed PEOPLEDB all >>/logs/lcibmdb/runstats.log 2>&1
+#
+# Backups
+27 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip SNCOMM $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+37 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip HOMEPAGE $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+47 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip BLOGS $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+07 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip DOGEAR $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+27 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip OPNACT $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+37 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip PEOPLEDB $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/lcibmdb/backup.log 2>&1
+
+#
+# Prune database transaction logs
+57 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs SNCOMM 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+07 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs HOMEPAGE 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+17 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs BLOGS 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+37 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs DOGEAR 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+57 8,20 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs OPNACT 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+07 8,20 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs PEOPLEDB 40 >>/logs/lcibmdb/prunedb2logs.log 2>&1
+
+#
+# Clean Backup Directory
+28 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups SNCOMM ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+38 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups HOMEPAGE ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+48 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups BLOGS ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+08 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups DOGEAR ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+28 9 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups OPNACT ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+38 9 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups PEOPLEDB ~/backup 60 >>/logs/lcibmdb/clean_db2_backups.log 2>&1
+#
+# Reorgchk
+00 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb SNCOMM >> /logs/lcibmdb/run_reorgchk.log 2>&1
+10 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb HOMEPAGE >> /logs/lcibmdb/run_reorgchk.log 2>&1
+20 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb BLOGS >> /logs/lcibmdb/run_reorgchk.log 2>&1
+40 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb DOGEAR >> /logs/lcibmdb/run_reorgchk.log 2>&1
+00 9 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb OPNACT >> /logs/lcibmdb/run_reorgchk.log 2>&1
+10 9 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,priravin@in.ibm.com,rk.rakesh@in.ibm.com,srini.rao@us.ibm.com,robinrgr@us.ibm.com"  $HOME/bin/run_reorgchk lcibmdb PEOPLEB >> /logs/lcibmdb/run_reorgchk.log 2>&1
+#
+#

@@ -1,0 +1,57 @@
+#!/bin/bash
+if [[ $#* -lt 3 ]]; then
+	print "Syntax: $0 <instance_name> <row number> <cn root pw>
+fi
+if [ -z "${SUDO_USER}" ]; then 
+	print "THis script must be called using sudo"
+	exit
+fi
+
+instance=$1
+row=$2
+rootpw=$3
+
+if [ ! -d /db2_database/$instance ]; then
+	echo $instance LDAP instance not found
+	exit
+fi
+shift 3
+opts=$@
+
+# find secure port for the instance
+typeset -l line
+host=`hostname -s`
+while read line; do
+   if [[ "$line" = "dn: "* ]]; then
+      if [[ "$line" = "dn: cn=ssl"* ]]; then
+         gotstanza=1
+      else
+         unset gotstanza
+      fi
+    elif [[ "$line" = "ibm-slapdsecureport:"* && -n "$gotstanza" ]]; then
+      port=$(set -- $line; print $2)
+    elif [[ "$line" = "ibm-slapdipaddress:"* ]]; then
+      host=$( set -- $line; print $2 )
+    elif [[ "$line" = "ibm-slapdserverid:"* ]]; then
+      serverid=$( set -- $line; print $2 )
+    fi
+done < /db2_database/$instance/idsslapd-$instance/etc/ibmslapd.conf
+
+common="-p $port -K /db2_database/$instance/idsslapd-$instance/etc/ldapauth.kdb -D cn=root -w $rootpw $opts"
+# Get the replication agreement for the server
+ra=`ldapsearch $common -bo=ibm,c=us ibm-replicaserverid=$serverid dn`
+
+if [ ! -z $ra ]; then
+	# show replication attributes
+	echo "ldapsearch $common -b $ra objectclass=ibm-replicationagreement ibm-replicationstate ibm-replicationpendingchangecount ibm-replicationLastResult"
+	ldapsearch $common -b "$ra" "objectclass=ibm-replicationagreement" ibm-replicationstate ibm-replicationpendingchangecount ibm-replicationLastResult
+else
+	echo "Unable to find replication agreement for serverid $serverid"
+	exit
+fi
+
+
+B=`ldapsearch $common -bo=ibm,c=us objectclass=ibm-replicationagreement dn | grep -i ibm-replicaserverid=$A `
+for C in $B; do
+	ldapexop $common -op controlqueue -skip $row -ra "$C"
+done

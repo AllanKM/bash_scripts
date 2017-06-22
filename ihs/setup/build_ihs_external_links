@@ -1,0 +1,20 @@
+#/usr/bin/ksh
+ln -sf /opt/HPODS/LCS/bin/eiRotate /usr/HTTPServer/bin/eiRotate
+plex=`hostname | cut -c1`
+
+case $plex in
+	a)
+	    ln -sf /projects/allisone/config/plugin-cfg.xml.p1 /projects/allisone/config/plugin-cfg.xml
+	    ;;
+	d)
+	    ln -sf /projects/allisone/config/plugin-cfg.xml.p2 /projects/allisone/config/plugin-cfg.xml
+	    ;;
+	g)
+	    ln -sf /projects/allisone/config/plugin-cfg.xml.p3 /projects/allisone/config/plugin-cfg.xml
+	    ;;
+	*)
+	    echo "Bad plex or bad script.  You suck"
+	    ;;
+esac
+exit 1
+	

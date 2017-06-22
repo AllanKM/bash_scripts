@@ -1,0 +1,854 @@
+#!/usr/bin/perl
+
+# Runs File::Find down a structure looking for user specified files
+# to tar into a specific directory and file name for LCS pickup
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use File::Copy;
+use File::Find;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Hardcodes
+my $mycwd = getcwd();
+my $mytime = time();
+my $oneday = 24*60*60;                  # 1-day in seconds
+
+my $piddir = "/var/run";                # PID file directory
+my $pidfile = "$piddir/$mysname.pid";   # Process id "lock" file
+my $logdir = "/var/log/lcs";            # LCS logging directory
+
+my $tar = "tar";                        # tar command
+my $tarcargs = "cfp";                   # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+#$tarcargs = "cfpv" if ($debug);         #  and if debug, turn on verbose mode
+my $tarrargs = "rfp";                   # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+#$tarrargs = "rfpv" if ($debug);         #  and if debug, turn on verbose mode
+
+my $bzip2 = "bzip2";                    # bzip2 command
+my $bzip2args = "--best";               # arguments assume compress
+my $bzip2ext = ".bz2";
+my $gzip = "gzip";                      # gzip command
+my $gzipargs = "-9";                    # arguments assume compress
+my $gzipext = ".gz";
+
+my $rm = "rm";                          # rm command
+my $rmargs = "-rf";                     # arguments assume file or directory
+
+# Defaults
+my $ddate = "%Y%m%d";                   # Default date format
+my $ddepth = 0;                         # Directory depth
+my $dumask = "002";                     # Allow umask override
+my $dlogextension = "%Y%m%d%H%M";       # Log file extension
+my $dloginterval = $oneday;             # 1-day in seconds
+my $dcompress = $gzip;
+my $dcompressargs = $gzipargs;
+my $dcompressext = $gzipext;
+
+my $compress = $dcompress;
+my $compressargs = $dcompressargs;
+my $compressext = $dcompressext;
+
+my $debug = 0;
+my $nologging = 0;
+my $preview = 0;
+my $trace = 0;
+my $verbose = 0;
+
+# Values to use from default set
+my @dfltvalues = (
+  'logdirectory',
+);
+
+# Values to optionally put in work
+my @setvalues = (
+  'bzip2',
+  'clean',
+  'compress',
+  'gzip',
+  'date',
+  'depth',
+  'empty',
+  'findfile',
+  'findpath',
+  'group',
+  'logextension',
+  'loginterval',
+  'nodepth',
+  'umask',
+  'user',
+);
+
+# Define log file directives
+my %logarr = (
+  'auditlog' => "$logdir/audit.$mysname.log",
+  'errorlog' => "$logdir/error.$mysname.log",
+  'tracelog' => "",
+);
+
+my $dfltset = "  $$ LCS";
+my $set = $dfltset;
+my %work = ();
+my %clargs = ();
+Getopt::Long::Configure("posix_default");
+my $rc = &main::GetOptions(
+  # Script options
+  'debug' => sub { $debug=1 },
+  'nologging' => sub { $nologging=1 },
+  'preview' => sub { $preview=1 },
+  'trace' => sub { $trace=1 },
+  'verbose' => sub { $verbose=1 },
+
+  'set:s' => \$set,
+  'bzip2' => sub { $clargs{$set}{$_[0]} = 1; $clargs{$set}{compress} = 1 },
+  'clean' => sub { $clargs{$set}{$_[0]} = 1 },
+  'compress' => sub { $clargs{$set}{$_[0]} = 1 },
+  'date:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'depth:i' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'empty' => sub { $clargs{$set}{$_[0]} = 1 },
+  'file:s@' => sub { push(@{$clargs{$set}{$_[0]}},split(/[,;]/,$_[1])) },
+  'findfile:s@' => sub { push(@{$clargs{$set}{$_[0]}},split(/[,;]/,$_[1])) },
+  'findpath:s@' => sub { push(@{$clargs{$set}{$_[0]}},split(/[,;]/,$_[1])) },
+  'group:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'gzip' => sub { $clargs{$set}{$_[0]} = 1; $clargs{$set}{compress} = 1 },
+  'include:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'logdirectory:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'logextension:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'loginterval:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'logroot:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'nodepth' => sub { $clargs{$set}{$_[0]} = 1 },
+  'umask:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'user:s' => sub { $clargs{$set}{$_[0]} = $_[1] },
+  'endset' => sub { $set = $dfltset },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+# Create piddir directory if needed
+mkdirs($piddir,0,0,0755) if (! -d $piddir);
+
+# Create logdir directory if needed
+mkdirs($logdir,0,0,0755) if (! -d $logdir);
+
+# Set trace logging
+$logarr{tracelog} = "$logdir/trace.$mysname.log" if ($trace);
+
+# Turn off all file logging if specified
+if ($nologging) {
+  foreach my $l (keys %logarr) {
+    $logarr{$l} = "";
+  }
+}
+
+# Already running, make sure, then bail out, otherwise create pidfile "lock"
+if (-f $pidfile) {
+  my($pid,$found,$p);
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  $found = 0;
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,\%logarr,98,"Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,\%logarr,98,"Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+if (open(PIDFILE,">$pidfile")) {
+  print PIDFILE "$$\n";
+  close(PIDFILE);
+} else {
+  logit($mysname,\%logarr,98,"Unable to obtain pidfile lock: $!");
+  exit 0;
+}
+
+### MAIN
+
+# Generate valid working sets
+my $ok;
+my $s;
+foreach $s (sort keys %clargs) {
+  my $sd = $s;
+  $sd = "Default" if ($s eq $dfltset);
+  my $d;
+  my @flst=();
+  if ($s ne $dfltset) {
+    if ($s !~ /^\w+$/) {
+      logit($mysname,\%logarr,98,"Invalid set name '$s'");
+      next;
+    }
+  }
+  if (defined $clargs{$s}{include}) {
+    my $incfile=$clargs{$s}{include};
+    if ($incfile eq '-') {
+      $incfile="&STDIN";
+    } elsif (! -f $incfile) {
+      $incfile="";
+      logit($mysname,\%logarr,98,"Unable to find include file $incfile");
+    }
+    if ($incfile ne "") {
+      if (open(INFILE,"<$incfile")) {
+        while(<INFILE>) {
+          chomp;
+          next if /^\s*#/;  # Skip comments
+          next if /^\s*$/;  # Skip empty lines
+          s/^\s*//;         # Strip leading whitespace
+          s/\s*$//;         # Strip ending whitespace
+          push @flst,$_;
+        }
+        close(INFILE);
+      } else {
+        logit($mysname,\%logarr,98,"Unable to read include file $incfile");
+      }
+    }
+  }
+  if (defined $clargs{$s}{file}) {
+    push(@flst,@{$clargs{$s}{file}});
+  }
+  if (@flst > 0 ||
+      (defined $clargs{$s}{findpath} &&
+       defined $clargs{$s}{findfile})) {
+    # Bring in default set values
+    $ok = 1;
+    foreach $d (@dfltvalues) {
+      if (defined $clargs{$s}{$d}) {
+        $work{$s}{$d} = $clargs{$s}{$d};
+      } else {
+        $work{$s}{$d} = $clargs{$dfltset}{$d}
+          if (defined $clargs{$dfltset}{$d});
+      }
+      if (! defined $work{$s}{$d}) {
+        $ok = 0;
+        logit($mysname,\%logarr,98,"Missing $d for $sd set");
+      }
+    }
+    if ($ok) {
+      if (defined $clargs{$s}{logroot}) {
+        $work{$s}{logroot} = $clargs{$s}{logroot};
+
+        if (@flst > 0) {
+          push(@{$work{$s}{file}},@flst);
+        }
+
+        # Loop on the rest of the values to add to working set
+        foreach $d (@setvalues) {
+          $work{$s}{$d} = $clargs{$s}{$d}
+            if (defined $clargs{$s}{$d});
+        }
+      } else {
+        $ok = 0;
+        logit($mysname,\%logarr,98,"LogRoot not specified for $sd set");
+      }
+    }
+    if (! $ok) {
+      delete $work{$s} if (defined $work{$s});
+      logit($mysname,\%logarr,98,"Skipping $sd set");
+    }
+  } else {
+    logit($mysname,\%logarr,98,"Nothing to process for $sd set")
+      if ($s ne $dfltset);
+  }
+}
+
+# Continue validation and create the tar file
+foreach $s (sort keys %work) {
+  my $sd = $s;
+  $sd = "Default" if ($s eq $dfltset);
+
+  my $logdirectory = $work{$s}{logdirectory};
+  if ($logdirectory !~ /^\//) {
+    $logdirectory = "$mycwd/$logdirectory";
+  }
+  if (! -d $logdirectory) {
+    $logdirectory = (glob($logdirectory))[$[];
+    $logdirectory =~ s@//@/@g;
+    $logdirectory =~ s@/$@@g;
+    if (! -d $logdirectory) {
+      logit($mysname,\%logarr,98,
+            "Unable to find logdirectory $logdirectory for $sd set");
+      next;
+    }
+  }
+
+  my ($year,$mon,$mday,$hour,$min,$sec);
+  my $date = $ddate;
+  $date = $work{$s}{date} if (defined $work{$s}{date});
+  $date = POSIX::strftime($ddate,localtime($mytime))
+    if ($date =~ /^today$|^now$/i);
+  $date = POSIX::strftime($ddate,localtime($mytime - $oneday))
+    if ($date =~ /^yesterday$/i);
+
+  my $loginterval = $dloginterval;
+  $loginterval = $work{$s}{loginterval} if (defined $work{$s}{loginterval});
+  my $inttime = $mytime - ($mytime % $loginterval);
+  $date = POSIX::strftime($date,localtime($inttime));
+  ($year,$mon,$mday,$hour,$min,$sec) = unpack("A4A2A2A2A2A2",$date);
+  if ($date !~ /^[0-9]+$/ || $year eq "" || $mon eq "" || $mday eq "") {
+    logit($mysname,\%logarr,98,
+          "Invalid date value $date for $sd set; must be YYYYMMDD[hh[mm[ss]]]");
+    next;
+  }
+  $hour = 0 if ($hour eq "");
+  $min = 0 if ($min eq "");
+  $sec = 0 if ($sec eq "");
+  my $ctime = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+  $inttime = $ctime - ($ctime % $loginterval);
+  if ($preview) {
+    my $str = sprintf("%04d%02d%02d%02d%02d%02d",
+                      $year,$mon,$mday,$hour,$min,$sec);
+    logit($mysname,\%logarr,64+$preview,
+          "PREVIEW: Calculated date in $sd set: $str");
+  }
+
+  # Loop on files and paths to resolve POSIX::strftime conversions
+  my %fmap = ();
+  foreach my $k ('file', 'findfile', 'findpath') {
+    if (defined $work{$s}{$k}) {
+      foreach my $v (@{$work{$s}{$k}}) {
+        my $pv = POSIX::strftime($v,localtime($inttime));
+        $pv =~ s@//@/@g;
+        $pv =~ s@/$@@g;
+        if ($k eq "file" || $k eq "findpath") {
+          if ($pv !~ /^\//) {
+            $pv = "$mycwd/$pv";
+          }
+        }
+        push(@{$work{$s}{"t$k"}},$pv);
+        $fmap{$k}{$pv} = $v;
+      }
+    }
+  }
+
+  my $uid = 0;
+  if (defined $work{$s}{user}) {
+    $uid = ($work{$s}{user} =~ /^[0-9]+$/ ?
+            $work{$s}{user} :
+            (getpwnam($work{$s}{user}))[2]);
+  } else {
+    $uid = (stat($logdirectory))[4];
+  }
+  $uid = 0 if ($uid eq "");
+
+  my $gid = 0;
+  if (defined $work{$s}{group}) {
+    $gid = ($work{$s}{group} =~ /^[0-9]+$/ ?
+            $work{$s}{group} :
+            (getgrnam($work{$s}{group}))[2]);
+  } else {
+    $gid = (stat($logdirectory))[5];
+  }
+  $gid = 0 if ($gid eq "");
+
+  my $umask = $dumask;
+  $umask = $work{$s}{umask} if (defined $work{$s}{umask});
+  umask oct($umask);
+
+  my $logextension = $dlogextension;
+  $logextension = $work{$s}{logextension} if (defined $work{$s}{logextension});
+
+  my $logroot = $work{$s}{logroot};
+
+  my $ttarfile = POSIX::strftime("$logdirectory/.$logroot.$logextension",
+                                localtime($inttime));
+  my $logfile = POSIX::strftime("$logdirectory/$logroot.$logextension",
+                                localtime($inttime));
+  if (-e $logfile) {
+    logit($mysname,\%logarr,98,"Tar file $logfile for $sd set already exists");
+    next;
+  }
+  if (defined $work{$s}{compress}) {
+    if (defined $work{$s}{bzip2}) {
+      $compress = $bzip2;
+      $compressargs = $bzip2args;
+      $compressext = $bzip2ext;
+    } elsif (defined $work{$s}{gzip}) {
+      $compress = $gzip;
+      $compressargs = $gzipargs;
+      $compressext = $gzipext;
+    } else {
+      $compress = $dcompress;
+      $compressargs = $dcompressargs;
+      $compressext = $dcompressext;
+    }
+    if (-e "$logfile$compressext") {
+      logit($mysname,\%logarr,98,
+            "Compressed file $logfile$compressext for $sd set already exists");
+      next;
+    }
+  }
+
+  my ($str,$d,$f);
+  my %allfiles = ();
+  if (defined $work{$s}{tfile}) {
+    foreach $f (@{$work{$s}{tfile}}) {
+      my $pf = $f;
+      $pf = $fmap{file}{$f} if (defined $fmap{file}{$f});
+      my @gf = glob($f);
+      if (@gf) {
+        $str = "File $pf in $sd set match count ".@gf;
+        logit($mysname,\%logarr,80+$verbose,$str);
+        grep($allfiles{$_}++,@gf);
+      } else {
+        $str = "Unable to find file $f";
+        $str .= " ($pf)" if ($pf ne $f);
+        $str .= " in $sd set";
+        logit($mysname,\%logarr,80+$verbose,$str);
+      }
+    }
+  }
+  if (defined $work{$s}{tfindpath} && defined $work{$s}{tfindfile}) {
+    my %dhsh = ();
+    foreach $d (@{$work{$s}{tfindpath}}) {
+      my $pd = $d;
+      $pd = $fmap{findpath}{$d} if (defined $fmap{findpath}{$d});
+      my @gd = grep(-d $_,glob($d));
+      if (@gd) {
+        $str = "Directory $pd in $sd set match count ".@gd;
+        logit($mysname,\%logarr,80+$verbose,$str);
+        grep($dhsh{$_}++,@gd);
+      } else {
+        $str = "Unable to find path $d";
+        $str .= " ($pd)" if ($pd ne $d);
+        $str .= " in $sd set";
+        logit($mysname,\%logarr,80+$verbose,$str);
+      }
+    }
+    if (keys %dhsh) {
+      my @flst = @{$work{$s}{tfindfile}};
+      my $wantedsub = "wanted$sd";
+      my $first = pop @flst;
+      my $sub = "sub $wantedsub {";
+      $sub .= ' my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev);';
+      $sub .= ' my ($size,$atime,$mtime,$ctime,$blksize,$blocks);';
+      $sub .= ' (($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,';
+      $sub .= '$atime,$mtime,$ctime,$blksize,$blocks) = lstat($_)) &&';
+      $sub .= ' -f _ &&';
+      $sub .= ' ($_ =~ /'.glob2pat($first).'/';
+      foreach $f (@flst) {
+        $sub .= ' || $_ =~ /'.glob2pat($f).'/';
+      }
+      $sub .= ') && $findlst{$File::Find::name}++ >= 0; }';
+      logit($mysname,\%logarr,64+$debug,"Find routine in $sd set: $sub");
+      my %findlst = ();
+      eval $sub;
+      find(\&$wantedsub,sort keys %dhsh);
+      my $cnt = (keys %findlst);
+      if ($cnt > 0) {
+        $str = "Find dirs (".join(',',sort keys %dhsh);
+        $str .= ") files (".join(',',sort @{$work{$s}{tfindfile}});
+        $str .= ") in $sd set match count $cnt";
+        logit($mysname,\%logarr,80+$verbose,$str);
+      }
+      grep($allfiles{$_}++,keys %findlst);
+    }
+  }
+
+  if (! keys %allfiles) {
+    logit($mysname,\%logarr,98,"Nothing found to process for $sd set");
+    next if (! defined $work{$s}{empty} || $work{$s}{empty} <= 0);
+
+    # Create empty tar file
+    $ok = 1;
+    if (! $preview) {
+      if (open(EMPTY,">$ttarfile")) {
+        close(EMPTY);
+        logit($mysname,\%logarr,64+$verbose,
+              "Successful creation of empty tar file $ttarfile in $sd set");
+      } else {
+        $ok = 0;
+        unlink($ttarfile);
+        logit($mysname,\%logarr,98+$verbose,
+              "Unable to create empty tar file $ttarfile in $sd set");
+      }
+    } else {
+      logit($mysname,\%logarr,$preview,
+            "PREVIEW: Creating empty tar file $ttarfile in $sd set");
+    }
+  } else {
+
+    # Handle depth
+    my %tarhsh = ();
+    my $depth = $ddepth;
+    my $nodepth = 0;
+    $depth = $work{$s}{depth} if (defined $work{$s}{depth});
+    $nodepth = $work{$s}{nodepth} if (defined $work{$s}{nodepth});
+    logit($mysname,\%logarr,$preview,"PREVIEW: Depth in $sd set: $depth")
+      if ($preview && ! $nodepth);
+    foreach $f (keys %allfiles) {
+      my ($dir,$tf);
+      my @plst = split('/',$f);
+      my $tot = $#plst;
+      my ($db,$de,$fb,$fe) = (0,0,1,$tot);
+      if ($nodepth) {
+        $de = $tot - 1;
+        $fb = $tot;
+      } elsif ($depth > 0) {
+        if ($depth < $tot) {
+          $de = $depth;
+          $fb = $de + 1;
+        } else {
+          logit($mysname,\%logarr,80+$verbose,
+                "Warning: Unable to use depth ($depth)".
+                " on $f in $sd set - using depth=0");
+        }
+      } elsif ($depth < 0) {
+        if (abs($depth) < $tot) {
+          $de = $tot + $depth - 1;
+          $fb = $de + 1;
+        } else {
+          logit($mysname,\%logarr,80+$verbose,
+                "Warning: Unable to use depth ($depth)".
+                " on $f in $sd set - using depth=0");
+        }
+      }
+      $dir = join('/',@plst[$db..$de]) || "/";
+      $tf = join('/',@plst[$fb..$fe]);
+      $tarhsh{$dir}{$tf}++;
+    }
+    logit($mysname,\%logarr,64+$debug,"Directories and files for tar in $sd set:");
+    foreach $d (sort keys %tarhsh) {
+      logit($mysname,\%logarr,64+$debug,"\t$d:");
+      foreach $f (sort keys %{$tarhsh{$d}}) {
+        logit($mysname,\%logarr,64+$debug,"\t\t$f");
+      }
+    }
+
+    # Create tar file
+    $ok = 1;
+    my $action = "create";
+    my $tarargs = $tarcargs;
+    unlink($ttarfile) if (-e $ttarfile);
+    foreach $d (sort keys %tarhsh) {
+      if (chdir($d)) {
+        my $files = join(' ',sort keys %{$tarhsh{$d}});
+        my $cmd = "$tar $tarargs $ttarfile $files";
+        if (! $preview) {
+          system($cmd);
+          $rc = $? >> 8;    # Exit code from system call
+          if ($rc != 0) {
+            $ok = 0;
+            unlink($ttarfile);
+            logit($mysname,\%logarr,98+$verbose,
+                  "Unable to $action tar file $ttarfile in $sd set");
+          } else {
+            logit($mysname,\%logarr,64+$verbose,
+                  "Successful command in $sd set: $cmd");
+          }
+        } else {
+          logit($mysname,\%logarr,$preview,
+                "PREVIEW: Change directory to $d in $sd set");
+          logit($mysname,\%logarr,$preview,
+                "PREVIEW: Tar command ($action) in $sd set: $cmd");
+        }
+        $tarargs = $tarrargs;
+        $action = "append";
+      } else {
+        $ok = 0;
+        unlink($ttarfile);
+        logit($mysname,\%logarr,98+$verbose,
+              "Unable to chdir to $d in $sd set");
+      }
+    }
+  }
+
+  # (Optionally) compress file
+  my $compressed = 0;
+  if ($ok) {
+    if (defined $work{$s}{compress}) {
+      my $cmd = "$compress $compressargs $ttarfile";
+      if (! $preview) {
+        system($cmd);
+        $rc = $? >> 8;    # Exit code from system call
+        if ($rc != 0) {
+          $ok = 0;
+          unlink($ttarfile);
+          unlink("$ttarfile$compressext");
+          logit($mysname,\%logarr,98+$verbose,
+                "Unable to compress tar file ($compress) in $sd set");
+        } else {
+          $compressed = 1;
+          logit($mysname,\%logarr,64+$verbose,
+                "Successful command in $sd set: $cmd");
+        }
+      } else {
+        $compressed = 1;
+        logit($mysname,\%logarr,$preview,
+              "PREVIEW: Compress command in $sd set: $cmd");
+      }
+    }
+  }
+
+  # Rename/move tar file (possibly for LCS pickup)
+  if ($ok) {
+    my $src = $ttarfile;
+    my $dst = $logfile;
+    if ($compressed) {
+      $src .= $compressext;
+      $dst .= $compressext;
+    }
+    if (! $preview) {
+      if (move($src,$dst)) {
+        # Update ownerships
+        chown($uid,$gid,$dst);
+        logit($mysname,\%logarr,80+$verbose,"Moved $src to $dst in $sd set");
+      } else {
+        $ok = 0;
+        unlink($src);
+        unlink($dst);
+        logit($mysname,\%logarr,98+$verbose,
+              "Unable to move $src to $dst in $sd set: $!");
+      }
+    } else {
+      logit($mysname,\%logarr,$preview,
+            "PREVIEW: Move $src to $dst in $sd set");
+    }
+  }
+
+  # (Optionally) remove files
+  if ($ok) {
+    if (defined $work{$s}{clean}) {
+      foreach $f (sort keys %allfiles) {
+        my $size = (stat($f))[7];
+        $size = "0" if ($size eq "");
+        if (! $preview) {
+          if (unlink($f)) {
+            logit($mysname,\%logarr,80+$verbose,
+                  "Removed file $f ($size) in $sd set");
+          } else {
+            logit($mysname,\%logarr,80+$verbose,
+                  "Unable to remove file $f ($size) in $sd set");
+          }
+        } else {
+          logit($mysname,\%logarr,$preview,
+                "PREVIEW: Remove file $f ($size) in $sd set");
+        }
+      }
+    }
+  }
+}
+
+# Log the command was run
+if (! $debug && ! $preview) {
+  logit($mysname,\%logarr,64+$verbose,"Logging the execution");
+  my $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " CMD: $0 ".join(" ",@allargv);
+  if ($out ne "") {
+    logit($mysname,\%logarr,72,"daemon","notice","%s",$out);
+    #logit($mysname,\%logarr,2,"%s",$out);
+  }
+}
+
+# Clean up PID "lock" file
+unlink ($pidfile) if ($pidfile ne "" && -e $pidfile);
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-findpath findpath[,...]][-findfile findfile[,...]]\n",
+        "    [-file file[,...][-include incfile][-depth depth]\n",
+        "    [-logdirectory logdir][-loginterval logint]\n",
+        "    [-logroot logroot][-logextension logext]\n",
+        "    [-date date][-pidfile pidfile][-nodepth][-nologging]\n",
+        "    [-user user][-group group][-umask umask][-preview]\n",
+        "    [-clean][-compress][-debug][-empty][-trace][-verbose]\n",
+        "  where: findpath   - pathnames to find\n",
+        "         findfile   - filenames to find\n",
+        "         file       - fully qualified files\n",
+        "         incfile    - file containing list of files, one per line\n",
+        "         depth      - path levels to shift for tar relative path\n",
+        "         logdir     - LCS LogDirectory\n",
+        "         logint     - LCS LogInterval in seconds  (default: 86400)\n",
+        "         logroot    - LCS LogRoot\n",
+        "         logext     - LCS LogExtension (default: %Y%m%d%H%M)\n",
+        "         date       - date to process like YYYYMMDD[hh[mm[ss]]]\n",
+        "         pidfile    - running script tracking PID file\n",
+        "         user       - user of new file (default: logdir user)\n",
+        "         group      - group of new file (default: logdir group)\n",
+        "         umask      - umask of new file (default: 002)\n",
+        "         -clean     - remove matching files after tar creation\n",
+        "         -compress  - compress tar file (not normal for LCS)\n",
+        "         -empty     - create empty tar file if nothing to tar\n",
+        "         -nodepth   - use no path levels in tar - files only\n",
+        "         -nologging - do not log to audit/error/trace logs\n",
+        "         -preview   - show what would be done - do nothing\n",
+        "         -trace     - turn on trace logging\n",
+        "         -verbose   - describe events each step of the way\n";
+}
+
+sub logit {
+  my($me,$laref,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority,$filetype);
+  my(%logarr) = %$laref;
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+    "auditlog" => 16,
+    "errorlog" => 32,
+    "tracelog" => 64,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle file logs
+  foreach $filetype (sort keys %logarr) {
+    if ($logarr{$filetype} ne "") {
+      if ($logtype & $logtypes{$filetype}) {
+        my $logfile = $logarr{$filetype};
+        $logfile = POSIX::strftime($logfile,localtime());
+        if (open(LOGFILE,">>$logfile")) {
+          if (@myargs) {
+            printf LOGFILE "$date $me\[$$\]: $format\n", @myargs;
+          } else {
+            print LOGFILE "$date $me\[$$\]: $format\n";
+          }
+          close(LOGFILE);
+        }
+      }
+    }
+  }
+
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+sub glob2pat {
+  my $globstr = shift;
+  my %patmap = (
+      '*' => '.*',
+      '?' => '.',
+      '[' => '[',
+      ']' => ']',
+  );
+  $globstr =~ s{(.)} { $patmap{$1} || "\Q$1" }ge;
+  return '^' . $globstr . '$';
+}
+print "$main::running_under_some_shell\n";

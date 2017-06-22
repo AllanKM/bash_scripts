@@ -1,0 +1,7 @@
+CHECK /ausopen-even/
+EXCLUDE /Admin/whichnode/index.html
+EXCLUDE /ausopen-even/site.txt
+EXCLUDE /data/ve/xml/HostCPUData.xml
+EXCLUDE /ausopen-even/search/db/
+EXCLUDE /en_AU/scores/pubstatus_ausopen_athens.txt
+EXCLUDE /en_AU/scores/pubstatus_ausopen_topeka.txt

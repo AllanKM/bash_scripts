@@ -1,0 +1,139 @@
+#!/bin/ksh
+status_all()
+{ 
+  su - mqm -c "dspmq"
+  echo "==>Checking for $1 processes"
+  /lfs/system/tools/configtools/countprocs.sh 1  $1
+}
+
+stop_broker()
+{
+    broker=$1
+    echo "Stopping broker $broker..."
+#  echo "Stopping using -i for force stop due to problems with stop command"
+    su - mqm -c ". ~/.profile;mqsistop -i -q $broker;sleep 10"
+}
+
+stop_usernameserver()
+{
+    userNameServer=$1
+    echo "Stopping UserNameServer $userNameServer..."
+#  echo "Stopping using -i for force stop due to problems with stop command"
+    su - mqm -c ". ~/.profile;mqsistop $userNameServer;sleep 10"
+}
+
+stop_configmgr()
+{
+    configMgr=$1
+    echo "Stopping ConfigMgr $configMgr..."
+#  echo "Stopping using -i for force stop due to problems with stop command"
+    su - mqm -c ". ~/.profile;mqsistop  -q $configMgr;sleep 10"
+}
+
+
+start_configmgr()
+{
+    configMgr=$1
+    echo "Starting ConfigMgr $configMgr..."
+    su - mqm -c ". ~/.profile;mqsistart  $configMgr;sleep 5"
+}
+
+start_usernameserver()
+{
+    userNameServer=$1
+    echo "Starting UserNameServer $userNameServer..."
+    su - mqm -c ". ~/.profile;mqsistart $userNameServer;sleep 5"
+}
+
+start_broker()
+{
+    broker=$1
+    echo "Starting broker $broker..."
+    su - mqm -c ". ~/.profile;mqsistart  $broker;sleep 5"
+}
+
+
+#MAIN
+usage="Command syntax: sudo rc.wbimb <stop|start|restart|list|status>"
+if [[ ! -z $1 ]]; then
+    action=$1
+else
+    echo $usage
+    exit
+fi
+if [[ "$SUDO_USER" != "" ]]; then
+ if [ -e /opt/IBM/mqsi/7.0/bin/mqsiprofile ]; then
+   broker=`su - mqm -c ". /opt/IBM/mqsi/7.0/bin/mqsiprofile;mqsilist" | grep Broker | awk '{print $3}'`
+   userNameServer=`su - mqm -c ". /opt/IBM/mqsi/7.0/bin/mqsiprofile;mqsilist" | grep UserNameServer: | awk '{print $3}'`
+   configMgr=`su - mqm -c ". /opt/IBM/mqsi/7.0/bin/mqsiprofile;mqsilist" | grep ConfigMgr: | awk '{print $3}'`
+ 
+   case $action in
+      stop)
+         if [[ ! -z $broker ]]; then
+              stop_broker $broker
+         fi
+         if [[ ! -z $userNameServer ]]; then
+             stop_usernameserver $userNameServer
+         fi
+         if [[ ! -z $configMgr ]]; then
+             stop_configmgr $configMgr
+         fi 
+         ;;
+      start)
+         if [[ ! -z $configMgr ]]; then
+             start_configmgr $configMgr
+         fi 
+         if [[ ! -z $userNameServer ]]; then
+             start_usernameserver $userNameServer
+         fi
+         if [[ ! -z $broker ]]; then
+              start_broker $broker
+         fi
+        ;;
+      restart)
+         if [[ ! -z $broker ]]; then
+              stop_broker $broker
+         fi
+         if [[ ! -z $userNameServer ]]; then
+             stop_usernameserver $userNameServer
+         fi
+         if [[ ! -z $configMgr ]]; then
+             stop_configmgr $configMgr
+         fi 
+         if [[ ! -z $configMgr ]]; then
+             start_configmgr $configMgr
+         fi 
+         if [[ ! -z $userNameServer ]]; then
+             start_usernameserver $userNameServer
+         fi
+         if [[ ! -z $broker ]]; then
+              start_broker $broker
+         fi
+        ;;
+      list)
+        echo "Listing for WBIMB"
+        su - mqm -c ". ~/.profile;mqsilist"
+        ;;
+      status)
+         if [[ ! -z $configMgr ]]; then
+             status_all $configMgr
+         fi 
+         if [[ ! -z $userNameServer ]]; then
+             status_all $userNameServer
+         fi
+         if [[ ! -z $broker ]]; then
+              status_all $broker
+         fi
+        ;;
+      *)
+         echo $usage
+         exit 1
+         ;;
+  esac
+ else
+  print -u2 -- "######### Unable to find  /opt/IBM/mqsi/7.0/bin/mqsiprofile"
+  exit 1
+ fi
+else
+     print "This script requires SUDO to run"
+fi

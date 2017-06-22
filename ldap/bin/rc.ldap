@@ -1,0 +1,74 @@
+#!/bin/ksh
+
+function ldapstop {
+	/opt/IBM/ldap/V${version}/sbin/idsslapd -I $INSTANCE -k
+	I=0
+	while ps -ef | grep -v grep | grep -i "ibmslapd -I $INSTANCE" 1>/dev/null 2>&1 ; do
+		sleep 1 
+		((I=I+1))
+		if [[ $I -gt 60 ]]; then
+			print "$INSTANCE failed to stop"
+			exit
+		fi
+	done
+	print "$INSTANCE stopped"
+}
+
+function ldapstart {
+	if  ps -ef | grep -v grep  | grep -i "ibmslapd -I $INSTANCE" 1>/dev/null 2>&1 ; then
+		print "$INSTANCE is already running"
+	else
+		/opt/IBM/ldap/V${version}/sbin/idsslapd -I $INSTANCE
+	fi
+}
+
+if [ "$(id -u)" = "0" ] || [[ -n "$SUDO_USER" ]]; then
+	if [[ $# -lt 1 ]]; then
+		print "syntax: rc.ldap [ start | stop | restart ] <ldapinstance>"
+		exit
+	fi
+	if [[ $# -lt 2 ]]; then
+		print "LDAP instance name must be specified"
+		exit
+	fi
+
+	ACTION=$1
+	INSTANCE=$2
+   
+   while read line; do 
+      if [[ "$line" = "cn: $INSTANCE"* ]]; then   
+         wanted=1
+      elif [[ "$line" = "cn: "* ]]; then
+         unset wanted
+      elif [[ "$line" = "ids-instanceVersion:"* && -n "$wanted" ]]; then
+         version=$( set -- $line; print $2 )
+      elif [[ "$line" = "ids-instanceLocation:"* && -n "$wanted" ]]; then
+         home=$( set -- $line; print $2 )
+      fi
+   done < /opt/IBM/ldap/idsinstinfo/idsinstances.ldif  
+
+  if [[ ! -d $home ]]; then
+		print "$home $INSTANCE not found"
+		exit
+	fi
+	export DB2INSTANCE=$INSTANCE
+	case $ACTION in
+		start)
+			ldapstart  
+			;;
+		stop)
+			ldapstop
+			;;
+		restart)
+			ldapstop
+			ldapstart
+			;;
+		*)
+			print "Invalid action $ACTION"
+			exit
+			;;
+		esac
+else
+	print "rc.ldap needs to be run from root user or using SUDO"
+fi
+

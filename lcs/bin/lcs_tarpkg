@@ -1,0 +1,1107 @@
+#!/usr/bin/perl
+#
+# This is written for AIX.  If Linux support is desired, there are
+# many OS-specific command options to be modified
+#
+# NOTE: If specfiles contain wildcards or shell metacharacters, the
+#       unpacking operation may not work as desired
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+use File::Find;
+
+umask 022;
+
+$| = 1;
+
+my $debug = 0;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Need to read in all config file to find sites with tarpkg. site names
+my $lcs_coll = "lcs_coll";		# Collector configurations
+my $lcs_client = "lcs_client";		# Client configurations
+my $cfgdir = "/opt/HPODS/LCS/conf";	# Daemon configuration dir
+my $cfgbase = "$cfgdir/";		# Configuration base filespec
+my $cfgext = ".conf";			# Configuration filespec extension
+my $siteprefix = "tarpkg";		# Matching site name prefix
+my $piddir = "/var/run";		# PID file directory
+my $pidfile = "$piddir/$mysname.pid";	# Process id "lock" file
+my $tar = "tar";			# tar command
+my $tartargs = "tf";			# arguments assume that tar-file
+					#  directly follows
+my $tarcargs = "cfp";			# arguments assume that tar-file
+					#  and list-of-files directly follow
+$tarcargs = "cfpv" if ($debug);		#  and if debug, turn on verbose mode
+my $tarrargs = "rfp";			# arguments assume that tar-file
+					#  and list-of-files directly follow
+$tarrargs = "rfpv" if ($debug);		#  and if debug, turn on verbose mode
+my $tarxargs = "xfp";			# arguments assume that tar-file
+					#  and list-of-files directly follow
+$tarxargs = "xfpv" if ($debug);		#  and if debug, turn on verbose mode
+my $rsync = "rsync";			# rsync command
+my $rsyncargs = "-ltrpq";		# arguments assume that file-list
+					#  and dest-dir directly follow
+$rsyncargs = "-ltrpv" if ($debug);	#  and if debug, turn on verbose mode
+my $rsyncdarg = "--delete";             #  delete argument for rsync
+my $gzip = "gzip";			# gzip command
+my $gzipargs = "-d -c";			# arguments assume uncompress from
+					#  a file and sent to a pipe
+my $rm = "rm";				# rm command
+my $rmargs = "-rf";			# arguments assume file or directory
+
+# Beware of packaging up root:system (0:0) on AIX and unpacking
+# to root:system (0:10073) on Linux and not the intended root:root (0:0)
+if ($os eq "Linux") {
+  $tartargs = "-t -f";
+  $tarcargs = "-c -f";
+  $tarcargs = "-c -v -f" if ($debug);
+  $tarrargs = "-r -f";
+  $tarrargs = "-r -v -f" if ($debug);
+  $tarxargs = "--numeric-owner -x -f";
+  $tarxargs = "--numeric-owner -x -v -f" if ($debug);
+}
+
+# Which nodes are allowed for certain source directories
+my %nfilters = (
+  "/" => '.*',
+);
+
+# Which zones are allowed for certain source directories
+my %zfilters = (
+  "/fs/backups" => '^[rygb].',
+  "/fs/home" => '^[rygb].',
+  "/fs/projects" => '^g.[ce]i.[pz]|^b.ecc.|.st.p1$',
+  "/fs/scratch" => '^[rygb]\..*',
+  "/fs/system" => '^g.[ce]i.[pz]|^b.ecc.|.st.p1$',
+  "/gpfs/backups" => '^g.[ce]i.[pz]|^b.ecc.',
+  "/gpfs/home" => '^g.[ce]i.[pz]|^b.ecc.',
+  "/gpfs/projects" => '^g.[ce]i.[pz]|^b.ecc.',
+  "/gpfs/scratch" => '^g.[ce]i.[pz]|^b.ecc.',
+  "/gpfs/system" => '^g.[ce]i.[pz]|^b.ecc.|^y.st.p1$',
+);
+
+# Defaults
+my $dminage = 10;			# Minimum age of file to process
+my $dpkgfile = ".TARPKG";		# Package file to use
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+my %clargs = ();
+my $rc = &main::GetOptions(
+  'a:i' => \$clargs{minage},
+  'c' => \$clargs{clean},
+  'd:s' => \$clargs{dstdir},
+  'e:s' => \$clargs{tarext},
+  'f:s@' => sub { push(@{$clargs{filespec}},split(/[,;]/,$_[1])) },
+  'h:s' => \$clargs{host},
+  'l:s' => \$clargs{logdir},
+  'n:s@' => sub { push(@{$clargs{nodes}},split(/[,;]/,$_[1])) },
+  'p:s' => \$clargs{pkgfile},
+  'q' => \$clargs{query},
+  'r' => \$clargs{remove},
+  's:s' => \$clargs{srcdir},
+  't:s' => \$clargs{tarfile},
+  'u' => \$clargs{unpack},
+  'v' => \$clargs{verbose},
+  'z:s@' => sub { push(@{$clargs{zones}},split(/[,;]/,$_[1])) },
+);
+if (! $rc) {
+  usage($mysname,$dminage,$dpkgfile);
+  exit 1;
+}
+
+# If host specified, must match our current host
+if (defined $clargs{host}) {
+  my ($n,$a,$t,$l,@ips) = gethostbyname($host);
+  my $match = 0;
+  foreach my $h (split(/[ ,]/,$clargs{host})) {
+    my ($name,$aliases,$addrtype,$length,@addrs) =
+        gethostbyname($h);
+    foreach my $a (@addrs) {
+      if (grep($_ eq $a,@ips)) {
+        $match++;
+        last;
+      }
+    }
+    last if ($match);
+  }
+  if (! $match) {
+    exit 0;
+  }
+}
+
+# Set up defaults, if not specified
+# Qualify srcdir if using . or ..
+my $srcdir = $clargs{srcdir} || "";
+if ($srcdir eq '.') {
+  $srcdir = getcwd();
+} elsif ($srcdir eq '..') {
+  if (chdir('..')) {
+    $srcdir = getcwd();
+  } else {
+    logit($mysname,2,"Unable to use source directory '$srcdir'");
+    exit 1;
+  }
+}
+# Handle dstdir of fs, gpfs or lfs specially
+my $dstdir = $clargs{dstdir} || $srcdir;
+if ($dstdir =~ /^lfs$/i) {
+  $dstdir = $srcdir;
+  $dstdir =~ s%^/fs/%/lfs/%;
+  $dstdir =~ s%^/gpfs/%/lfs/%;
+} elsif ($dstdir =~ /^fs$/i) {
+  $dstdir = $srcdir;
+  $dstdir =~ s%^/lfs/%/fs/%;
+  $dstdir =~ s%^/gpfs/%/fs/%;
+} elsif ($dstdir =~ /^gpfs$/i) {
+  $dstdir = $srcdir;
+  $dstdir =~ s%^/lfs/%/gpfs/%;
+  $dstdir =~ s%^/fs/%/gpfs/%;
+}
+my $tarfile = $clargs{tarfile} || "tarpkg";
+my $tarext = $clargs{tarext} || "%Y%m%d%H%M%S";
+my $logdir = $clargs{logdir} || "/logs/lcspickup";
+my $pkgfile = $clargs{pkgfile} || $dpkgfile;
+my $minage = $clargs{minage} || $dminage;
+my $clean = $clargs{clean} || 0;
+my $query = $clargs{query} || 0;
+my $remove = $clargs{remove} || 0;
+my $unpack = $clargs{unpack} || 0;
+my $verbose = $clargs{verbose} || 0;
+my @filespec = ();
+@filespec = @{$clargs{filespec}} if (defined $clargs{filespec});
+my @nodes = ();
+@nodes = @{$clargs{nodes}} if (defined $clargs{nodes});
+my @zones = ();
+@zones = @{$clargs{zones}} if (defined $clargs{zones});
+if (! @zones && ! @nodes) {
+  @zones = ('ALL');
+}
+
+# Obtain local realm to be used for zone exclusion as necessary
+my $realm = "";
+my $ncfile = "/usr/local/etc/nodecache";
+my %nodecache = ();
+if (-r $ncfile) {
+  loadcache($ncfile,\%nodecache);
+  $realm = $nodecache{realm} if (defined $nodecache{realm});
+}
+if ($realm eq "") {
+  logit($mysname,2,"Unable to determine realm");
+  exit 1;
+}
+
+# Denotes whether we log execution
+# Set to 0 in unpack code if nothing to unpack
+my $didwork = 1;
+
+# Make sure srcdir exists
+# Glob filespecs and turn off remove flag if any non-directories
+# Disallow filespecs to include . or ..
+if (! $unpack && ! $query) {
+  if (! -d $srcdir) {
+    logit($mysname,2,"Source directory '$srcdir' does not exist");
+    exit 1;
+  }
+  if (@filespec == 0) {
+    logit($mysname,2,"No filespecs specified");
+    exit 1;
+  }
+
+  # Loop/glob all the filespecs for a real list of potentials
+  my $cwd = getcwd();
+  if (chdir($srcdir)) {
+    my $total = 0;
+    foreach my $f (@filespec) {
+      my @lst = glob($f);
+      $total += @lst;
+      if (grep(! -d $_,@lst) && $remove > 0) {
+        logit($mysname,2,"Warning: Turning off remove option");
+        $remove = 0;
+      }
+      if (grep($_ eq '.' || $_ eq '..',@lst)) {
+        logit($mysname,2,"Filespecs can not include . or ..");
+        exit 1;
+      }
+    }
+    chdir($cwd);
+    if ($total == 0) {
+      logit($mysname,2,"Filespecs did not match anything");
+      exit 1;
+    }
+  }
+}
+
+## Make sure $pkgfile is not one of the @filespec(s)
+#if (grep($_ eq $pkgfile,@filespec)) {
+#  logit($mysname,2,"Package file must not be one of the filespecs");
+#  exit 1;
+#}
+
+# Create the PID directory if not available
+mkdirs($piddir,0,0,0755) if (! -d $piddir);
+
+# Already running, make sure, then bail out, otherwise create pidfile "lock"
+if (-f $pidfile) {
+  my($pid,$found,$p);
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  $found = 0;
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,2,"Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,2,"Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+if (open(PIDFILE,">$pidfile")) {
+  print PIDFILE "$$\n";
+  close(PIDFILE);
+} else {
+  logit($mysname,2,"Unable to obtain pidfile lock: $!");
+  exit 0;
+}
+
+# MAIN
+
+my ($delay,$now,$out,$tmpdir,$ttfile,$ttext);
+my @cfglst = ();
+my %filehsh = ();
+my %linkhsh = ();
+my %revlinkhsh = ();
+my %cleanhsh = ();
+my %pkghsh = ();
+my %cfgs = ();
+my $ok = 1;
+
+# Short-circuit for query-only
+if ($query || $clean) {
+  my %clcfgs = ();
+  my %cocfgs = ();
+  # Read in all the configs to %cfgs hash keyed on instance name
+  if (-d $cfgdir) {
+    opendir(DIR,$cfgdir);
+    @cfglst = grep($_ =~ /^$lcs_coll\S+$cfgext$/,(readdir(DIR)));
+    closedir(DIR);
+    if (@cfglst) {
+      foreach my $cfg (@cfglst) {
+        my $i = $cfg;
+        $i =~ s/$cfgext$//;
+        #logit($mysname,1,"Loading $lcs_coll $cfg $i") if ($clargs{verbose});
+        loadfile(\%cocfgs,"$cfgbase$cfg",$i,1);
+      }
+    }
+    opendir(DIR,$cfgdir);
+    @cfglst = grep($_ =~ /^$lcs_client\S+$cfgext$/,(readdir(DIR)));
+    closedir(DIR);
+    if (@cfglst) {
+      foreach my $cfg (@cfglst) {
+        my $i = $cfg;
+        $i =~ s/$cfgext$//;
+        #logit($mysname,1,"Loading $lcs_client $cfg $i") if ($clargs{verbose});
+        loadfile(\%clcfgs,"$cfgbase$cfg",$i,0);
+      }
+    }
+  }
+  # Obtain all archivedirectory entries for matching $siteprefix
+  my %archdirs = ();
+  foreach my $site (grep($_ =~ /^$siteprefix/,keys %cocfgs)) {
+    if (defined $cocfgs{$site}{archivedirectory}) {
+      $archdirs{(@{$cocfgs{$site}{archivedirectory}})[$[]}++;
+    }
+  }
+  # Obtain all site/logdirectory entries for matching $siteprefix
+  my %sites = ();
+  my %logdirs = ();
+  foreach my $key (keys %clcfgs) {
+    if (defined $clcfgs{$key}{site} &&
+        (@{$clcfgs{$key}{site}})[$[] =~ /^$siteprefix/) {
+      $logdirs{(@{$clcfgs{$key}{logdirectory}})[$[]}++;
+      $sites{(@{$clcfgs{$key}{site}})[$[]} = $key;
+    }
+  }
+  # Create forward and reverse hashes of symlink files in logdirectory entries
+  if (keys %logdirs) {
+    find(\&wanted4links,keys %logdirs);  # Creates %linkhsh
+    # Create reverse list of symlinked destinations
+    grep(push(@{$revlinkhsh{$linkhsh{$_}}},$_),keys %linkhsh)
+  }
+  # Get list of unique directories to scan
+  my %uniqdirs = ();
+  grep($uniqdirs{$_}++,keys %archdirs,keys %logdirs);
+  # Loop on all directories
+  foreach my $dir (sort keys %uniqdirs) {
+    next if (! -d $dir);
+    if (chdir($dir)) {
+      my ($now,$delay,$sdir,$ddir);
+      my @filelst;
+      opendir(DIR,$dir);
+      @filelst = sort grep(-f $_ && ! -l $_,(readdir(DIR)));
+      closedir(DIR);
+      foreach my $f (sort @filelst) {
+        $tmpdir = "$dir/$siteprefix.$$";
+        $sdir = $ddir = "";
+        %pkghsh = ();
+        loadpkgfile(\%pkghsh,"$dir/$f",$dir,$gzip,$gzipargs,
+                    $tar,$tartargs,$tarxargs,$siteprefix);
+        next if (defined $pkghsh{NOTPKGFILE});
+        #
+        if (defined $pkghsh{srcdir}) {
+          $sdir = @{$pkghsh{srcdir}}[$[];
+        }
+        if (defined $pkghsh{dstdir}) {
+          $ddir = @{$pkghsh{dstdir}}[$[];
+        } else {
+          $ddir = $sdir;
+        }
+        $now = time();
+        $delay = $now - (@{$pkghsh{seconds}})[$[];
+        $delay = 0 if ($delay <= 0 || $delay == $now);
+        $out = "$dir/$f:";
+        if (defined $revlinkhsh{"$dir/$f"}) {
+          $out .= "\n  Link    \t= ".join("\n  Link    \t= ",
+                                          @{$revlinkhsh{"$dir/$f"}});
+          # Track command,srcdir,dstdir,specs for possible clean
+          if ($clean) {
+            my $cm = (@{$pkghsh{command}})[$[];
+            my $sp = join('|',@{$pkghsh{spec}});
+            push(@{$cleanhsh{$cm}{$sdir}{$ddir}{$sp}},"$dir/$f");
+            push(@{$cleanhsh{$cm}{$sdir}{$ddir}{$sp}},
+                 @{$revlinkhsh{"$dir/$f"}});
+          }
+        }
+        $out .= "\n  Date    \t= ".(@{$pkghsh{date}})[$[]."($delay)";
+        $out .= "\n  Seconds \t= ".(@{$pkghsh{seconds}})[$[];
+        $out .= "\n  Host    \t= ".(@{$pkghsh{host}})[$[];
+        $out .= "\n  User    \t= ".(@{$pkghsh{realuser}})[$[];
+        $out .= "(".(@{$pkghsh{effuser}})[$[].")"
+          if ((@{$pkghsh{realuser}})[$[] ne (@{$pkghsh{effuser}})[$[]);
+        $out .= "\n  TTY     \t= $tty";
+        $out .= "\n  Delete  \t= ".(@{$pkghsh{delete}})[$[];
+        $out .= "\n  SrcDir  \t= $sdir";
+        $out .= "\n  DstDir  \t= $ddir";
+        $out .= "\n  Specfile\t= ".join("\n  Specfile\t= ",@{$pkghsh{spec}});
+        $out .= "\n  Command \t= ".(@{$pkghsh{command}})[$[];
+        $out .= "\n";
+        print "$out\n" if ($query);
+      }
+    }
+  }
+
+  if ($query) {
+    # Clean up PID "lock" file
+    unlink ($pidfile);
+
+    exit(0);
+  }
+}
+
+if (! $unpack) {
+  # Read in all the configs to %cfgs hash keyed on instance name
+  if (-d $cfgdir) {
+    opendir(DIR,$cfgdir);
+    @cfglst = grep($_ =~ /^$lcs_client\S+$cfgext$/,(readdir(DIR)));
+    closedir(DIR);
+    if (@cfglst) {
+      foreach my $cfg (@cfglst) {
+        my $i = $cfg;
+        $i =~ s/$cfgext$//;
+        logit($mysname,1,"Loading $lcs_client $cfg $i") if ($clargs{verbose});
+        loadfile(\%cfgs,"$cfgbase$cfg",$i,0);
+      }
+    }
+  }
+  # Obtain all site/logdirectory entries for matching $siteprefix
+  my $matchnodecount = 0;
+  my $matchzonecount = 0;
+  my $nodecount = 0;
+  my $zonecount = 0;
+  my @mnodes = ();
+  my @mzones = ();
+  my @fnodes = ();
+  my @fzones = ();
+  my %sites = ();
+  my %logdirs = ();
+  foreach my $key (sort keys %cfgs) {
+    if (defined $cfgs{$key}{site} &&
+        (@{$cfgs{$key}{site}})[$[] =~ /^$siteprefix/) {
+      my $match = (@{$cfgs{$key}{site}})[$[];
+      $match =~ s/^$siteprefix\.//;
+      if ($match !~ /\./) {
+        if (grep($_ =~ /^ALL$/i || $match =~ /$_/i,@nodes)) {
+          logit($mysname,1,"Site prefix node match for $key")
+            if ($clargs{verbose});
+          $matchnodecount++;
+          push(@mnodes,$match);
+          # Match node filters and
+          #  not this host or srcdir is shared FS or dstdir is shared FS
+          if (grep($srcdir =~ /^$_/ &&
+                 $match =~ /$nfilters{$_}/,keys %nfilters) &&
+              ($match !~ /^$host/ ||
+               $srcdir =~ /^\/(fs|gpfs)\// ||
+               $dstdir =~ /^\/(fs|gpfs)\//)) {
+            logit($mysname,1,"Filter node match for $key")
+              if ($clargs{verbose});
+            $logdirs{(@{$cfgs{$key}{logdirectory}})[$[]}++;
+            $sites{(@{$cfgs{$key}{site}})[$[]} = $key;
+            $nodecount++;
+            push(@fnodes,$match);
+          } else {
+            logit($mysname,1,"Filter does not match for $key, skipping node")
+              if ($clargs{verbose});
+          }
+        } else {
+          logit($mysname,1,"Site prefix match for $key, skipping node")
+            if ($clargs{verbose});
+        }
+      }
+      if ($match =~ /\./) {
+        if (grep($_ =~ /^ALL$/i || $match =~ /$_/i,@zones)) {
+          logit($mysname,1,"Site prefix zone match for $key")
+            if ($clargs{verbose});
+          $matchzonecount++;
+          push(@mzones,$match);
+          # Match zone filters against srcdir or dstdir and
+          #  not this realm or srcdir is not shared FS or dstdir is not shared FS
+          if (grep($match =~ /$zfilters{$_}/ &&
+                   ($srcdir =~ /^$_(\/|$)/ ||
+                    ($dstdir =~ /^\/(fs|gpfs)\// && $dstdir =~ /^$_(\/|$)/)),
+                   keys %zfilters) &&
+              ($match !~ /^$realm/ ||
+               $srcdir !~ /^\/(fs|gpfs)\// ||
+               $dstdir !~ /^\/(fs|gpfs)\//)) {
+            logit($mysname,1,"Filter zone match for $key")
+              if ($clargs{verbose});
+            $logdirs{(@{$cfgs{$key}{logdirectory}})[$[]}++;
+            $sites{(@{$cfgs{$key}{site}})[$[]} = $key;
+            $zonecount++;
+            push(@fzones,$match);
+          } else {
+            logit($mysname,1,"Filter does not match for $key, skipping zone")
+              if ($clargs{verbose});
+          }
+        } else {
+          logit($mysname,1,"Site prefix match for $key, skipping zone")
+            if ($clargs{verbose});
+        }
+      }
+    }
+  }
+  # Warn if matched nodes and filtered nodes do not match
+  my $mn = join(" ",sort @mnodes);
+  my $fn = join(" ",sort @fnodes);
+  if ($mn ne $fn) {
+    if ($clargs{verbose}) {
+      logit($mysname,1,
+            "WARNING: Matched nodes ($matchnodecount) does not equal ".
+            "filtered zones ($nodecount)");
+      logit($mysname,1,"WARNING:  Matched  = $mn");
+      logit($mysname,1,"WARNING:  Filtered = $fn");
+    }
+  }
+  # Warn if matched zones and filtered zones do not match
+  my $mz = join(" ",sort @mzones);
+  my $fz = join(" ",sort @fzones);
+  if ($mz ne $fz) {
+    if ($clargs{verbose}) {
+      logit($mysname,1,
+            "WARNING: Matched zones ($matchzonecount) does not equal ".
+            "filtered zones ($zonecount)");
+      logit($mysname,1,"WARNING:  Matched  = $mz");
+      logit($mysname,1,"WARNING:  Filtered = $fz");
+    }
+  }
+  # Warn if no symlinks will be created below
+  logit($mysname,1,"WARNING: No nodes/zones matched, continuing...")
+    if ($nodecount == 0 && $zonecount == 0);
+  # Create forward and reverse hashes of symlink files in logdirectory entries
+  if (keys %logdirs) {
+    find(\&wanted4links,keys %logdirs);  # Creates %linkhsh
+    # Create reverse list of symlinked destinations
+    grep(push(@{$revlinkhsh{$linkhsh{$_}}},$_),keys %linkhsh)
+  }
+
+  # Find all non-symlink tar package files in $logdir and remove them
+  #   Skip file if it still has links to them
+  if (-d $logdir) {
+    find(\&wanted4files,$logdir);  # Creates %filehsh
+    foreach my $f (sort keys %filehsh) {
+      %pkghsh = ();
+      # Skip file if something is symlinked to it
+      next if (defined $revlinkhsh{$f});
+      loadpkgfile(\%pkghsh,$f,$logdir,$gzip,$gzipargs,
+                  $tar,$tartargs,$tarxargs,$siteprefix);
+      if (! defined $pkghsh{NOTPKGFILE}) {
+        logit($mysname,1,"Removing non-symlinked file: $f");
+        unlink($f);
+      }
+    }
+
+    # Generate package hash
+    %pkghsh = ();
+    $now = time();
+    %pkghsh = (
+      date => [ POSIX::strftime("%Y%m%d%H%M%S%Z", localtime()) ],
+      seconds => [ $now ],
+      host => [ $host ],
+      os => [ $os ],
+      tty => [ $tty ],
+      realuser => [ $realuser ],
+      effuser => [ $effuser ],
+      srcdir => [ $srcdir ],
+      dstdir => [ $dstdir ],
+      delete => [ ($remove ? "yes" : "no") ],
+      spec => [ sort @filespec ],
+      command => [ "$mylname ".join(' ',@allargv) ],
+    );
+
+    # Create and change into temporary directory
+    $ttext = POSIX::strftime("$tarext", localtime());
+    $ttfile = "$logdir/$tarfile.$ttext.$$";
+    $tmpdir = "$logdir/$siteprefix.$$";
+    if (mkdir($tmpdir,0755)) {
+      if (chdir($tmpdir)) {
+        # Create package file and place in tar file
+        logit($mysname,1,"Creating package file") if ($clargs{verbose});
+        if (open(PKG,">$pkgfile")) {
+          my $out = "#$siteprefix\n";
+          $out .= "DATE=".(@{$pkghsh{date}})[$[]."\n";
+          $out .= "SECONDS=".(@{$pkghsh{seconds}})[$[]."\n";
+          $out .= "HOST=".(@{$pkghsh{host}})[$[]."\n";
+          $out .= "OS=".(@{$pkghsh{os}})[$[]."\n";
+          $out .= "TTY=".(@{$pkghsh{tty}})[$[]."\n";
+          $out .= "REALUSER=".(@{$pkghsh{realuser}})[$[]."\n";
+          $out .= "EFFUSER=".(@{$pkghsh{effuser}})[$[]."\n";
+          $out .= "SRCDIR=".(@{$pkghsh{srcdir}})[$[]."\n";
+          $out .= "DSTDIR=".(@{$pkghsh{dstdir}})[$[]."\n";
+          $out .= "DELETE=".(@{$pkghsh{delete}})[$[]."\n";
+          $out .= "SPEC=".join("\nSPEC=",@{$pkghsh{spec}})."\n";
+          $out .= "COMMAND=".(@{$pkghsh{command}})[$[]."\n";
+          if (! print PKG $out) {
+            $ok = 0;
+            logit($mysname,2,"Unable to create package file");
+          }
+          close(PKG);
+
+          # Tar package file to $logdir/$tarfile.$tarext.$ttext
+          unlink($ttfile) if (-e $ttfile);
+          system("$tar $tarcargs $ttfile $pkgfile");
+          $rc = $? >> 8;    # Exit code from system call
+          if ($rc != 0) {
+            $ok = 0;
+            unlink($ttfile);
+            logit($mysname,2,"Unable to tar package file");
+          }
+          unlink($pkgfile);
+        } else {
+          $ok = 0;
+          logit($mysname,2,"Unable to open package file");
+        }
+      }
+      chdir($logdir);
+      rmdir($tmpdir);
+
+      # Append @filespec files to tar file
+      # and create site-specific symlinks
+      if ($ok) {
+        if (chdir($srcdir)) {
+          logit($mysname,1,"Appending file specs to tar")
+            if ($clargs{verbose});
+          system("$tar $tarrargs $ttfile ".join(' ',@filespec));
+          $rc = $? >> 8;    # Exit code from system call
+          if ($rc == 0) {
+            my ($sitelogdir,$logprefix,$destlink);
+            logit($mysname,1,"Creating symlinks for tar")
+              if ($clargs{verbose});
+            foreach my $val (values %sites) {
+              $sitelogdir = (@{$cfgs{$val}{logdirectory}})[$[];
+              $logprefix = (@{$cfgs{$val}{logprefix}})[$[];
+              $destlink = "$sitelogdir/$logprefix.$ttext.$$";
+              unlink($destlink) if (-e $destlink);
+              if (! symlink($ttfile,$destlink)) {
+                $ok = 0;
+                unlink($destlink);
+                logit($mysname,2,"Unable to symlink $destlink to $ttfile");
+              }
+            }
+          } else {
+            $ok = 0;
+            unlink($ttfile);
+            logit($mysname,2,"Unable to append tar file");
+          }
+        } else {
+          $ok = 0;
+          unlink($ttfile);
+          logit($mysname,2,"Unable to chdir to $srcdir");
+        }
+      }
+    } else {
+      $ok = 0;
+      logit($mysname,2,"Unable to create temporary dir $tmpdir");
+    }
+
+    # Clean up duplicates if successful creation above
+    if ($ok && $clean) {
+      my $cm = (@{$pkghsh{command}})[$[];
+      my $sdir = (@{$pkghsh{srcdir}})[$[];
+      my $ddir = (@{$pkghsh{dstdir}})[$[];
+      my $sp = join('|',@{$pkghsh{spec}});
+      if (defined $cleanhsh{$cm} &&
+          defined $cleanhsh{$cm}{$sdir} &&
+          defined $cleanhsh{$cm}{$sdir}{$ddir} &&
+          defined $cleanhsh{$cm}{$sdir}{$ddir}{$sp}) {
+        logit($mysname,1,"Removing duplicate queue file(s): ".
+                         join(',',@{$cleanhsh{$cm}{$sdir}{$ddir}{$sp}}));
+        unlink(@{$cleanhsh{$cm}{$sdir}{$ddir}{$sp}});
+      }
+    }
+  }
+} else {
+  # Unpacking
+  my ($sdir,$ddir,@specs);
+
+  $didwork = 0;
+
+  # Read in all the configs to %cfgs hash keyed on instance name
+  if (-d $cfgdir) {
+    opendir(DIR,$cfgdir);
+    @cfglst = grep($_ =~ /^$lcs_coll\S+$cfgext$/,(readdir(DIR)));
+    closedir(DIR);
+    if (@cfglst) {
+      foreach my $cfg (@cfglst) {
+        my $i = $cfg;
+        $i =~ s/$cfgext$//;
+        logit($mysname,1,"Loading $lcs_coll $cfg $i") if ($clargs{verbose});
+        loadfile(\%cfgs,"$cfgbase$cfg",$i,1);
+      }
+    }
+  }
+  # Obtain all archivedirectory entries for matching $siteprefix
+  my %archdirs = ();
+  foreach my $site (grep($_ =~ /^$siteprefix/,keys %cfgs)) {
+    if (defined $cfgs{$site}{archivedirectory}) {
+      $archdirs{(@{$cfgs{$site}{archivedirectory}})[$[]}++;
+    }
+  }
+  # Loop on directory read of each ArchiveDirectory
+  foreach my $ad (sort keys %archdirs) {
+    next if (! -d $ad);
+    if (chdir($ad)) {
+      my @filelst;
+      logit($mysname,1,"Processing archive directory $ad")
+        if ($clargs{verbose});
+      opendir(AD,$ad);
+      ## Sort list of files in mtime order ((stat)[9])
+      #@filelst = map { $_->[$[] }
+      #           sort { $a->[$[+1] <=> $b->[$[+1] }
+      #           map { [ $_,(stat($_))[$[+9] ] }
+      #           grep(-f $_,(readdir(AD)));
+      @filelst = sort grep(-f $_ && ((time()-(stat($_))[$[+9]) > $minage),
+                           (readdir(AD)));
+      closedir(AD);
+      foreach my $f (@filelst) {
+        $tmpdir = "$ad/$siteprefix.$$";
+        $sdir = $ddir = "";
+        @specs = ();
+        %pkghsh = ();
+        loadpkgfile(\%pkghsh,"$ad/$f",$ad,$gzip,$gzipargs,
+                    $tar,$tartargs,$tarxargs,$siteprefix);
+        next if (defined $pkghsh{NOTPKGFILE});
+        logit($mysname,1,"Processing file $ad/$f") if ($clargs{verbose});
+        if (defined $pkghsh{srcdir}) {
+          $sdir = @{$pkghsh{srcdir}}[$[];
+        }
+        if (defined $pkghsh{dstdir}) {
+          $ddir = @{$pkghsh{dstdir}}[$[];
+        } else {
+          $ddir = $sdir;
+        }
+        if (defined $pkghsh{spec}) {
+          @specs = @{$pkghsh{spec}};
+        } else {
+          @specs = @filespec;
+        }
+        next if ($ddir eq "" || ! -d $ddir || ! @specs);
+        $didwork = 1;
+        if (mkdir($tmpdir,0755)) {
+          if (chdir($tmpdir)) {
+            my $cmd = "$tar $tarxargs";
+            if ($f =~ /\.gz$/) {
+              $cmd = "$gzip $gzipargs $ad/$f | $cmd - ";
+            } else {
+              $cmd .= " $ad/$f ";
+            }
+            $cmd .= join(' ',@specs);
+            logit($mysname,1,"Synchronizing data") if ($clargs{verbose});
+            system($cmd);
+            $rc = $? >> 8;    # Exit code from system call
+            if ($rc == 0) {
+              my $del = "";
+              if (defined $pkghsh{delete} && 
+                  (@{$pkghsh{delete}})[$[] eq "yes") {
+                $del = $rsyncdarg;
+              }
+              $cmd = "$rsync $del $rsyncargs ".join(' ',@specs)." $ddir";
+              system($cmd);
+              $rc = $? >> 8;    # Exit code from system call
+              if ($rc == 0) {
+                my ($now,$delay);
+                unlink("$ad/$f");
+                $now = time();
+                $delay = $now - (@{$pkghsh{seconds}})[$[];
+                $delay = 0 if ($delay <= 0 || $delay == $now);
+                logit($mysname,1,"Unpack of $ad/$f successful ($delay)");
+                $out = "Status: SUCCESS";
+                $out .= " File: $ad/$f";
+                $out .= " Host: ".(@{$pkghsh{host}})[$[];
+                $out .= " User: ".(@{$pkghsh{realuser}})[$[];
+                $out .= "(".(@{$pkghsh{effuser}})[$[].")"
+                  if ((@{$pkghsh{realuser}})[$[] ne (@{$pkghsh{effuser}})[$[]);
+                $out .= " TTY: $tty";
+                $out .= " Date: ".(@{$pkghsh{date}})[$[]."($delay)";
+                $out .= " Delete: ".(@{$pkghsh{delete}})[$[];
+                $out .= " SrcDir: $sdir";
+                $out .= " DstDir: $ddir";
+                $out .= " Specfiles: ".join(' ', sort @specs);
+                $out .= " CMD: ".(@{$pkghsh{command}})[$[];
+                logit($mysname,8,"daemon","notice","%s",$out);
+              } else {
+                logit($mysname,2,"Unable to synchronize $ad/$f");
+              }
+            } else {
+              logit($mysname,2,"Unable to untar package $ad/$f");
+            }
+          } else {
+            logit($mysname,2,"Unable to switch to $tmpdir directory");
+          }
+          chdir ($ad);
+          logit($mysname,1,"Cleaning temporary unpack directory")
+            if ($clargs{verbose});
+          system("$rm $rmargs $tmpdir");
+          $rc = $? >> 8;    # Exit code from system call
+          if ($rc != 0) {
+            logit($mysname,2,"Unable to clean up temporary dir $tmpdir");
+          }
+        }
+      }
+    }
+  }
+}
+
+# Log the command was run
+logit($mysname,1,"Logging the execution")
+  if ($clargs{verbose});
+if ($didwork) {
+  $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " CMD: $0 ".join(" ",@allargv);
+  if ($out ne "") {
+    logit($mysname,8,"daemon","notice","%s",$out);
+    #logit($mysname,2,"%s",$out);
+  }
+}
+
+# Clean up PID "lock" file
+unlink ($pidfile);
+
+exit 0;
+
+print "$main::running_under_some_shell\n";
+
+sub usage {
+  my($me,$minage,$pkgfile) = @_;
+
+  print "$me [-a minage][-c][-d dstdir][-e tarext][-f filespec[,filespec[,...]]]\n",
+        "    [-h host][-l logdir][-n node[,node[,...]]][-p pkgfile][-q][-r]\n",
+        "    [-s srcdir][-t tarfile][-u][-v][-z zone[,zone[,...]]]\n",
+        "  where: srcdir    - source directory for specfile(s)\n",
+        "         dstdir    - destination directory for specfile(s)\n",
+        "                     (default: <srcdir>)\n",
+        "         filespec  - list of files/dirs in <srcdir> for pickup\n",
+        "         host      - if specified, only run program on this host\n",
+        "         node      - list of nodes to symlink for pickup\n",
+        "         pkgfile   - control file name used for pack/unpack\n",
+        "                     (default: $pkgfile)\n",
+        "         logdir    - log directory for tar file creation\n",
+        "         tarfile   - file name to use for tar\n",
+        "         tarext    - tar file extension\n",
+        "         zone      - list of zones to symlink for pickup\n",
+        "                     (default if no nodes: ALL)\n",
+        "         minage    - minimum file age in seconds to unpack\n",
+        "                     (default: $minage)\n",
+        "         -c        - clean up queued duplicate files\n",
+        "         -q        - query mode only - show queued files\n",
+        "         -r        - remove destination files that do not exist on\n",
+        "                     the sending side\n",
+        "         -u        - unpack the <tarfile>\n",
+        "         -v        - verbose output\n";
+}
+
+# File::Find subroutine to capture symlinked files
+sub wanted4links {
+  my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev);
+  my ($size,$atime,$mtime,$ctime,$blksize,$blocks);
+
+  (($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+    $atime,$mtime,$ctime,$blksize,$blocks) = lstat($_)) &&
+   -l _ &&
+   ($linkhsh{$File::Find::name} = readlink($File::Find::name));
+}
+
+# File::Find subroutine to capture non-symlinked files
+sub wanted4files {
+  my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev);
+  my ($size,$atime,$mtime,$ctime,$blksize,$blocks);
+
+  (($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+    $atime,$mtime,$ctime,$blksize,$blocks) = lstat($_)) &&
+    -f _ &&
+    ! -l _ &&
+    $filehsh{$File::Find::name}++ >= 0;
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+# Relies on mkdirs() below
+sub loadpkgfile {
+  my($href,$file,$dir,$gzip,$gzipargs,$tar,$tartargs,$tarxargs,$siteprefix) = @_;
+  my($cwd,$tmpdir,$ff,$fl,$rc,$key,$value,$cmd);
+
+  $cwd = getcwd();
+  $tmpdir = "$dir/$siteprefix.$$";
+  mkdirs($tmpdir,0,0,0755);
+  if (chdir($tmpdir)) {
+    # Grab tar table of contents - first file
+    $ff = "";
+    $cmd = "$tar $tartargs";
+    if ($file =~ /\.gz$/) {
+      $cmd = "$gzip $gzipargs $file | $cmd -";
+    } else {
+      $cmd .= " $file";
+    }
+    if (open(TAR,"$cmd 2>/dev/null|")) {
+      chomp($ff = <TAR>);
+      close(TAR);
+      $ff = "" if ($ff =~ /\//);
+    }
+    # Untar the first file and attempt to load it as a package file
+    if ($ff ne "") {
+      $cmd = "$tar $tarxargs";
+      if ($file =~ /\.gz$/) {
+        $cmd = "$gzip $gzipargs $file | $cmd - $ff";
+      } else {
+        $cmd .= " $file $ff";
+      }
+      system($cmd);
+      $rc = $? >> 8;    # Exit code from system call
+      if ($rc == 0) {
+        if (open(PKG,"<$ff")) {
+          chomp($fl = <PKG>);
+          if ($fl eq "#$siteprefix") {
+            while(<PKG>) {
+              next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+              chomp;
+              s/\s+#.*$//;                   # Strip ending comments
+              s/^\s+//g;                     # Strip all beginning space
+              s/\s+$//g;                     # Strip all ending space
+              ($key,$value) = split(/=/,$_,2);
+              if ($key) {
+                $key = "\L$key";
+                push(@{$href->{$key}},$value);
+              }
+            }
+          } else {
+            push(@{$href->{NOTPKGFILE}},1);
+          }
+          close(PKG);
+        }
+      }
+      unlink($ff);
+    }
+    chdir($cwd);
+    rmdir($tmpdir);
+  }
+}
+
+sub loadcache {
+  my ($file,$hshref) = @_;
+  my ($key,$value);
+
+  if (open(IN,"<$file")) {
+    while (<IN>) {
+      chomp;
+      next if (/^\s*#|^\s*$/);
+      s/^\s*export\s+//;
+      ($key,$value) = split('=',$_,2);
+      $key =~ s/^\s*//;
+      $key =~ s/\s*$//;
+      $value =~ s/^\s*//;
+      $value =~ s/\s*$//;
+      $value =~ s/^'//;
+      $value =~ s/'$//;
+      $hshref->{$key} = $value;
+    }
+    close(IN);
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}

@@ -1,0 +1,2097 @@
+#!/usr/local/bin/perl
+
+use strict;
+use Getopt::Long;
+use File::Basename;
+use File::Copy;
+use File::Find;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+use LWP::UserAgent;
+use HTTP::Request;
+use MIME::Base64;
+use Net::SSLeay qw(get_https post_https sslcat make_headers make_form);
+
+my $dfltumask = "022";
+
+umask(oct($dfltumask));
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mypath = $mylname;
+$mypath =~ s%$mysname$%%;
+$mypath = './' if ($mypath eq '');
+$mypath =~ s%/$%%g;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+my ($osver,$osrel,$osnodename) = (uname)[3,2,1];
+my $wparid = 0;
+if ($os eq "AIX" && $osver >= 6) {
+  # uname -W only available on AIX 6+
+  chomp($wparid = `uname -W 2>/dev/null`);
+  $wparid = 0 if ($wparid eq "");
+}
+my $iosflg = 0;
+$iosflg = 1 if (-x "/usr/ios/cli/ioscli");
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Set/export COLUMNS to get longer commands
+$ENV{COLUMNS} = 300;
+
+my $lcs_ctl = "lcs_ctl";
+my $cfgdir = "/opt/HPODS/LCS/conf";
+my $cfgbase = "$cfgdir/";
+my $cfgext = ".conf";
+my $logdir = "/var/log/lcs";
+my $piddir = "/var/run";
+my $lcsbrowse = "lcsbrowse";
+my $instance = "instance";
+my $fullcommand = "";
+my $tmp = "/tmp";
+my $mytime = time();
+my $fullday = 60*60*24;
+my $fnodes = "nodes";
+my $tmpext = "tmp";
+my %onelogroot = {                      # Only keep last interval for these
+     "httpd_conf" => 1,                 #  httpd.conf file
+     "rDeny_conf" => 1,                 #  rDeny.conf file
+   };
+
+my $cat = "cat";                        # cat command
+my $tar = "tar";                        # tar command
+my $tarcargs = "cfp";                   # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+my $tarrargs = "rfp";                   # arguments assume that tar-file
+                                        #  and list-of-files directly follow
+
+my %zipinfo = (
+  "Z" => {
+    "multiple" => 0,                    # concatentate compressed files
+    "ccmd" => "compress",               # compress command
+    "cargs" => "",                      # arguments to compress file
+    "ucmd" => "uncompress",             # uncompress command
+    "uargs" => "-c",                    # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "gz" => {
+    "multiple" => 1,                    # concatentate compressed files
+    "ccmd" => "gzip",                   # gzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "gzip",                   # gzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "bz2" => {
+    "multiple" => 1,                    # concatentate compressed files
+    "ccmd" => "bzip2",                  # bzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "bzip2",                  # bzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+);
+
+my $subdir24 = "24subdirectory";
+my $logext24 = "24logextension";
+
+# Define log file directives
+my %logarr = (
+  'auditlog' => "",
+  'errorlog' => "",
+  'tracelog' => "",
+);
+
+# Any of the following settings will validate site for processing
+my @cleanset = (
+  "cleandirectories",
+  "cleanfiles",
+  "cleanmatch1files",
+  "cleanmatch2files",
+  "cleanmatch3files",
+  "cleanmatch4files",
+  "cleanmatch5files",
+  "cleanmatch6files",
+  "cleanmatch7files",
+  "cleanmatch8files",
+  "cleanmatch9files",
+);
+my @validset = (
+  "generatenodelist",
+  "subdirectory",
+  $subdir24,
+  "tar",
+  "compress",
+  "commandexit",
+  @cleanset,
+);
+
+my $dfltsite = "  $$ LCS";
+my $site = $dfltsite;
+my %clargs = ();
+my $rc = &main::GetOptions(
+  'archiveonly' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'date:s' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'debug' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'force' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'interval:i' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'noalert' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'nologging' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+  'poll:i' => sub { $clargs{$dfltsite}{$_[0]} = $_[1] },
+  'skipsite:s@' => sub { push(@{$clargs{$dfltsite}{$_[0]}},
+                              split(/[,;]/,$_[1])) },
+  'verbose' => sub { $clargs{$dfltsite}{$_[0]} = 1 },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $archiveonly = $clargs{$dfltsite}{archiveonly} || 0;
+my $date = $clargs{$dfltsite}{date} || &yesterday;
+my $debug = $clargs{$dfltsite}{debug} || 0;
+my $force = $clargs{$dfltsite}{force} || 0;
+my $interval = $clargs{$dfltsite}{interval} || $fullday;
+my $noalert = $clargs{$dfltsite}{noalert} || 0;
+my $nologging = $clargs{$dfltsite}{nologging} || 0;
+my $poll = $clargs{$dfltsite}{poll} || $fullday;
+my $verbose = $clargs{$dfltsite}{verbose} || 0;
+
+my $inst = "";
+my $l = "";
+
+# Validate date - do not try to process future date
+my ($year,$mon,$mday,$hour,$min,$sec);
+if ($date !~ /^[1-9]\d\d\d\d\d\d\d$/) {
+  logit($mysname,\%logarr,98,
+        "Date must be of the form YYYYMMDD");
+  usage($mysname);
+  exit 1;
+}
+($year,$mon,$mday) = unpack("a4a2a2",$date);
+my $datets = timelocal(0,0,0,$mday,$mon-1,$year-1900);
+if ($mytime < ($datets + $fullday)) {
+  logit($mysname,\%logarr,98,
+        "Date must not be in the future");
+  usage($mysname);
+  exit 1;
+}
+
+my %allsites = ();
+my %cfgs = ();
+my @cfglst = ();
+if (opendir(DIR,$cfgdir)) {
+  @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+  closedir(DIR);
+  if (@cfglst) {
+    foreach my $cfg (sort @cfglst) {
+      my $i = $cfg;
+      $i =~ s/$cfgext$//;
+      #logit($mysname,\%logarr,64+($verbose>0),
+      #      "Loading $lcs_ctl $cfg $i");
+      loadfile(\%cfgs,"$cfgbase$cfg",$i,1);
+      foreach my $key (keys %cfgs) {
+        if (! defined $allsites{$key}) {
+          $allsites{$key} = $i;
+        }
+      }
+    }
+  }
+}
+
+# Pre-load sites to skip when processing
+my %skipsite = ();
+grep($skipsite{$_}++,@{$clargs{$dfltsite}{skipsite}})
+  if (defined $clargs{$dfltsite}{skipsite});
+
+# Build valid sites list based on control files
+my %sitehsh = ();
+foreach $site (sort keys %cfgs) {
+  $inst = $allsites{$site};
+  if ($nologging) {
+    foreach $l (keys %logarr) {
+      $logarr{$l} = "";
+    }
+  } else {
+    foreach $l (keys %logarr) {
+      if (defined $cfgs{$inst}{$l}) {
+        $logarr{$l} = (@{$cfgs{$inst}{$l}})[$[];
+      } else {
+        $logarr{$l} = "";
+      }
+    }
+  }
+  logit($mysname,\%logarr,64+($debug>0),
+        "Control file parse for $site");
+  if (grep(defined $cfgs{$site}{$_},@validset)) {
+    if (defined $cfgs{$site}{aggregate}) {
+      if (grep($host eq $_ || $host =~ /$_/, @{$cfgs{$site}{aggregate}})) {
+        my ($year,$mon,$mday,$hour,$min,$sec);
+        logit($mysname,\%logarr,64+($debug>0),
+              "Control file valid site $site");
+        if ($force) {
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Overriding/ignoring DateBegin and DateEnd")
+            if (defined $cfgs{$site}{dateend} ||
+                defined $cfgs{$site}{datebegin});
+        } else {
+          if (defined $cfgs{$site}{dateend}) {
+            ($year,$mon,$mday,$hour,$min,$sec) =
+              unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{dateend}})[$[]);
+            if ($year eq "" || $mon eq "" || $mday eq "") {
+              logit($mysname,\%logarr,80+($verbose>0),
+                    "Invalid DateEnd value; must be YYYYMMDD[hh[mm[ss]]]");
+              next;
+            }
+            $hour = 0 if ($hour eq "");
+            $min = 0 if ($min eq "");
+            $sec = 0 if ($sec eq "");
+            my $stopts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+            if ($mytime > $stopts) {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "Current time is beyond stop time (".
+                    (@{$cfgs{$site}{dateend}})[$[].")");
+              next;
+            }
+          }
+          if (defined $cfgs{$site}{datebegin}) {
+            ($year,$mon,$mday,$hour,$min,$sec) =
+              unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{datebegin}})[$[]);
+            if ($year eq "" || $mon eq "" || $mday eq "") {
+              logit($mysname,\%logarr,80+($verbose>0),
+                    "Invalid DateBegin value; must be YYYYMMDD[hh[mm[ss]]]");
+              next;
+            }
+            $hour = 0 if ($hour eq "");
+            $min = 0 if ($min eq "");
+            $sec = 0 if ($sec eq "");
+            my $startts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+            if ($mytime < $startts) {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "Current time is before start time (".
+                    (@{$cfgs{$site}{datebegin}})[$[].")");
+              next;
+            }
+          }
+        }
+        push(@{$sitehsh{$site}},$site);
+        if (defined $cfgs{$site}{alias}) {
+          push(@{$sitehsh{$site}},@{$cfgs{$site}{alias}});
+          logit($mysname,\%logarr,64+($debug>0),
+                "Control file with aliases: ".
+                join(" ",@{$sitehsh{$site}}));
+        }
+      }
+    }
+  }
+}
+
+# Create a working site list
+my $dir;
+my @tlst = ();
+my @sitelst = ();
+my ($sslexternalport,$externalport,$browserusername,$browserpassword);
+my $collectorspolled;
+my %collectors = ();
+my %data = ();
+if (! @ARGV || grep("\U$_" eq "ALL", @ARGV)) {
+  @tlst = keys %sitehsh;
+} else {
+  @tlst = @ARGV;
+}
+foreach $site (sort @tlst) {
+  $inst = $allsites{$site};
+  if ($nologging) {
+    foreach $l (keys %logarr) {
+      $logarr{$l} = "";
+    }
+  } else {
+    foreach $l (keys %logarr) {
+      if (defined $cfgs{$inst}{$l}) {
+        $logarr{$l} = (@{$cfgs{$inst}{$l}})[$[];
+      } else {
+        $logarr{$l} = "";
+      }
+    }
+  }
+  $dir = "";
+  if (defined $skipsite{$site}) {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "$site was requested to be skipped");
+    next;
+  }
+  if (defined $sitehsh{$site}) {
+    if (defined $cfgs{$site}{archivedirectory}) {
+      $dir = (@{$cfgs{$site}{archivedirectory}})[$[];
+    }
+    if ($dir ne "" && -d $dir) {
+      push(@sitelst,$site);
+    } else {
+      logit($mysname,\%logarr,80+($verbose>0),
+            "$site archive directory not found");
+    }
+  } else {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "$site is not a known site");
+  }
+
+  if (defined $cfgs{$site}{sslexternalport}) {
+    $sslexternalport = (@{$cfgs{$site}{sslexternalport}})[$[];
+  } elsif (defined $cfgs{$inst}{sslexternalport}) {
+    $sslexternalport = (@{$cfgs{$inst}{sslexternalport}})[$[];
+  }
+  if (defined $cfgs{$site}{externalport}) {
+    $externalport = (@{$cfgs{$site}{externalport}})[$[];
+  } elsif (defined $cfgs{$inst}{externalport}) {
+    $externalport = (@{$cfgs{$inst}{externalport}})[$[];
+  }
+  if (defined $cfgs{$site}{browserusername}) {
+    $browserusername = (@{$cfgs{$site}{browserusername}})[$[];
+  } elsif (defined $cfgs{$inst}{browserusername}) {
+    $browserusername = (@{$cfgs{$inst}{browserusername}})[$[];
+  }
+  if (defined $cfgs{$site}{browserpassword}) {
+    $browserpassword = (@{$cfgs{$site}{browserpassword}})[$[];
+  } elsif (defined $cfgs{$inst}{browserpassword}) {
+    $browserpassword = (@{$cfgs{$inst}{browserpassword}})[$[];
+  }
+  if (defined $cfgs{$site}{collector}) {
+    my ($coll,$name,$aliases,$addrtype,$length,@addrs,$ip,$i);
+    foreach $coll (@{$cfgs{$site}{collector}}) {
+      if ($coll =~ /^\d+\.\d+\.\d+\.\d+$/) {
+        #logit($mysname,\%logarr,64+($debug>0),
+        #      "Collector: $coll");
+      } else {
+        ($name,$aliases,$addrtype,$length,@addrs) = gethostbyname($coll);
+        foreach $ip (@addrs) {
+          $i = join('.',(unpack('C4',$ip)));
+          #logit($mysname,\%logarr,64+($debug>0),
+          #      "Collector IP for $coll: $i");
+          if ($sslexternalport) {
+            $collectors{$coll}{$i}{sslexternalport} = $sslexternalport;
+          } else {
+            $collectors{$coll}{$i}{externalport} = $externalport;
+          }
+          $collectors{$coll}{$i}{browserusername} = $browserusername;
+          $collectors{$coll}{$i}{browserpassword} = $browserpassword;
+        }
+      }
+    }
+  }
+}
+if (! @sitelst) {
+  logit($mysname,\%logarr,81,
+        "No sites found to process");
+  usage($mysname);
+  exit 0;
+}
+
+# Set pidfile pid for "lock"
+my $pidfile = "$tmp/$mysname.pid";
+
+# Already running, verify, then just bail out, otherwise create pidfile "lock"
+my $found;
+if (-f $pidfile) {
+  my ($pid,$p);
+  $found = 0;
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+system( "echo $$ >$pidfile" );
+
+# Process each site
+my ($exitrc, @errsites);
+my $wantedcnt = 1;
+my $logarchdir = "/logs/UNKNOWN";
+my $logextension = "%Y%m%d%H%M";
+my $loginterval = 60;
+my @logroots = ();
+foreach $site (@sitelst) {
+  $inst = $allsites{$site};
+  if ($nologging) {
+    foreach $l (keys %logarr) {
+      $logarr{$l} = "";
+    }
+  } else {
+    foreach $l (keys %logarr) {
+      if (defined $cfgs{$inst}{$l}) {
+        $logarr{$l} = (@{$cfgs{$inst}{$l}})[$[];
+      } else {
+        $logarr{$l} = "";
+      }
+    }
+  }
+  
+  # Set processing date
+  $clargs{$site}{date} = $date;
+
+  # Obtain and set umask
+  my $umask = $dfltumask;
+  $umask = (@{$cfgs{$inst}{umask}})[$[]
+    if (defined $cfgs{$inst}{umask});
+  $umask = (@{$cfgs{$site}{umask}})[$[]
+    if (defined $cfgs{$site}{umask});
+  umask(oct($umask));
+
+  # Obtain valid user id and group id with which
+  # to create directories and files
+  my $userid = "0";
+  $userid = (@{$cfgs{$inst}{user}})[$[]
+    if (defined $cfgs{$inst}{user});
+  $userid = (@{$cfgs{$site}{user}})[$[]
+    if (defined $cfgs{$site}{user});
+  my $uid = (getpwnam($userid))[2];
+  $uid = 0 if ($uid eq "");
+  my $groupid = "0";
+  $groupid = (@{$cfgs{$inst}{group}})[$[]
+    if (defined $cfgs{$inst}{group});
+  $groupid = (@{$cfgs{$site}{group}})[$[]
+    if (defined $cfgs{$site}{group});
+  my $gid = (getgrnam($groupid))[2];
+  $gid = 0 if ($gid eq "");
+
+  $logarchdir = "/logs/UNKNOWN";
+  $logarchdir = (@{$cfgs{$site}{archivedirectory}})[$[]
+    if (defined $cfgs{$site}{archivedirectory});
+  $logextension = "%Y%m%d%H%M";
+  $logextension = (@{$cfgs{$site}{logextension}})[$[]
+    if (defined $cfgs{$site}{logextension});
+  $loginterval = 60;
+  $loginterval = (@{$cfgs{$site}{loginterval}})[$[]
+    if (defined $cfgs{$site}{loginterval});
+  @logroots = ();
+  @logroots = @{$cfgs{$site}{logroot}}
+    if (defined $cfgs{$site}{logroot});
+
+  # Make sure we'll be able to write to logarchdir
+  if (! -d $logarchdir && ! -w $logarchdir) {
+    logit($mysname,\%logarr,98,
+          "Unable to find/write to log directory $logarchdir");
+    next;
+  }
+
+  my ($subdir,$g,$e,$tdir,$dirsd,$topts,$bts,$endts,$keep,$err);
+  my ($year,$mon,$mday);
+  my (@allfiles);
+
+  if (! $debug) {
+    logit($mysname,\%logarr,80+($verbose>0),
+          "Working on site $site");
+  } else {
+    logit($mysname,\%logarr,64+($debug>0),
+          "DEBUG: Working on site $site");
+  }
+
+  if (defined $cfgs{$site}{cleanarchiveonly} ||
+      (! $archiveonly &&
+       ! defined $cfgs{$site}{archiveonly})) {
+    # BEGIN Clean directories and files
+    my @tdirlst = ();
+    my %filehsh = ();
+    my %subdirhsh = ();
+    if (defined $cfgs{$site}{subdirectory}) {
+      $subdir = (@{$cfgs{$site}{subdirectory}})[$[];
+      if (grep (defined $cfgs{$site}{$_},@cleanset)) {
+        ($g,$e) = pdate2globnexpr($subdir);
+        # Find all the directories to scan
+        findxdir($logarchdir,$e,\%subdirhsh,\$wantedcnt,$debug);
+        foreach (sort reverse keys %{$subdirhsh{DIRS}}) {
+          push(@tdirlst,"$logarchdir/$_");
+        }
+        if (@tdirlst) {
+          # Find and delete old files
+          findxfile(\@tdirlst,\%{$cfgs{$site}},\%filehsh,\$wantedcnt,$debug);
+          # Remove old files
+          foreach my $tfile (sort keys %{$filehsh{FILES}}) {
+            if (! $debug) {
+              if (unlink($tfile)) {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "Removed site $site file $tfile");
+              } else {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "Unable to remove site $site file $tfile: $!");
+              }
+            } else {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "DEBUG: Would delete site $site file $tfile");
+            }
+          }
+          # Remove subdirectories, if empty
+          foreach (sort reverse keys %{$subdirhsh{SUBDIRS}}) {
+            $tdir = "$logarchdir/$_";
+            $keep = -1;
+            $keep = $cfgs{$site}{cleandirectories}
+              if (defined $cfgs{$site}{cleandirectories});
+            if ($keep > 0) {
+              if (-d $tdir) {
+                opendir(DIR,$tdir);
+                @allfiles = (grep(!/^\.\.?$/, (readdir(DIR))));
+                closedir(DIR);
+                if (-M $tdir > $keep || ! @allfiles) {
+                  if (! $debug) {
+                    if (rmdir($tdir)) {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Removed site $site directory $tdir");
+                    } else {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Unable to remove site $site directory $tdir: $!");
+                    }
+                  } else {
+                    logit($mysname,\%logarr,64+($debug>0),
+                          "DEBUG: Would delete site $site directory $tdir");
+                  }
+                } else {
+                  # Directory is not old enough or not empty
+                }
+              } else {
+                # Directory does not exist
+              }
+            } else {
+              # No clean of directories specified
+            }
+          }
+        } # End if @tdirlst
+      }
+    }
+
+    # Clean 24 hour directories and files
+    $subdir = "";
+    @tdirlst = ();
+    %filehsh = ();
+    %subdirhsh = ();
+    if (defined $cfgs{$site}{$subdir24}) {
+      $subdir = (@{$cfgs{$site}{$subdir24}})[$[];
+      if (grep (defined $cfgs{$site}{$_},@cleanset)) {
+        ($g,$e) = pdate2globnexpr($subdir);
+        findxdir($logarchdir,$e,\%subdirhsh,\$wantedcnt,$debug);
+        foreach (sort reverse keys %{$subdirhsh{DIRS}}) {
+          push(@tdirlst,"$logarchdir/$_");
+        }
+        if (@tdirlst) {
+          # Find and delete old files
+          findxfile(\@tdirlst,\%{$cfgs{$site}},\%filehsh,\$wantedcnt,$debug);
+          # Remove old files
+          foreach my $tfile (sort keys %{$filehsh{FILES}}) {
+            if (! $debug) {
+              if (unlink($tfile)) {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "Removed site $site 24hr file $tfile");
+              } else {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "Unable to remove site $site 24hr file $tfile: $!");
+              }
+            } else {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "DEBUG: Would delete site $site 24hr file $tfile");
+            }
+          }
+          # Remove subdirectories, if empty
+          foreach (sort reverse keys %{$subdirhsh{SUBDIRS}}) {
+            $tdir = "$logarchdir/$_";
+            $keep = -1;
+            $keep = $cfgs{$site}{cleandirectories}
+              if (defined $cfgs{$site}{cleandirectories});
+            if ($keep > 0) {
+              if (-d $tdir) {
+                opendir(DIR,$tdir);
+                @allfiles = (grep(!/^\.\.?$/, (readdir(DIR))));
+                closedir(DIR);
+                if (-M $tdir > $keep || ! @allfiles) {
+                  if (! $debug) {
+                    if (rmdir($tdir)) {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Removed site $site 24hr directory $tdir");
+                    } else {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Unable to remove site $site 24hr".
+                            " directory $tdir: $!");
+                    }
+                  } else {
+                    logit($mysname,\%logarr,64+($debug>0),
+                          "DEBUG: Would delete site $site 24hr".
+                          " directory $tdir");
+                  }
+                } else {
+                  # Directory is not old enough or not empty
+                }
+              } else {
+                # Directory does not exist
+              }
+            } else {
+              # No clean of directories specified
+            }
+          }
+        }
+      }
+    }
+    # END Clean directories and files
+  }
+
+  if (! $archiveonly &&
+      ! defined $cfgs{$site}{archiveonly} &&
+      ! defined $cfgs{$site}{cleanarchiveonly}) {
+    # Must have a consolidation interval as a multiple of log interval
+    if ($interval % $loginterval != 0) {
+      logit($mysname,\%logarr,98,
+            "Required interval ($interval) not a ".
+            "multiple of log interval ($loginterval)");
+      next;
+    }
+
+    # Must have a set of logroots
+    if (! @logroots) {
+      logit($mysname,\%logarr,98,
+            "No logroots defined for site $site");
+      next;
+    }
+
+    ($year,$mon,$mday) = unpack("a4a2a2",$clargs{$site}{date});
+    $topts = timelocal(0,0,0,$mday,$mon-1,$year-1900);
+    $bts = $topts;
+    $endts = $topts + $fullday;
+    $err = 0;
+    $found = 1;
+    my %ctrk = ();  # {method}{count}++ {method}{node}{count}++
+    my %nhsh = ();
+    @allfiles = ();
+    if (defined $cfgs{$site}{subdirectory}) {
+      $subdir = (@{$cfgs{$site}{subdirectory}})[$[];
+      $dirsd = POSIX::strftime("$logarchdir/$subdir", localtime($topts));
+
+      # Skip site if processing is old or unfinished for the day
+      my @dotfnodes = ();
+      if (opendir(DIR,$logarchdir)) {
+        @dotfnodes = sort grep($! =~ /^\.$fnodes\./,(readdir(DIR)));
+        closedir(DIR);
+      }
+      my $dfname = "";
+      $dfname = (@dotfnodes)[$[] if (@dotfnodes);
+      if ($dfname) {
+        my $dfint = $dfname;
+        $dfint =~ s/^\.$fnodes\.//;
+        $dfint =~ s/\..*$//;
+        if ($dfint =~ /^\d+$/) {
+          ($year,$mon,$mday,$hour,$min,$sec) =
+              unpack("A4A2A2A2A2A2",$dfint);
+          if ($year eq "" || $mon eq "" || $mday eq "") {
+            logit($mysname,\%logarr,80+($verbose>0),
+                  "Invalid $dfname interval; must be YYYYMMDD[hh[mm[ss]]]");
+            next;
+          }
+          $hour = 0 if ($hour eq "");
+          $min = 0 if ($min eq "");
+          $sec = 0 if ($sec eq "");
+          my $dfts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+          if ($endts > $dfts) {
+            logit($mysname,\%logarr,80+($verbose>0),
+                  "Processing not ready; found old $dfname");
+            next;
+          }
+        } else {
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Unknown interval for $dfname");
+          next;
+        }
+      } # If .$fnodes file exists
+
+      my %oldnlst = ();
+      for (my $i = $topts; $i < $endts; $i += $loginterval) {
+        my @nlst = ();
+        my $ts = POSIX::strftime($logextension, localtime($i));
+        my $nts = $ts;
+        if (open(NTS, "<$logarchdir/$fnodes.$nts")) {
+          chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+          close(NTS);
+          grep($oldnlst{$_}++,@nlst);
+        } else {
+          if (keys %oldnlst) {
+            logit($mysname,\%logarr,80+($verbose>0),
+                  "Attempting to fill in $logarchdir/$fnodes.$nts ".
+                  "interval node list")
+              if ($verbose);
+            @nlst = sort keys %oldnlst;
+            if (! $debug) {
+              if (open(NTS, ">$logarchdir/$fnodes.$nts")) {
+                my $ok = 0;
+                @nlst = sort keys %oldnlst;
+                $ok = 1
+                  if (print NTS join("\n",'BEGIN',@nlst,'END')."\n");
+                close(NTS);
+                if ($ok) {
+                  logit($mysname,\%logarr,80+($verbose>0),
+                        "Fill in of $logarchdir/$fnodes.$nts successful")
+                    if ($verbose);
+                  chown($uid,$gid,"$logarchdir/$fnodes.$nts");
+                  # Umask should already be set - should not need this chmod
+                  #chmod(0644, "$logarchdir/$fnodes.$nts");
+                } else {
+                  logit($mysname,\%logarr,80+($verbose>0),
+                        "Unable to fill in $logarchdir/$fnodes.$nts");
+                  unlink("$logarchdir/$fnodes.$nts");
+                  @nlst = ();
+                  $err++;
+                  $found = 0;
+                  last;
+                }
+              }
+            } else {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "DEBUG: Would try to create missing node list file ".
+                    "$logarchdir/$fnodes.$nts");
+            }
+          } else {
+            if ($i eq $topts) {
+              logit($mysname,\%logarr,80+($verbose>0),
+                    "No beginning node list file: $logarchdir/$fnodes.$nts".
+                    "; skipping site $site");
+            } else {
+              logit($mysname,\%logarr,98,
+                "Unable to find node list file: $logarchdir/$fnodes.$nts");
+              $err++;
+            }
+            $found = 0;
+            last;
+          }
+        }
+        push(@allfiles,"$logarchdir/$fnodes.$nts");
+        if ($debug) {
+          my $cts = POSIX::strftime("%Y/%m/%d %H:%M:%S", localtime($i));
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Checking timestamp $cts ($i)");
+        }
+        my $node;
+        my $cprev = "gz";
+        foreach $node (@nlst) {
+          my $logroot;
+          foreach $logroot (@logroots) {
+            my $f = "";
+            if (! -f "$logarchdir/$node.$logroot.$nts" &&
+                ! grep (-f "$logarchdir/$node.$logroot.$nts.$_",
+                        keys %zipinfo)) {
+              # Try to resolve missing on our own
+              # Create empty file if needed
+              if (! $collectorspolled) {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "==== Polling collectors for nodes lists ====");
+
+                # Loop on collectors gathering current clients
+                my %rethsh = ();
+                foreach my $cname (sort keys %collectors) {
+                  foreach my $cip (sort keys %{$collectors{$cname}}) {
+                    my ($browserusername,$browserpassword,$port) = ("","",0);
+                    $rc = 0;
+                    %rethsh = ();
+                    if (defined $collectors{$cname}{$cip}{browserusername}) {
+                      $browserusername =
+                        $collectors{$cname}{$cip}{browserusername};
+                    }
+                    if (defined $collectors{$cname}{$cip}{browserpassword}) {
+                      $browserpassword =
+                        $collectors{$cname}{$cip}{browserpassword};
+                    }
+                    next if ($browserusername eq "" ||
+                             $browserpassword eq "");
+                    if (defined $collectors{$cname}{$cip}{sslexternalport}) {
+                      $port = $collectors{$cname}{$cip}{sslexternalport};
+                      $rc = get_sites_and_nodes_ssl($mysname,\%logarr,$cip,
+                                                    $browserusername,
+                                                    $browserpassword,
+                                                    $port,$debug,\%rethsh);
+                    } else {
+                      # Broke apart elsif into else and if
+                      if (defined $collectors{$cname}{$cip}{externalport}) {
+                        $port = $collectors{$cname}{$cip}{externalport};
+                        $rc = get_sites_and_nodes($mysname,\%logarr,$cip,
+                                                  $browserusername,
+                                                  $browserpassword,
+                                                  $port,$debug,\%rethsh);
+                      }
+                    }
+                    if ($rc) {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Collector $cname=$cip ($rc)") if ($debug);
+                      %{$data{BYCOLL}{$cname}} = %rethsh;
+                      foreach my $s (keys %rethsh) {
+                        foreach my $n (keys %{$rethsh{$s}}) {
+                          $data{BYSITE}{$s}{$n}{$cname}++;
+                        }
+                      }
+                    } else {
+                      logit($mysname,\%logarr,80+($verbose>0),
+                            "Collector $cname ($cip) data unavailable");
+                    }
+                  }
+                }
+                $collectorspolled=1;
+              }
+
+              my $ok = 0;
+              if (defined $data{BYSITE}{$site} &&
+                  defined $data{BYSITE}{$site}{$node}) {
+                my %fmatch = ();
+                my $collector = (sort keys
+                                 %{$data{BYSITE}{$site}{$node}})[$[];
+                my @filelst = ();
+                if ($browserusername ne "" && $browserpassword ne "") {
+                  # NOTE: No support for multiple IPs behind collector name
+                  if ($sslexternalport ne "") {
+                    @filelst = get_file_list_ssl($mysname,\%logarr,$collector,
+                                                 $browserusername,
+                                                 $browserpassword,
+                                                 $sslexternalport,$site,
+                                                 $node,$debug);
+                  } elsif ($externalport ne "") {
+                    @filelst = get_file_list($mysname,\%logarr,$collector,
+                                             $browserusername,
+                                             $browserpassword,
+                                             $externalport,$site,
+                                             $node,$debug);
+                  }
+                }
+                %fmatch = ();
+                $fmatch{"$logroot.$nts"}++;
+                grep($fmatch{"$logroot.$nts.$_"}++, keys %zipinfo);
+                if ($filelst[0] eq "LCS-FAILED-HTTP-REQUEST") {
+                  # Unable to contact client - no files list obtained
+                  logit($mysname,\%logarr,64+($debug>0),
+                        "File list failed $site:$node($collector)");
+                } elsif (grep(defined $fmatch{$_}, @filelst)) {
+                  my @dirmatch = grep(defined $fmatch{$_}, @filelst);
+                  my $t = join(", ",@dirmatch);
+                  logit($mysname,\%logarr,64+($debug>0),
+                        "File(s) $t waiting on client, not yet transferred");
+                } else {
+                  # Check our ArchiveDirectory one more time
+                  opendir(DIR,$logarchdir);
+                  my @dirlist = readdir(DIR);
+                  closedir(DIR);
+                  %fmatch = ();
+                  $fmatch{"$node.$logroot.$nts"}++;
+                  grep($fmatch{"$node.$logroot.$nts.$_"}++, keys %zipinfo);
+                  my @dirmatch = grep(defined $fmatch{$_}, @dirlist);
+                  if (@dirmatch) {
+                    my $t = join(", ",@dirmatch);
+                    logit($mysname,\%logarr,64+($debug>0),
+                          "File(s) $t waiting on server");
+                    $ok = 1;
+                  } else {
+                    # File does not exist on server, create empty
+                    if (! $debug) {
+                      if (open(FILE,">>$logarchdir/$node.$logroot.$nts")) {
+                        $ok = 1;
+                        logit($mysname,\%logarr,80+($verbose>0),
+                              "Created empty file".
+                              " $logarchdir/$node.$logroot.$nts");
+                        close(FILE);
+                        chown($uid,$gid,"$logarchdir/$node.$logroot.$nts");
+                        # Umask should already be set
+                        # Should not need this chmod
+                        #chmod(0644, "$logarchdir/$fnode.$logroot.$nts");
+                      } else {
+                        logit($mysname,\%logarr,80+($verbose>0),
+                              "Unable to create empty file".
+                              " $logarchdir/$node.$logroot.$nts");
+                      }
+                    } else {
+                      logit($mysname,\%logarr,64+($debug>0),
+                            "DEBUG: Would try to create empty file".
+                            " $logarchdir/$node.$logroot.$nts");
+                    }
+                  }
+                }
+              } else {
+                logit($mysname,\%logarr,98,
+                      "Communication error to $node for $site");
+              }
+              if (! $ok) {
+                logit($mysname,\%logarr,98,
+                      "Missing log file: $logarchdir/$node.$logroot.$nts");
+                $err++;
+                $found = 0;
+                last;
+              }
+            }
+            if (defined $cfgs{$site}{compress} &&
+                -f "$logarchdir/$node.$logroot.$nts" &&
+                ! grep (-f "$logarchdir/$node.$logroot.$nts.$_",
+                        keys %zipinfo)) {
+              # Try compressing
+              my $cmd = "";
+              if (defined $zipinfo{$cprev}) {
+                $cmd = "$zipinfo{$cprev}{ccmd} $zipinfo{$cprev}{cargs}".
+                       " $logarchdir/$node.$logroot.$nts";
+                if ($cmd) {
+                  if (! $debug) {
+                    system($cmd);
+                    my $rc = $? >> 8;     # Exit code from system call
+                    if ($rc == 0) {
+                      # Success
+                    } else {
+                      unlink("$logarchdir/$node.$logroot.$nts.$cprev");
+                      logit($mysname,\%logarr,98,
+                            "Unable to compress ($cprev) ".
+                            "$logarchdir/$node.$logroot.$nts\: $!");
+                      $err++;
+                    }
+                  } else {
+                    logit($mysname,\%logarr,64+($debug>0),
+                          "DEBUG: Would try to compress $site file ".
+                          "$logarchdir/$node.$logroot.$nts to $cprev");
+                  }
+                }
+              }
+            }
+            # Track the files from a compression standpoint
+            if (-f "$logarchdir/$node.$logroot.$nts") {
+              $ctrk{BYNODE}{$node}{$logroot}{NONE}++;
+              $ctrk{BYTYPE}{NONE}++;
+              $f = "$node.$logroot.$nts";
+            } else {
+              foreach my $m (sort keys %zipinfo) {
+                if (-f "$logarchdir/$node.$logroot.$nts.$m") {
+                  $ctrk{BYNODE}{$node}{$logroot}{$m}++;
+                  $ctrk{BYTYPE}{$m}++;
+                  $cprev = $m;
+                  $f = "$node.$logroot.$nts.$m";
+                  last;
+                }
+              }
+            }
+            if ($f) {
+              push(@{$nhsh{$node}{$logroot}},$f);
+              push(@allfiles,"$logarchdir/$f");
+            }
+            last if ($found == 0);
+          } # End foreach logroot
+          last if ($found == 0);
+        } # End foreach node
+        last if ($found == 0);
+
+        # Loop creating 24 hour files
+        if (defined $cfgs{$site}{$subdir24}) {
+          if (($found == 1) && (($i+$loginterval) % $interval == 0)) {
+            $tdir = "$logarchdir/tmp$$";
+            my $tsubdir = (@{$cfgs{$site}{$subdir24}})[$[];
+            my $cdir = POSIX::strftime("$logarchdir/$tsubdir",
+                                       localtime($bts));
+            if (! $debug) {
+              mkdirs($tdir,$uid,$gid,0755);
+              mkdirs($cdir,$uid,$gid,0755);
+              if (! -d $tdir || ! -d $cdir) {
+                logit($mysname,\%logarr,80+($verbose>0),
+                      "Unable to create 24 hour directories");
+                $err++;
+                last;
+              }
+            } else {
+              logit($mysname,\%logarr,64+($debug>0),
+                    "DEBUG: Would create 24 hour directories".
+                    " ($tdir and $cdir)");
+            }
+            foreach $node (sort keys %nhsh) {
+              my $logroot;
+              logit($mysname,\%logarr,80+($verbose>0),
+                    "Working on $site node $node");
+              foreach $logroot (sort keys %{$nhsh{$node}}) {
+                # Concatenate all timestamps for logroot
+                my $loglst;
+                my $cmeth;
+                #push(@allfiles,(map { "$logarchdir/$_" }
+                #                    @{$nhsh{$node}{$logroot}}));
+                if (defined $onelogroot{$logroot}) {
+                  $loglst = "$logarchdir/".
+                            (reverse @{$nhsh{$node}{$logroot}})[$[];
+                } elsif ((keys %{$ctrk{BYNODE}{$node}{$logroot}}) == 1) {
+                  $cmeth = (keys %{$ctrk{BYNODE}{$node}{$logroot}})[$[];
+                  $loglst = join(' ',
+                            map { "$logarchdir/$_" }
+                                @{$nhsh{$node}{$logroot}});
+                } else {
+                  my $s = "non-compressed(";
+                  if (defined $ctrk{BYNODE}{$node}{$logroot}{NONE}) {
+                    $s .= $ctrk{BYNODE}{$node}{$logroot}{NONE}.")";
+                  } else {
+                    $s .= "0)";
+                  }
+                  foreach my $m (sort keys %zipinfo) {
+                    if (defined $ctrk{BYNODE}{$node}{$logroot}{$m}) {
+                      $s .= " $m(".$ctrk{BYNODE}{$node}{$logroot}{$m}.")";
+                    } else {
+                      $s .= " $m(0)";
+                    }
+                  }
+                  logit($mysname,\%logarr,80+($verbose>0),
+                        "Mixed $site file types for $node.$logroot: $s");
+                  $err++;
+                  last;
+                }
+                if (! $debug) {
+                  my $cmd = "";
+                  if (defined $zipinfo{$cmeth} &&
+                      $zipinfo{$cmeth}{multiple} == 0) {
+                    $cmd = "$zipinfo{$cprev}{ucmd} $zipinfo{$cprev}{uargs}".
+                           " $loglst 2>/dev/null | $zipinfo{$cprev}{ccmd}".
+                           " $zipinfo{$cprev}{cargs}".
+                           " > $tdir/$node.$logroot.$tmpext";
+                  } else {
+                    $cmd = "$cat $loglst > $tdir/$node.$logroot.$tmpext";
+                  }
+                  system($cmd);
+                  my $rc = $? >> 8;     # Exit code from system call
+                  if ($rc == 0) {
+                    # Success
+                    chown($uid,$gid,"$tdir/$node.$logroot.$tmpext");
+                  } else {
+                    unlink("$tdir/$node.$logroot.$tmpext");
+                    logit($mysname,%logarr,98,
+                          "Unable to create $cdir/$node.$logroot.$tmpext");
+                    $err++;
+                    last;
+                  }
+                } else {
+                  logit($mysname,\%logarr,64+($debug>0),
+                        "DEBUG: Would combine $site $node.$logroot files");
+                }
+                # Rename $node.$logroot.$tmpext to $node.$logroot.$ext
+                my $nlog = "$tdir/$node.$logroot";
+                my $ext = "";
+                if (defined $cfgs{$site}{$logext24}) {
+                  $ext = (@{$cfgs{$site}{$logext24}})[$[];
+                }
+                $nlog .= ".$ext"
+                  if (($ext ne "") && ($interval != $fullday));
+                my $cext = (keys %{$ctrk{BYNODE}{$node}{$logroot}})[$[];
+                if ($cext ne "NONE") {
+                  $nlog .= ".$cext";
+                }
+                $nlog = POSIX::strftime($nlog, localtime($bts));
+                if (! $debug) {
+                  if (rename("$tdir/$node.$logroot.$tmpext",$nlog)) {
+                    if ($interval == $fullday) {
+                      # Move it to $cdir
+                      my $blog = $nlog;
+                      $blog =~ s%^.*/%%g;
+                      if (rename($nlog,"$cdir/$blog")) {
+                        # Success
+                      } else {
+                        logit($mysname,%logarr,98,
+                              "Unable to rename $nlog to $cdir/$blog");
+                        $err++;
+                        last;
+                      }
+                    } else {
+                      logit($mysname,%logarr,98,
+                            "WARNING - Interval ($i by $interval) ".
+                            "is not a full day ($fullday)");
+                    }
+                  } else {
+                    logit($mysname,%logarr,98,
+                          "Unable to rename ".
+                          "$tdir/$node.$logroot.$tmpext to $nlog");
+                    $err++;
+                    last;
+                  }
+                } else {
+                  logit($mysname,\%logarr,64+($debug>0),
+                        "DEBUG: Would move 24 hour file to $nlog");
+                }
+              } # End each logroot
+              last if ($err > 0);
+            } # End each node
+            last if ($err > 0);
+            # If interval is fullday then data in $cdir otherwise in $tdir
+            if (! $debug) {
+              rmdir($tdir);
+            } else {
+              # Would remove temporary directory for 24 hour processing
+            }
+            # Clear hash for next consolidation
+            %nhsh = ();
+            $bts = $i + $loginterval;
+          } # If found and need to consolidate
+        } # If 24 hour subdirectory
+      } # End foreach loginterval
+
+      if ($found == 1 && $err == 0) {
+        if (! $debug) {
+          mkdirs($dirsd,$uid,$gid,0755);
+        } else {
+          logit($mysname,\%logarr,64+($debug>0),
+                "DEBUG: Would create $site archive directory $dirsd");
+        }
+        my $f = @allfiles;
+        logit($mysname,\%logarr,80+($verbose>0),
+              "Archiving original files ($f) to $dirsd");
+        if (! $debug) {
+          foreach $f (@allfiles) {
+            my $blog = $f;
+            $blog =~ s%^.*/%%g;
+            if (rename($f,"$dirsd/$blog")) {
+              # Success
+            } else {
+              logit($mysname,\%logarr,98,
+                    "Unable to rename $f to $dirsd/$blog");
+              $err++;
+            }
+          } # End each @allfiles
+        } else {
+          logit($mysname,\%logarr,64+($debug>0),
+                "DEBUG: Would archive all files to $dirsd");
+        }
+      } # If all files found and no errors
+      if ($err > 0) {
+        push(@errsites,$site);
+        $exitrc++;
+      }
+    }
+  } else {
+    # Archive only
+
+    # Must have a set of logroots
+    if (! @logroots) {
+      logit($mysname,\%logarr,98,
+            "No logroots defined for site $site");
+      next;
+    }
+
+    @allfiles = ();
+
+    ($year,$mon,$mday) = unpack("a4a2a2",$clargs{$site}{date});
+    $topts = timelocal(0,0,0,$mday,$mon-1,$year-1900);
+    $bts = $topts;
+    $endts = $topts + $fullday;
+    
+    my %lrhsh = ();
+    grep($lrhsh{$_}++,@logroots);
+    my $lrregex = '('.join("|",sort keys %lrhsh).')';
+
+    my $logint = $loginterval || 60;
+
+    my %tshsh = ();
+    for (my $i = $topts; $i < $endts; $i += $logint) {
+      $tshsh{POSIX::strftime($logextension,localtime($i))}++;
+    }
+    my $tsregex = '('.join("|",sort keys %tshsh).')';
+
+    my $zregex = '(\.'.join("|\.",sort keys %zipinfo).')?';
+
+    my @filelst = ();
+    if (opendir(DIR,"$logarchdir")) {
+      @filelst = grep($_ =~ /^$fnodes\.$tsregex$/ ||
+                      $_ =~ /^.*\.$lrregex\.$tsregex$zregex$/,
+                      (readdir(DIR)));
+      closedir(DIR);
+    } else {
+      logit($mysname,\%logarr,80+($verbose>0),
+            "Unable to read $site directory $logarchdir for archive only");
+      $err++;
+      next;
+    }
+
+    # Optionally compress files that are not compressed
+    my $f;
+    my $cprev = "gz";
+    foreach $f (sort @filelst) {
+      if ($f =~ /^$fnodes\.$tsregex$/) {
+        push(@allfiles,"$logarchdir/$f");
+      } else {
+        if (defined $cfgs{$site}{compress} &&
+            ! grep($f =~ /\.$_$/,keys %zipinfo)) {
+          # Try compressing
+          my $cmd = "";
+          if (defined $zipinfo{$cprev}) {
+            $cmd = "$zipinfo{$cprev}{ccmd} $zipinfo{$cprev}{cargs}".
+                   " $logarchdir/$f";
+            if ($cmd) {
+              if (! $debug) {
+                system($cmd);
+                my $rc = $? >> 8;     # Exit code from system call
+                if ($rc == 0) {
+                  # Success
+                  push(@allfiles,"$logarchdir/$f.$cprev");
+                } else {
+                  unlink("$logarchdir/$f.$cprev");
+                  logit($mysname,\%logarr,98,
+                        "Unable to compress ($cprev) ".
+                        "$logarchdir/$f\: $!");
+                  $err++;
+                  push(@allfiles,"$logarchdir/$f");
+                }
+              } else {
+                logit($mysname,\%logarr,64+($debug>0),
+                      "DEBUG: Would try to compress $site file ".
+                      "$logarchdir/$f to $cprev");
+                push(@allfiles,"$logarchdir/$f.$cprev");
+              }
+            }
+          }
+        } else {
+          foreach my $m (sort keys %zipinfo) {
+            if ($f =~ /\.$m$/) {
+              $cprev = $m;
+              last;
+            }
+          }
+          push(@allfiles,"$logarchdir/$f");
+        }
+      }
+    } # End foreach file
+
+    # Move files to subdirectory
+    if (defined $cfgs{$site}{subdirectory}) {
+      $subdir = (@{$cfgs{$site}{subdirectory}})[$[];
+      $dirsd = POSIX::strftime("$logarchdir/$subdir", localtime($topts));
+
+      if (! -d $dirsd) {
+        if (! $debug) {
+          mkdirs($dirsd,$uid,$gid,0755);
+        } else {
+          logit($mysname,\%logarr,64+($debug>0),
+                "DEBUG: Would create $site archive directory $dirsd");
+        }
+      }
+      $f = @allfiles;
+      if (! $debug) {
+        logit($mysname,\%logarr,80+($verbose>0),
+              "Archive only original files ($f) to $dirsd");
+        foreach $f (@allfiles) {
+          my $blog = $f;
+          $blog =~ s%^.*/%%g;
+          if (rename($f,"$dirsd/$blog")) {
+            # Success
+          } else {
+            logit($mysname,\%logarr,98,
+                  "Unable to rename $f to $dirsd/$blog");
+            $err++;
+          }
+        } # End each @allfiles
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would archive all files ($f) to $dirsd");
+      }
+    } # Defined subdirectory
+  } # End archive only
+
+  # Optionally tar
+  if (defined $cfgs{$site}{tar}) {
+    my $copyflg = 0;
+    my $tarfile = "$dirsd.tar";
+    if (-e "$tarfile") {
+      if (! $debug) {
+        if (copy($tarfile,"$tarfile$$")) {
+          $copyflg++;
+        } else {
+          unlink("$tarfile$$");
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Unable to create copy of existing tar file: $!");
+          $err++;
+          next;
+        }
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would copy existing tar file $tarfile");
+        $copyflg++;
+      }
+    }
+    my $cwd = getcwd;
+    my $dndirsd = dirname($dirsd);
+    my $bndirsd = basename($dirsd);
+    if (chdir($dndirsd)) {
+      # tar create new or append to existing
+      my $action = "create";
+      my $tfile = $tarfile;
+      my $tarargs = $tarcargs;
+      if ($copyflg) {
+        $action = "append";
+        $tfile = "$tarfile$$";
+        $tarargs = $tarrargs;
+      }
+      my $cmd = "$tar $tarargs $tarfile $bndirsd";
+      if (! $debug) {
+        system($cmd);
+        $rc = $? >> 8;    # Exit code from system call
+        if ($rc == 0) {
+          # Success
+        } else {
+          unlink($tfile);
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Unable to $action tar file $tfile");
+          $err++;
+        }
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would $action tar file $tfile");
+      }
+    }
+    chdir($cwd);
+    if ($copyflg) {
+      # Remove old tar file and rename new one
+      if (! $debug) {
+        if (unlink($tarfile)) {
+          if (rename("$tarfile$$",$tarfile)) {
+            # Success
+          } else {
+            logit($mysname,\%logarr,80+($verbose>0),
+                  "Unable to rename $tarfile$$ to $tarfile");
+            $err++;
+          }
+        } else {
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Unable to remove old tar file $tarfile");
+          $err++;
+        }
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would replace tar file $tarfile with $tarfile$$");
+      }
+    }
+    if (! $debug) {
+      chown($uid,$gid,$tarfile);
+    } else {
+      logit($mysname,\%logarr,64+($debug>0),
+            "DEBUG: Would set ownership on tar file $tarfile");
+    }
+  } # If tar set for site
+
+  # Optionally commandexit
+  if (defined $cfgs{$site}{commandexit}) {
+    my $origcmd = (@{$cfgs{$site}{commandexit}})[$[];
+    my $rest = $origcmd;
+    # Store double % signs for quoting single %
+    my $pct = '%';
+    $rest =~ s/\%\%/\001/g;
+    # Store double ^ signs for quoting single ^
+    $rest =~ s/\^\^/\002/g;
+    # Loop on finding quoted
+    my $newcmd = "";
+    while ($rest =~ m/^(.*?)(\%.*?\%)(.*)$/) {
+      my $front = $1;
+      my $match = $2;
+      my $back = $3;
+      $match =~ s/^\%//;
+      $match =~ s/\%$//;
+      my ($d,$v) = split(/[=:+-]/,$match,2);
+      my @vals = ();
+      if (defined $cfgs{$site}{"\L$d"}) {
+        @vals = @{$cfgs{$site}{"\L$d"}};
+      } elsif (defined $cfgs{$dfltsite}{"\L$d"}) {
+        @vals = @{$cfgs{$dfltsite}{"\L$d"}};
+      } else {
+        # Did not match any directive, so put it back on command
+        $newcmd .= "$front$pct$match";
+        $rest = "$pct$back";
+        next;
+      }
+      # Handle optional value
+      my $vlst = join(",",@vals);
+      if ($v) {
+        my $op = substr($match,length($d),1);
+        my $origv = $v;
+        my $r = $origv;
+        # Store double ! signs for quoting single !
+        my $bng = '!';
+        $r =~ s/\!\!/\003/g;
+        # Store double $ signs for quoting single $
+        my $dlr = '$';
+        $r =~ s/\$\$/\004/g;
+        # Loop on finding quoted
+        $r =~ s/\!/$d/;
+        $r =~ s/\$/$vlst/g;
+        $r =~ s/\001/\%/g;
+        if ($op eq ':') {
+          # processing date
+          $r = POSIX::strftime($r, localtime($topts));
+        } elsif ($op eq '+') {
+          # current date
+          $r = POSIX::strftime($r, localtime(time()));
+        } elsif ($op eq '-') {
+          # script start date
+          $r = POSIX::strftime($r, localtime($mytime));
+        }
+        $newcmd .= "$front$r";
+      } else {
+        $newcmd .= "$front$vlst";
+      }
+      $rest = $back;
+    }
+    $newcmd .= $rest;
+    $newcmd =~ s/\^//g;
+    $newcmd =~ s/\001/\%/g;
+    $newcmd =~ s/\002/\^/g;
+    $newcmd =~ s/\003/\!/g;
+    $newcmd =~ s/\004/\$/g;
+
+    # Run the command in foreground or background
+    if (defined $cfgs{$site}{bgcommandexit}) {
+      if (! $debug) {
+        my $pid;
+        logit($mysname,\%logarr,80+($verbose>0),
+              "Start (bg): $newcmd");
+        if (($pid = fork()) == 0) {
+          # Child ok
+          close(STDIN);
+          close(STDOUT);
+          close(STDERR);
+          open(STDIN,"/dev/null");
+          open(STDOUT,">/dev/null");
+          open(STDERR,">&STDOUT");
+          select(STDERR); $| = 1;
+          select(STDOUT); $| = 1;
+          setpgrp;
+          exec '/bin/sh','-c',$newcmd;
+        } elsif ($pid < 0) {
+          # Parent fail
+          $pid = 0;
+          logit($mysname,\%logarr,80+($verbose>0),
+                "Unable to fork: $!");
+        } else {
+          # Parent success
+          logit($mysname,\%logarr,80+($verbose>0),
+                "End (bg): $newcmd");
+        }
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would run (bg): $newcmd");
+      }
+    } else {
+      if (! $debug) {
+        my $cmdstime = time();
+        logit($mysname,\%logarr,80+($verbose>0),
+              "Start (fg): $newcmd");
+        system($newcmd);
+        my $cmddtime = time() - $cmdstime;
+        logit($mysname,\%logarr,80+($verbose>0),
+              "End (fg) : $newcmd");
+      } else {
+        logit($mysname,\%logarr,64+($debug>0),
+              "DEBUG: Would run (fg): $newcmd");
+      }
+    }
+
+  } # If commandexit set for site
+} # End each site
+
+if ($exitrc > 0) {
+  my $s = join(",",@errsites);
+  if ($noalert eq 0) {
+    my $cmd = "$mypath/lcs_notify -options '-p $poll -g \"$mysname\"".
+              " -k \"$s:$host\"' -eventid AN_000_W ".
+              "'$mysname errors on $host for: $s - PAGE-0564'";
+    system($cmd);
+  } else {
+    logit($mysname,\%logarr,98,"$mysname errors on $host for: $s");
+  }
+}
+
+# Clean up PID "lock" file
+unlink($pidfile) if (-e $pidfile);
+
+exit $exitrc;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-archiveonly][-date date][-debug][-force][-noalert]\n",
+        "    [-nologging][-poll poll][-skipsite skipsite[,...]][-verbose]\n",
+        "    [site...]\n",
+        "  where: date         - day to process (YYYYMMDD)\n",
+        "         poll         - how often script runs in seconds\n",
+        "         skipsite     - do not process sites in this list\n",
+        "         site         - list of sites to process\n",
+        "         -archiveonly - only run archiving for sites\n",
+        "         -debug       - debug mode only\n",
+        "         -force       - force processing ignoring date begin/end\n",
+        "         -noalert     - do not send alerts\n",
+        "         -nologging   - do not log to log files\n",
+        "         -verbose     - describe events each step of the way\n";
+}
+
+sub logit {
+  my($me,$laref,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority,$filetype);
+  my(%logarr) = %$laref;
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+    "auditlog" => 16,
+    "errorlog" => 32,
+    "tracelog" => 64,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      syslog($priority,$format,@myargs);
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        syslog($priority,$format,@myargs);
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+  }
+
+  # Handle file logs
+  foreach $filetype (sort keys %logarr) {
+    if ($logarr{$filetype} ne "") {
+      if ($logtype & $logtypes{$filetype}) {
+        my $logfile = $logarr{$filetype};
+        $logfile = POSIX::strftime($logfile,localtime());
+        if (open(LOGFILE,">>$logfile")) {
+          printf LOGFILE "$date $me\[$$\]: $format\n", @myargs;
+          close(LOGFILE);
+        }
+      }
+    }
+  }
+
+  1;
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+sub yesterday {
+  my ($day,$mon,$yr);
+  my $stime = time();
+
+  $stime -= 60*60*24;
+  ($day,$mon,$yr) = (localtime($stime))[3,4,5];
+  return sprintf("%04d%02d%02d\n", 1900+$yr, $mon+1, $day);
+}
+
+# Supported forms: YYYYMMDD[HH[MM]]
+#   LCS    YYYYMMDD[HH[MM]]
+#   Akamai YYYYMMDDHHMM-HHMM-I
+#   Random *YYYY-MM-DD[-HH-MM-SS]
+sub getlcsfileage {
+  my ($f,$e,$fdays,$debug) = @_;
+  my ($year,$mon,$mday,$hour,$min) = ("","","","","");
+  my $days = int($fdays);
+  my $tf = $f;
+  my $ts = 0;
+
+  $tf =~ s/\.(Z|gz|bz2|tar)$//g;
+  $tf =~ s/^.*\.//;
+
+  if ($tf =~ m/^(.*)(\d\d\d\d)\-(\d\d)\-(\d\d)$/) {
+    if ($1 !~ /\d$/) {
+      ($year,$mon,$mday) =
+        ($tf =~ m/(\d\d\d\d)\-(\d\d)\-(\d\d)$/);
+    }
+  }
+
+  $tf =~ s/(\-\d+)?$//;
+
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)\-\d\d\d\d$/) if ($year eq "");
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)\-(\d\d)\-(\d\d)\-(\d\d)\-(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday,$hour,$min) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday,$hour) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+  ($year,$mon,$mday) =
+    ($tf =~ m/^(\d\d\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+
+  if ($year ne "") {
+    $hour = 0 if ($hour eq "");
+    $min = 0 if ($min eq "");
+    $ts = timelocal(0,$min,$hour,$mday,$mon-1,$year-1900);
+    $days = int((abs(time() - $ts) + 86400) / 86400);
+    if ($debug > 1) {
+      logit($mysname,\%logarr,65,
+            "DEBUG: $f ($tf) is $days old");
+    }
+  } else {
+    if ($debug > 1) {
+      logit($mysname,\%logarr,65,
+            "DEBUG: $f ($tf) is mtime $days old");
+    }
+  }
+
+  return $days;
+}
+
+# Input: pattern
+# Output: (globpattern,regexpattern)
+sub pdate2globnexpr {
+  my($i) = @_;
+  my ($tglob,$texpr,$tg,$te,$match);
+  my %pdatehsh = (
+    # %a - abbreviated weekday name
+    '%a' => [ '???', '(Sun|Mon|Tue|Wed|Thu|Fri|Sat)' ],
+    # %A - full weekday name
+    '%A' => [ '*', '(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)' ],
+    # %b - abbreviated month name
+    '%b' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %B - full month name
+    '%B' => [ '*', '(January|February|March|April|May|June|July|August|September|October|November|December)' ],
+    # %C - first two digits of the four-digit year as a decimal number (00-99)
+    '%C' => [ '??', '\d\d' ],
+    # %d - day of the month as a decimal number (01-31)
+    '%d' => [ '??', '\d\d' ],
+    # %D - date in the format equivalent to %m/%d/%y
+    '%D' => [ '??/??/??', '\d\d/\d\d/\d\d' ],
+    # %e - day of the month as a decimal number (1-31) - space filled
+    '%e' => [ '??', '(\s\d|\d\d)' ],
+    # %h - abbreviated month name (like %b)
+    '%h' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %H - hour (24-hour clock) as a decimal number (00-23)
+    '%H' => [ '??', '\d\d' ],
+    # %j - day of year as a decimal number (001-366)
+    '%j' => [ '???', '\d\d\d' ],
+    # %k - 24-hour-clock hour clock (0 to 23) - space filled
+    '%k' => [ '??', '(\s\d|\d\d)' ],
+    # %m - month of year as a decimal number (01-12)
+    '%m' => [ '??', '\d\d' ],
+    # %M - minutes as a decimal number (00- 59)
+    '%M' => [ '??', '\d\d' ],
+    # %p - either AM or PM
+    '%p' => [ '??', '\w\w' ],
+    # %r - 12-hour clock time (01-12)
+    '%r' => [ '??', '\d\d' ],
+    # %S - seconds as a decimal number (00- 59)
+    '%S' => [ '??', '\d\d' ],
+    # %s - seconds since epoch
+    '%s' => [ '*', '\d+' ],
+    # %T - 24-hour clock (00-23) in the format equivalent to HH:MM:SS
+    '%T' => [ '??:??:??', '\d\d:\d\d:\d\d' ],
+    # %u - weekday as a decimal number from 1-7 (Sunday = 7)
+    '%u' => [ '?', '[0-7]' ],
+    # %U - week of the year as a decimal number[00 - 53]
+    '%U' => [ '??', '\d\d' ],
+    # %w - weekday as a decimal number from 0-6 (Sunday = 0)
+    '%w' => [ '?', '[0-6]' ],
+    # %W - week number of the year as a decimal number (00-53)
+    '%W' => [ '??', '\d\d' ],
+    # %y - last two numbers of the year
+    '%y' => [ '??', '\d\d' ],
+    # %Y - four-digit year as a decimal number
+    '%Y' => [ '????', '\d\d\d\d' ],
+  );
+
+  $tglob = $texpr = $i;
+  $tglob =~ s!\%\%!\001!g;
+  $texpr =~ s!\%\%!\001!g;
+  foreach $match (sort keys %pdatehsh) {
+    $tg = (@{$pdatehsh{$match}})[$[];
+    $te = (@{$pdatehsh{$match}})[$[+1];
+    $tglob =~ s!$match!$tg!g;
+    $texpr =~ s!$match!$te!g;
+  }
+  $tglob =~ s!\001!%!g;
+  $texpr =~ s!\001!%!g;
+
+  ($tglob,$texpr);
+}
+
+# Input: basedir,regex, subdirhashref, wantedsubroutinecountref, debugflag
+# Output: Nothing (subdirhashref and wantedsubroutinecountref are updated)
+sub findxdir {
+  my ($dir,$regex,$hshref,$cntref,$debug) = @_;
+  my %dirhsh = ();
+  my $cwd = getcwd;
+
+  my $wantedsub = "wanted${$cntref}";
+  ${$cntref}++;
+  my $wantedeval = "sub $wantedsub {";
+  if (-d $dir) {
+    if (chdir($dir)) {
+      $wantedeval .= '
+  my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev);
+  my ($size,$atime,$mtime,$ctime,$blksize,$blocks);
+
+  (($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+    $atime,$mtime,$ctime,$blksize,$blocks) = lstat($_)) &&
+  -d _ &&'."\n  ";
+      $wantedeval .= '  $File::Find::name =~ m|^'."$dir/($regex)".'$|';
+      $wantedeval .= " \&\&\n".'  ($dirhsh{($1)}++ >= 0)'." \&\&\n";
+      if ($debug) {
+        $wantedeval .= '  logit($mysname,\%logarr,64+($debug>0),"DEBUG: '.
+                       'Found directory $File::Find::name matches ($regex)");';
+      } else {
+        $wantedeval .= '  logit($mysname,\%logarr,80+($verbose>0),"'.
+                       'Found directory $File::Find::name matches ($regex)");';
+      }
+      $wantedeval .= "\n}";
+
+      logit($mysname,\%logarr,64+($debug>0),"$wantedeval");
+      #print "$wantedeval\n" if ($debug);
+
+      eval $wantedeval;
+      if ($@) {
+        logit($mysname,\%logarr,80+($verbose>0),"eval failed: ".$@);
+        #print "eval failed: ",$@,"\n";
+        exit 1;
+      }
+
+      #print "Entering find\n" if ($debug);
+      find(\&{$wantedsub},$dir);
+      #print "Exiting find\n" if ($debug);
+    } else {
+      #print "Unable to change to directory $dir\n";
+      logit($mysname,\%logarr,80+($verbose>0),
+            "Unable to change to directory $dir");
+    }
+  } else {
+    #print "$dir must be a directory\n";
+    logit($mysname,\%logarr,80+($verbose>0),
+          "$dir must be a directory");
+  }
+
+  # Build subdir hash
+  #print "Building subdirhsh\n" if ($debug);
+  my $x;
+  foreach $x (reverse sort keys %dirhsh) {
+    $x =~ s|^$dir/||;
+    $x =~ s%//%/%g;
+    $x =~ s%^/%%g;
+    $hshref->{DIRS}{$x}++;
+    my $subdir = "";
+    foreach my $d (split('/',$x)) {
+      $subdir .= "/$d";
+      $subdir =~ s%^/%%g;
+      next if (defined $hshref->{SUBDIRS}{$subdir});
+      $hshref->{SUBDIRS}{$subdir}++;
+    }
+  }
+  #print "Built subdirhsh\n" if ($debug);
+
+  # Restore current directory
+  chdir($cwd);
+}
+
+# Input: dirlstref,cleanhashref,filehashref,wantedsubroutinecountref,debugflag
+# Output: Nothing (filehashref and wantedsubroutinecountref are updated)
+sub findxfile {
+  my ($dirlstref,$chshref,$hshref,$cntref,$debug) = @_;
+  my %filehsh = ();
+
+  my $needor = 0;
+  my $wantedsub = "wanted${$cntref}";
+  ${$cntref}++;
+  my $wantedeval = "sub $wantedsub {";
+  $wantedeval .= '
+  my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev);
+  my ($size,$atime,$mtime,$ctime,$blksize,$blocks);
+  my ($agedays) = getlcsfileage($_,$logextension,-M $_,$debug);
+  my $t = "";
+
+  (($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+    $atime,$mtime,$ctime,$blksize,$blocks) = lstat($_)) &&
+  -f _ &&'."\n  (";
+
+  if (defined $chshref->{cleanfiles}) {
+    $wantedeval .= ' ($agedays > '.(@{$chshref->{cleanfiles}})[$[].' && ($t="simple"))';
+    $needor++;
+  }
+  foreach my $i (1..9) {
+    my $f = "cleanmatch${i}files";
+    my $r = "cleanmatch${i}regex";
+    if (defined $chshref->{$f} && defined $chshref->{$r}) {
+      $wantedeval .= " \|\|\n" if ($needor);
+      $wantedeval .= '    ($agedays > '.(@{$chshref->{$f}})[$[].
+                     ' && $_ =~ m/'.(@{$chshref->{$r}})[$[].'/ && ($t="match'.$i.'"))';
+      $needor++;
+    }
+  }
+  $wantedeval.=" \) \&\&\n".'  ($filehsh{$File::Find::name}++ >= 0)'." \&\&\n";
+  if ($debug) {
+    $wantedeval .= '  logit($mysname,\%logarr,64+($debug>0),"DEBUG: '.
+                   'Found file $File::Find::name ($agedays) matches ($t)");';
+  } else {
+    $wantedeval .= '  logit($mysname,\%logarr,80+($verbose>0),"'.
+                   'Found file $File::Find::name ($agedays) matches ($t)");';
+  }
+  $wantedeval .= "\n}";
+
+  logit($mysname,\%logarr,64+($debug>0),"$wantedeval");
+  #print "$wantedeval\n" if ($debug);
+
+  eval $wantedeval;
+  if ($@) {
+    logit($mysname,\%logarr,80+($verbose>0),"eval failed: ".$@);
+    #print "eval failed: ",$@,"\n";
+    exit 1;
+  }
+
+  #print "Entering find\n" if ($debug);
+  find(\&{$wantedsub},@{$dirlstref});
+  #print "Exiting find\n" if ($debug);
+
+  # Build file hash
+  #print "Building filehsh\n" if ($debug);
+  my $x;
+  foreach $x (reverse sort keys %filehsh) {
+    $hshref->{FILES}{$x}++;
+  }
+  #print "Built filehsh\n" if ($debug);
+}
+
+# Populate hsh{site}{node}
+sub get_sites_and_nodes {
+  my ($me,$logref,$lcs,$user,$passwd,$port,$debug,$hshref) = @_;
+  my $tot = 0;
+
+  my $url = sprintf("http://%s:%d/",$lcs,$port);
+
+  logit($me,$logref,64+($debug>0),
+        "get_sites_and_nodes($me,.,$lcs,$user,$passwd,$port,$debug,.)");
+
+  # Create a user agent object
+  my $ua = new LWP::UserAgent;
+  $ua->agent("LCS Flush/0.1 ".$ua->agent);
+
+  # Make the request
+  my $req = HTTP::Request->new(GET => $url);
+  $req->authorization_basic($user,$passwd);
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+    logit($me,$logref,64+($debug>0),"Success");
+    while ($res->content =~ m@HREF="/directory/(.+?)/(.+?)"@g) {
+      $hshref->{$1}{$2}++;
+      $tot++;
+    }
+  } else {
+    logit($me,$logref,64+($debug>0),"Failed: ".$res->message);
+    return undef;
+  }
+  return $tot;
+}
+
+# Populate hsh{site}{node}
+sub get_sites_and_nodes_ssl {
+  my ($me,$logref,$lcs,$user,$passwd,$port,$debug,$hshref) = @_;
+  my $tot = 0;
+  my ($page,$result,%headers);
+  my ($timeout);
+
+  logit($me,$logref,64+($debug>0),
+        "get_sites_and_nodes_ssl($me,.,$lcs,$user,$passwd,$port,$debug,.)");
+
+  $timeout = 10;
+  eval {
+    local $SIG{__WARN__};
+    local $SIG{'__DIE__'} = "DEFAULT";
+    local $SIG{'ALRM'} = sub { die "Timeout Alarm" };
+    alarm($timeout);
+    ($page, $result, %headers) =
+      get_https($lcs, $port, '/',
+        make_headers('User-Agent' => 'LCS Flush/0.1',
+                     'Authorization' =>
+                       'Basic ' . MIME::Base64::encode("$user:$passwd",''))
+               );
+  };
+  alarm(0); # Cancel the alarm
+
+  if ($@) {
+    return;
+  }
+
+  # Check the outcome of the response
+  if ($result !~ /ERROR/i) {
+    logit($me,$logref,64+($debug>0),"Success");
+    while ($page =~ m@HREF="/directory/(.+?)/(.+?)"@g) {
+      $hshref->{$1}{$2}++;
+      $tot++;
+    }
+  } else {
+    logit($me,$logref,64+($debug>0),"Failed: ".$result);
+    return undef;
+  }
+  return $tot;
+}
+
+
+sub get_file_list {
+  my ($me,$logref,$lcs,$user,$passwd,$port,$site,$node,$debug) = @_;
+  my @files = ();
+
+  my $url = sprintf("http://%s:%d/directory/%s/%s",$lcs,$port,$site,$node);
+
+  logit($me,$logref,64+($debug>0),
+        "get_file_list($me,.,$lcs,$user,$passwd,$port,$site,$node,$debug)");
+
+  # Create a user agent object
+  my $ua = new LWP::UserAgent;
+  $ua->agent("LCS Flush/0.1 " . $ua->agent);
+
+  # Make the request
+  my $req = HTTP::Request->new(GET => $url);
+  $req->authorization_basic($user, $passwd);
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+    logit($me,$logref,64+($debug>0),"Success");
+    @files = ($res->content =~ m@HREF="/file/(.+?)/$site/$node"@g);
+    logit($me,$logref,64+($debug>0),"Files = ".join(' ',@files));
+  } else {
+    logit($me,$logref,64+($debug>0),"Failed: ".$res->message);
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+  return @files;
+}
+
+sub get_file_list_ssl {
+  my ($me,$logref,$lcs,$user,$passwd,$port,$site,$node,$debug) = @_;
+  my ($page,$result,%headers);
+  my ($timeout);
+  my @files = ();
+
+  my $url = sprintf("http://%s:%d/directory/%s/%s", $lcs, $port, $site, $node);
+
+  logit($me,$logref,64+($debug>0),
+        "get_file_list_ssl($me,.,$lcs,$user,$passwd,$port,$site,$node,$debug)");
+
+  $timeout = 10;
+  eval {
+    local $SIG{__WARN__};
+    local $SIG{'__DIE__'} = "DEFAULT";
+    local $SIG{'ALRM'} = sub { die "Timeout Alarm" };
+    alarm($timeout);
+    ($page, $result, %headers) =
+      get_https($lcs, $port, "/directory/$site/$node",
+        make_headers('User-Agent' => 'LCS Flush/0.1',
+                     'Authorization' =>
+                       'Basic ' . MIME::Base64::encode("$user:$passwd",''))
+               );
+  };
+  alarm(0); # Cancel the alarm
+
+  if ($@) {
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+
+  # Check the outcome of the response
+  if ($result !~ /ERROR/i) {
+    logit($me,$logref,64+($debug>0),"Success");
+    @files = ($page =~ m@HREF="/file/(.+?)/$site/$node"@g);
+    logit($me,$logref,64+($debug>0),"Files = ".join(' ',@files));
+  } else {
+    logit($me,$logref,64+($debug>0),"Failed: ".$result);
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+  return @files;
+}
+

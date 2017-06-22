@@ -1,0 +1,94 @@
+###
+
+ ###   *** PLEASE READ THIS IMPORTANT NOTE REGARDING FOLLOWING CODE ***
+
+      ### Create a server using the supplied server name and node 
+
+### createConnectionsServer.jacl 
+###
+###  Create the servers for Lotus Connections
+
+###  About:
+###      This script uses the given node and server arguments to create 
+###      Lotus Connections servers on a Webphere Application Server.
+###
+###  Usage:
+###     wsadmin.sh -f /lfs/system/tools/connections/lib/create_connections_appservers.jacl
+###
+### ###  Parameters:
+###      arg1 - server to create
+###
+###  Servers:
+###     <host>_ibmconnections_activities - ActivitiesServer
+###     <host>_ibmconnections_blogs - BlogServer
+###     <host>_ibmconnections_communities - CommunitiesServer
+###     <host>_ibmconnections_dogear - DogearServer
+###     <host>_ibmconnections_profiles - ProfilesServer
+###     <host>_ibmconnections_homepage - HomepageServer
+###
+
+proc createserver {serverArg} {
+
+   ###
+   ### Globals
+   ###
+
+   global AdminConfig
+   global AdminControl
+   global AdminApp
+
+   set node [$AdminConfig list Node]
+   set nodeName [$AdminConfig showAttribute $node name]
+
+   ###
+   ### Is a server by this name already running on the node? 
+   ###
+
+  
+   puts "createConnectionsServer: Checking to see if server $serverArg is already running on node $nodeName"
+   set runningServer [$AdminControl completeObjectName type=Server,node=$nodeName,process=$serverArg,*]
+   if {[llength $runningServer] > 0} {
+      puts "createConnectionsServer: Error -- Server $serverArg already running on node $nodeName"
+      puts "createConnectionsServer: Error -- exiting script"
+      return 
+   }
+
+
+   puts "createConnectionsServer: Creating the server $serverArg on node $nodeName..."
+   set name_attribute [list name $serverArg]
+ 
+   set attributes     [list $name_attribute]
+   set serverTemplate [$AdminConfig listTemplates Server ei_template_https]
+   set server [$AdminConfig createUsingTemplate Server $node $attributes $serverTemplate] 
+
+   ###
+   ### Save the change
+   ###
+
+   puts "createConnectionsServer: Saving the configuration"
+   $AdminConfig save
+}
+
+
+###
+### Main
+###
+
+set node [$AdminConfig list Node]
+puts "Starting - Lotus Connections server creation"
+
+if { !($argc == 1) } {
+	puts "createConnectionsServer: This script requires a parameter: the server to create"
+	puts "e.g.:   createConnectionsServer.jacl <host>_ibmconnections_activities"
+	puts "        createConnectionsServer.jacl <host>_ibmconnections_blogs"
+	puts "        createConnectionsServer.jacl <host>_ibmconnections_communities"
+	puts "        createConnectionsServer.jacl <host>_ibmconnections_dogear"
+	puts "        createConnectionsServer.jacl <host>_ibmconnections_profiles"
+ puts "        createConnectionsServer.jacl HomepageServer"
+} else { 
+	set serverArg [lindex $argv 0]
+
+	createserver $serverArg
+}
+
+puts "createConnectionsServer: Finished - Lotus Connections server creation"

@@ -1,0 +1,360 @@
+#!/usr/bin/ksh 
+
+#-----------------------------------------------------
+# rc.bNimble
+# description: Control script for bNimble Daemon.
+# hpear3@us.ibm.com - Wed Mar 21 10:04:57 UTC 2001
+# Hacked by milo@Wed Aug  1 20:32:37 CUT 2001
+# jensenb@us.ibm.com - 	One version for linux/aix/AFS/DFS
+# todds@us.ibm.com - Major cleanup and mods for bNimble2 - Jul 06
+#-----------------------------------------------------
+#
+# rc.bNimble [-v] [-d] [-l|-s] [-b bNimble.jar] [-x NUM] [-n NUM] [-u USER]
+# {start|stop|stop9|restart|restart9|status|print} {bNimbleConfig}
+#
+# verbose:	-v
+# debug:	-d
+# shared disk	-s
+# bnimble:	-b <...>
+# maXmem:	-x <...>
+# miNmem:	-n <...>
+# user:		-u <...>
+#-----------------------------------------------------
+
+#
+# Define functions
+#
+
+command_syntax ()
+{
+ 	echo ""
+	echo "USAGE: "
+	echo " rc.bNimble [-v] [-d] [-l|-s] [-b bNimble.jar] [-x NUM] [-n NUM] [-u USER] {start|stop|stop9|restart|restart9|status|print} {bNimbleConfig}"
+	echo ""
+	echo "    verbose:        -v"
+	echo "    debug:          -d"
+	echo "    shared disk:    -s"
+	echo "    bnimble:        -b <...>"
+	echo "    maXmem:         -x <...>"
+	echo "    miNmem:         -n <...>"
+	echo "    user:           -u <...>"
+	echo ""
+	exit 2
+}
+
+#
+# Define base defaults
+#
+DEBUG_PARMS=""
+VERBOSE=0
+LOCALDISK="true"
+BNIMBLE_JAR=latest
+MEM_MIN="-Xms128M"
+MEM_MAX="-Xmx512M"
+USER="pubinst"
+USE_SSL="false"
+LOCALDISK_BASE="/lfs/system/tools/publish/bNimble2"
+SHAREDFS_BASE="/fs/system/tools/publish/bNimble2"
+OS=`uname`
+
+case "$OS" in
+  AIX)
+	JAVA=/usr/java14/bin/java
+	PS="ps -ef"
+	NATIVE_SYMLINK_LIBRARY="\\/www\\/system\\/tools\\/publish\\/bNimble2\\/lib\\/native\\/AIX\\/SymLink\\/symlink.so" ;;
+  Linux)
+	JAVA=/usr/bin/java
+	PS="ps --cols 1000 -ef"
+	ARCH=`uname -m`
+	case "$ARCH" in
+		ppc64)  NATIVE_SYMLINK_LIBRARY="\\/www\\/system\\/tools\\/publish\\/bNimble2\\/lib\\/native\\/Linux_ppc64\\/SymLink\\/symlink.so" ;;
+		i686)  NATIVE_SYMLINK_LIBRARY="\\/www\\/system\\/tools\\/publish\\/bNimble2\\/lib\\/native\\/Linux_i686\\/SymLink\\/symlink.so" ;;
+	esac
+	;;
+  *)
+	echo "Unknown OS type $OS. Exiting."
+	exit 1
+	;;
+esac
+echo "OS is $OS"
+
+# Command line options (these override everything if used)
+while getopts vdsb:x:n:u: name
+do
+        case $name in
+		v)	VERBOSE=1 ;;
+                d)      DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE -Djavax.net.debug=true " ;;
+                s)      LOCALDISK=false ;;
+                b)      BNIMBLE_JAR="$OPTARG" ;;
+                x)      MEM_MAX="-Xmx${OPTARG}M" ;;
+                n)      MEM_MIN="-Xms${OPTARG}M" ;;
+                u)      USER="$OPTARG" ;;
+                ?) 	command_syntax;;
+        esac
+done
+
+
+PLEX=`hostname -s |cut -c 1-3`
+case $PLEX in
+	px1)	ANTIPLEX="be:::at" ;;
+	px2)	ANTIPLEX="rs:::dt" ;;
+	px3)	ANTIPLEX="se:::gt" ;;
+	be)	ANTIPLEX="px1" ;;
+	rs)	ANTIPLEX="px2" ;;
+	se)	ANTIPLEX="px3" ;;
+	a*)	PLEX="a"
+		ANTIPLEX="be:::at" ;;
+	d*)	PLEX="d"
+		ANTIPLEX="rs:::dt" ;;
+	g*)	PLEX="g"
+		ANTIPLEX="se:::gt" ;;
+esac
+
+shift $(($OPTIND -1))
+
+if [[ $VERBOSE = 1 ]] ; then
+	printf "Remaining arguments are: %s\n" "$*" 
+fi
+
+case "$LOCALDISK" in
+	  true)		echo "Using default setting of Local Disk"	
+			DIR_BASE=$LOCALDISK_BASE ;;
+	  false)	echo "Using shared file system"
+			DIR_BASE=$SHAREDFS_BASE ;;
+esac
+
+JAR_DIR=${DIR_BASE}/lib
+CONFIG_DIR=${DIR_BASE}/config
+KEY_DIR=${DIR_BASE}/keys
+ 
+CONFIG_PARAM=$2
+CONFIGSTRIPPED=`echo $CONFIG_PARAM | sed s/\.conf//g`
+CONFIGEXT=.conf
+CONFIGFILE=${CONFIGSTRIPPED}${CONFIGEXT}
+FULL_CONFIGFILE=$CONFIG_DIR/$CONFIGFILE
+echo "Requested CONF: $FULL_CONFIGFILE"
+
+# pull out rc.bNimble parameters in config file
+if [ -f $FULL_CONFIGFILE ] ; then
+	for i in `cat $FULL_CONFIGFILE				\
+		| grep -E "^[[:space:]]*#[[:space:]]*param"	\
+		| awk -F"param" '{print $2}'			\
+		| sed 's/^[[:space:]][[:space:]]*//g' 			\
+		| sed 's/[[:space:]][[:space:]]*/:/g'`
+	do
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "LINE: $i"
+		fi 
+		PARM=`echo $i | awk -F: '{print $1}'`
+		VAL=`echo $i | awk -F: '{print $2}'`
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "PARM=$PARM VAL=$VAL"
+		fi 
+		case $PARM in
+		 DEBUG)		 DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE -Djavax.net.debug=true" ;;
+		 BNIMBLE_JAR)	 BNIMBLE_JAR=$VAL ;;
+		 MEM_MIN)	 MEM_MIN="-Xms${VAL}M" ;;
+		 MEM_MAX)	 MEM_MAX="-Xmx${VAL}M" ;;
+		 USER)		 USER=$VAL ;;
+		 USE_SSL)	 USE_SSL=$VAL;;
+		 KEYSTORE)	 KEYSTORE=${KEY_DIR}$VAL ;;
+		 KEYSTOREPASS)	 KEYSTOREPASS=$VAL ;;
+		 TRUSTSTORE)	 TRUSTSTORE=${KEY_DIR}$VAL ;;
+		 TRUSTSTOREPASS) TRUSTSTOREPASS=$VAL ;;
+		esac
+	done
+fi
+
+RUNDIR="/tmp/bNimble$$"
+CONFDIR=`echo $CONFIGFILE | sed s/[/]/#/g | awk -F"#" '{print $1}'`
+mkdir -p $RUNDIR/$CONFDIR
+chmod -R a+r,a+x $RUNDIR
+FOO=`echo $CONFIGFILE | sed s/[/]/\./g`
+USETHIS="$RUNDIR/$CONFIGFILE"
+USETHIS_TMP="$RUNDIR/$CONFIGFILE.tmp"
+
+cp $FULL_CONFIGFILE $USETHIS
+
+# pull out defines in config file
+if [ -f $FULL_CONFIGFILE ] ; then
+	for i in `cat $FULL_CONFIGFILE                          \
+		| grep -E "^[[:blank:]]*#[[:blank:]]*define"    \
+		| awk -F"define" '{print $2}'                   \
+		| sed s/^[[:space:]]*//g                        \
+		| sed s/[[:space:]][[:space:]]*/\%/g`
+        do
+		PARM=`echo $i | awk -F"%" '{print $1}'`
+		VAL=`echo $i | awk -F"%" '{print $2}'`
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "Substituting $PARM with $VAL"
+		fi
+		cat $USETHIS | egrep -v define | sed s^%$PARM%^$VAL^g > $USETHIS_TMP
+		mv -f $USETHIS_TMP $USETHIS
+	done
+else
+	echo "Can't find config file.  Exiting"
+	exit 1
+fi
+
+
+# %PLEX% is a special variable that gets substituted with the current plex
+cat $USETHIS | egrep -v define | sed s/%PLEX%/$PLEX/g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+# %NATIVE_SYMLINK_LIBRARY% is a special variable that gets set based on OS
+cat $USETHIS | egrep -v define | sed s/%NATIVE_SYMLINK_LIBRARY%/$NATIVE_SYMLINK_LIBRARY/g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+# %ANTIPLEX% is a special variable that gets substituted with the evil twin of the current plex
+cat $USETHIS | egrep -v define | sed s/%ANTIPLEX%/$ANTIPLEX/g | sed s/:::/\ /g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+
+if [[ $USE_SSL = "true" ]] ; then
+	TRUSTSTOREPARM=`echo $TRUSTSTORE | sed -e 's/[/]/\\\\\//g'`
+	TRUSTSTOREPASSPARM=$TRUSTSTOREPASS
+	KEYSTOREPARM=`echo $KEYSTORE | sed -e 's/[/]/\\\\\//g'`
+        KEYSTOREPASSPARM=$KEYSTOREPASS
+	cat $USETHIS | egrep -v define | sed s/%TRUSTSTORE%/$TRUSTSTOREPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%TRUSTSTOREPASS%/$TRUSTSTOREPASSPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%KEYSTORE%/$KEYSTOREPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%KEYSTOREPASS%/$KEYSTOREPASSPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+
+fi  
+
+FULL_CONFIGFILE=$USETHIS
+
+	cd $JAR_DIR
+	unalias ls
+	if [[ "$BNIMBLE_JAR" = "latest" ]] ; then
+		BNIMBLE_JAR=`ls bNimblePublishing*jar | egrep 'bNimblePublishing[0-9]+.jar' | sort | tail -1`
+	fi
+	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}"
+	JAVA_ARGS="$MEM_MIN $MEM_MAX $DEBUG_PARMS -classpath ${JAVA_CLASSPATH} com.ibm.webos.daedalus.Daedalus" 
+	BNIMBLE="$JAVA $JAVA_ARGS"
+
+####################################################################
+# Vars that need to be set after OS and LOCALDISK are determined
+BNIMBLE_HOME=`grep -E "^[[:blank:]]*[h|H]ome[[:blank:]]*=[[:blank:]]*" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+BNIMBLE_LOGFILE=$BNIMBLE_HOME/output.log
+PORT=`grep -E "^[[:blank:]]*[p|P]ort[[:blank:]]*=[[:blank:]]*" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+####################################################################
+
+	echo ""
+	echo "The following are the list of configured parameters"
+	echo "PLEX:         $PLEX"
+	echo "ANTIPLEX:     $ANTIPLEX"
+	echo "PORT:         $PORT"
+	echo "BNIMBLE_HOME  $BNIMBLE_HOME"
+	echo "BNIMBLE_LOG   $BNIMBLE_LOGFILE"
+	echo "BNIMBLE:      $BNIMBLE"
+	echo "USE_SSL:      $USE_SSL"
+	echo "LOCALDISK:    $LOCALDISK"
+	echo "BNIMBLE_JAR:  $BNIMBLE_JAR"
+	echo "MEM_MAX:      $MEM_MAX"
+	echo "MEM_MIN:      $MEM_MIN"
+	echo "USER:         $USER"
+	echo "JAVA:         $JAVA"
+	echo "FULL_CONFIG:  $FULL_CONFIGFILE"
+	echo "SYMLINK_LIB:  $NATIVE_SYMLINK_LIBRARY"
+	echo "DEBUG_PARMS:  $DEBUG_PARMS"
+	if [[ $USE_SSL = "true" ]] ; then
+		echo "TRUSTSTORE:   $TRUSTSTORE"
+		echo "TRUSTPASS:    $TRUSTSTOREPASS"
+		echo "KEYSTORE:     $KEYSTORE"
+		echo "KEYPASS:      $KEYSTOREPASS"
+	fi
+
+
+####################################################################
+case "$1" in
+  start)
+	echo ""
+	echo "Starting $BNIMBLE_JAR using $FULL_CONFIGFILE, logging to $BNIMBLE_LOGFILE:"
+	echo "$FULL_CONFIGFILE"
+	echo "$BNIMBLE_LOGFILE"
+
+		# hack to get stuff to work with dssh/dsh/etc
+		RUNTHIS="$RUNDIR/bNimble$$"
+		chmod a+r,a+x,a+w $RUNDIR
+		cd $RUNDIR
+		echo "cd $RUNDIR" > $RUNTHIS
+		chmod a+r,a+x $RUNTHIS
+		echo "$BNIMBLE $CONFIGFILE >> $BNIMBLE_LOGFILE" >> $RUNTHIS
+		chmod +x $RUNTHIS
+		chmod -R a+r,a+x,a+w $RUNDIR
+		echo "sudo -u $USER $RUNTHIS" | at now
+		echo "Giving bNimble 5 seconds to get started."
+		sleep 5
+	pwd
+	cd -
+	echo -n "Number of procs:"
+	$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | wc -l
+	echo ""
+	;;
+  stop)
+	echo ""
+	echo "Shutting down bNimble on port $PORT:"
+
+	if [[ $USE_SSL = "true" ]] ; then
+		echo "$JAVA -Djavax.net.ssl.trustStore=$TRUSTSTORE -Djavax.net.ssl.trustStorePassword=$TRUSTSTOREPASS -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=$KEYSTOREPASS -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -ssl -host localhost -port ${PORT} -term"
+		$JAVA -Djavax.net.ssl.trustStore=$TRUSTSTORE -Djavax.net.ssl.trustStorePassword=$TRUSTSTOREPASS -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=$KEYSTOREPASS -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -ssl -host localhost -port ${PORT} -term
+	else
+		echo "$JAVA -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term"
+		$JAVA -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term
+	fi
+
+	sleep 5
+	numprocs=`$PS | grep $FOO | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Try rc.bNimble stop9 to kill"
+		exit 1
+	fi
+	;;
+  stop9)
+	echo ""
+	echo "Shutting down bNimble the hard and nasty -9 way:"
+	echo ""
+
+	echo -n "Killing:  "
+	for pid in `$PS | grep ${FOO} | grep -v grep | grep -v $0 | awk '{print $2;}'`
+	do
+		echo -n " $pid"
+		kill -9 $pid
+	done
+	echo ""
+
+	sleep 5
+	numprocs=`$PS | grep $FOO | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Better just kill them by hand"
+	fi
+	;;
+  status)
+	echo "========== bNimble Status =========="
+	echo -n "Number of procs:"
+	$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | grep -v rc.bNimble | wc -l
+	echo ""
+	;;
+  print)
+        cat $FULL_CONFIGFILE
+        echo "# file is $USETHIS"
+        ;;
+  restart)
+	$0 stop $CONFIGFILE $3
+	$0 start $CONFIGFILE $3
+	;;
+  restart9)
+	$0 stop9 $CONFIGFILE $3
+	$0 start $CONFIGFILE $3
+	;;
+  *)    command_syntax;;
+esac
+####################################################################
+exit 0
+

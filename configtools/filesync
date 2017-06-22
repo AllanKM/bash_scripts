@@ -1,0 +1,82 @@
+#!/bin/ksh
+
+#
+# $Id: filesync,v 1.6 2013/03/07 16:18:13 jfwalton Exp $
+#
+
+
+# usage:  filesync [srcdir] [destdir] [rsync_flags] [create dest (0|1)] [delete files only on dest (0|1)]
+dryrun() {
+	print "****************** DRY RUN *************************"
+	print "rsync $DEL_FLAG -${RSYNC_FLAGS} --dry-run $SRC $DEST"
+	rsync $DEL_FLAG -${RSYNC_FLAGS} --dry-run $SRC $DEST | awk 'BEGIN { f=0;d=0 } { 
+		print $0;
+		if ( /^deleting/ ) { 
+			if ( / directory /) {
+				++d 
+			} 
+			else { 
+				++f
+			}
+		}
+	} 
+	END { 
+		if ( d>0 || f>0) {
+			print "\n\033[1;31m**WARNING** sync includes",d,"directory delete and ",f,"file delete\033[00m"
+		}
+	}'
+	print " "
+}
+NO_DRY_RUN=$EI_FILESYNC_NODR
+NO_DRY_RUN=${NO_DRY_RUN:-0}
+DRY_RUN_ONLY=$EI_FILESYNC_DRONLY
+DRY_RUN_ONLY=${DRY_RUN_ONLY:-0}
+
+SRC=$1
+DEST=$2
+RSYNC_FLAGS=$3
+CREATE_DEST=$4
+DELETE_ON_DEST=$5
+
+red='\E[31;40m\E[1m'
+
+if [[ ! -f "$SRC" && ! -d "$SRC" ]] ; then
+	print "Source $SRC doesn't exist"
+	exit 1
+fi
+
+if [[ ! -f "$DEST" && ! -d "$DEST" ]] ; then
+	if [[ "$CREATE_DEST" = 1 ]] ; then 
+		print "Destination dir $DEST doesn't exist, creating directory..."
+		mkdir -p $DEST || exit 1
+	else
+		print "Destination dir $DEST doesn't exist, exiting."
+		exit 1
+	fi
+fi
+
+if [[ "$DELETE_ON_DEST" = 1 ]] ; then 
+	DEL_FLAG="--delete"
+fi
+
+if [ $NO_DRY_RUN = 0 ]; then
+	dryrun
+	while [[ $ans != "y" ]]; do
+		print "Enter y to continue, r to repeat rsync dry run, or q to quit: "
+		read ans
+		if [[ $ans == "q" ]]; then
+			exit
+		fi
+		if [[ $ans == "r" ]]; then
+			dryrun
+		fi
+	done
+	echo Continuing
+fi
+
+if [ $DRY_RUN_ONLY = 0 ]; then
+	print "rsync $DEL_FLAG -${RSYNC_FLAGS} $SRC $DEST"
+	rsync $DEL_FLAG -${RSYNC_FLAGS} $SRC $DEST
+else
+	dryrun
+fi

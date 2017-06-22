@@ -1,0 +1,77 @@
+#
+# Runstats
+47 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed jcrdb all >>/logs/wpsibmdb/runstats.log 2>&1
+#
+# Backups
+07 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip jcrdb $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/wpsibmdb/backup.log 2>&1
+#
+# Clean Apply Logs
+#58 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_applylogs jcrdb >>/logs/wpsibmdb/clean_applylogs.log 2>&1
+#
+# Prune database transaction logs
+37 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs jcrdb 40 >>/logs/wpsibmdb/prunedb2logs.log 2>&1
+#
+# Clean Backup Directory
+08 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups JCRDB ~/backup 60 >>/logs/wpsibmdb/clean_db2_backups.log 2>&1
+#
+# Reorgchk
+40 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com"  $HOME/bin/run_reorgchk wpsibmdb JCRDB >> /logs/wpsibmdb/run_reorgchk.log 2>&1
+#
+#
+# Runstats
+27 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed fdbkdb all >>/logs/wpsibmdb/runstats.log 2>&1
+#
+# Backups
+47 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip fdbkdb $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/wpsibmdb/backup.log 2>&1
+#
+# Clean Apply Logs
+#38 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_applylogs fdbkdb >>/logs/wpsibmdb/clean_applylogs.log 2>&1
+#
+# Prune database transaction logs
+17 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs fdbkdb 40 >>/logs/wpsibmdb/prunedb2logs.log 2>&1
+#
+# Clean Backup Directory
+48 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups FDBKDB ~/backup 60 >>/logs/wpsibmdb/clean_db2_backups.log 2>&1
+#
+# Reorgchk
+20 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com"  $HOME/bin/run_reorgchk wpsibmdb FDBKDB >> /logs/wpsibmdb/run_reorgchk.log 2>&1
+#
+#
+# Runstats
+17 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed lmdb all >>/logs/wpsibmdb/runstats.log 2>&1
+#
+# Backups
+37 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip lmdb $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/wpsibmdb/backup.log 2>&1
+#
+# Clean Apply Logs
+#28 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_applylogs lmdb >>/logs/wpsibmdb/clean_applylogs.log 2>&1
+#
+# Prune database transaction logs
+07 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs lmdb 40 >>/logs/wpsibmdb/prunedb2logs.log 2>&1
+#
+# Clean Backup Directory
+38 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups LMDB ~/backup 60 >>/logs/wpsibmdb/clean_db2_backups.log 2>&1
+#
+# Reorgchk
+10 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com"  $HOME/bin/run_reorgchk wpsibmdb LMDB >> /logs/wpsibmdb/run_reorgchk.log 2>&1
+#
+#
+# Runstats
+07 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/run_runstats -detailed wpsdb all >>/logs/wpsibmdb/runstats.log 2>&1
+#
+# Backups
+27 7 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/db2backup -gzip wpsdb $HOME/backup UTIL_IMPACT_PRIORITY 50 INCLUDE LOGS >>/logs/wpsibmdb/backup.log 2>&1
+#
+# Clean Apply Logs
+#18 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_applylogs wpsdb >>/logs/wpsibmdb/clean_applylogs.log 2>&1
+#
+# Prune database transaction logs
+57 7,19 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/prunedb2logs wpsdb 40 >>/logs/wpsibmdb/prunedb2logs.log 2>&1
+#
+# Clean Backup Directory
+28 8 * * * $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com,ramir@us.ibm.com,jpavel@us.ibm.com,robinrgr@us.ibm.com" $HOME/bin/clean_db2_backups WPSDB ~/backup 60 >>/logs/wpsibmdb/clean_db2_backups.log 2>&1
+#
+# Reorgchk
+00 7 * * 6 $HOME/bin/run_cmd -e "gjbollin@us.ibm.com,gtyagara@in.ibm.com,rk.rakesh@in.ibm.com"  $HOME/bin/run_reorgchk wpsibmdb WPSDB >> /logs/wpsibmdb/run_reorgchk.log 2>&1
+#
+

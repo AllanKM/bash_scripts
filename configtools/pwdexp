@@ -1,0 +1,232 @@
+#!/usr/local/bin/perl
+#------------------------------------------------------------------------------
+#
+# Script Name: pwdexp
+#
+# Description:
+#
+#   This is an expect type script to answer password prompts for a specified
+#   set of passwords.  It will also answer any "(yes/no)" prompts with a
+#   a yes response.  This is due to the expectation this script is used to
+#   automate ssh/scp sessions.  All output through the first prompt will
+#   be supressed (unless the -v option or the -s option is used to override).
+#
+# Syntax:
+#
+#   pwdexp.pl [-v|-d #|-s #] [-t secs] [-T secs] [-o #[,#...]] command [command-args...]
+#
+#    -s #	specifies a suppression count (how many passwords to answer
+#		before allowing output to go to stdout) (Default: 1)
+#    -v 	is the same as "-s 0"
+#    -d #	specifies debug level (Valid values 1-4)
+#    -x		supress an extra new line after sending password
+#    -t secs	specifies timeout in secs to wait for 1st passwd prompt
+#		(Default: 10 secs for 1st and 3600 for rest)
+#    -T secs	specifies timeout in secs to wait for 2nd onward passwd prompts
+#		(Default: 10 secs for 1st and 3600 for rest)
+#    -o #,#,... specifies the order to use the passwords read in on stdin
+#		(first passwd read is #1, second is #2, etc)
+#		Default: 1,1,1,1,1,1,1,1,1,1 (i.e. 10 prompts w/same passwd)
+#
+# Change history:
+#
+#   Date      Init  Description
+#   08/09/04  RJB   Creation
+#   08/20/04  RJB   Changed default timeout after first prompt to be 3600 secs.
+#   11/30/04  RJB   Found a bug that -s 0 option was ignored.
+#   06/06/07  RJB   Made the password prompt expression be password.*:.
+#		    Added -x option.
+#   04/04/08  RJB   Added -T timeout option and updated usage statement.
+#   10/27/09  RJB   Made cmd exit with exit code of spawned command.
+#   01/24/10  RJB   Changed permission denied message when no password has been
+#		    sent.
+#
+#------------------------------------------------------------------------------
+
+
+use Expect;
+use Getopt::Std;
+
+
+sub usage() {
+  warn "Usage: $0 [-v|-s #] [-t secs] [-T secs] [-o #,...] command [command-args...]\n";
+  exit(-1);
+}
+
+
+
+#
+# Handle all args and command line
+#
+getopts("vd:s:xo:t:T:") or usage;
+
+if ($opt_o) {
+  @order = split(/,/, $opt_o);
+} else {
+  @order = (1,1,1,1,1,1,1,1,1,1);
+}
+
+$supress = 1;
+if ($opt_v) {
+  $supress = 0;
+}
+if (defined $opt_s) {
+  $supress = $opt_s;
+}
+
+$timeout1 = 10;
+$timeout2 = 3600;
+if ($opt_t) {
+  $timeout1 = $opt_t;
+}
+if ($opt_T) {
+  $timeout2 = $opt_T;
+}
+
+if (!@ARGV) {
+  usage;
+}
+
+if ($opt_d) {
+  $supress = 0;
+  warn "Debug: cmd to spawn = @ARGV\n";
+  warn "Debug: order of passwd prompts = @order\n";
+}
+
+
+
+#
+# Get all passwords off of STDIN (one per line)
+#
+foreach $i (sort @order) {
+  next if $passwd[$i];
+  warn "Debug: Enter passwd #$i: " if $opt_d;
+  chomp($passwd[$i] = <STDIN>);
+}
+
+
+#
+# Display all the passwords back if debug
+#
+if ($opt_d) {
+  foreach $i (1..$#passwd) {
+    if ($passwd[$i]) {
+      warn "Debug: password #$i = $passwd[$i]\n";
+    } else {
+      warn "Debug: password #$i = undefined\n";
+    }
+  }
+}
+
+
+warn "Debug: supressing output before password prompt #$supress\n" if $opt_d;
+if ($supress >= 1) {
+  $Expect::Log_Stdout = 0;
+}
+
+
+if ($opt_d >= 2) {
+  # Don't turn on expect debugging until debug level > 1
+  $Expect::Debug = $opt_d-1;
+}
+
+
+#
+# Spawn the specific command
+#
+$exp = new Expect;
+if (!$exp->spawn(@ARGV)) {
+  warn "Error: can't spawn: $cmd\n";
+  exit(5);
+}
+
+
+
+#
+# Handle looking for password prompts and answer then in the specified order
+#
+$count    = 1;
+$spawn_ok = 0;
+
+foreach $i (@order) {
+  print STDERR "Debug: waiting for password prompt... will use password #$i\n" if $opt_d;
+
+  $exp->expect($timeout1,
+	[ '(yes/no)'	=> sub { my $fh = shift;
+				 $fh->send("yes\r");
+				 $spawn_ok = 1;
+				 exp_continue;
+				} ],
+        [ qr/password.*: */i
+			=> sub { my $fh = shift;
+				 $fh->send("$passwd[$i]\r");
+				 $spawn_ok = 1;
+				} ],
+	[ qr/permission denied/i
+			=> sub { if ($spawn_ok) {
+				   warn "Error: got 'Permission denied' message\n";
+				 } else {
+				   warn "Error: got 'Permission denied' message (before sending password)\n";
+				 }
+				 $errflag = 1;
+				} ],
+	[ 'incorrect password'
+			=> sub { warn "Error: got 'incorrect password' message\n";
+				 $errflag = 1;
+				} ],
+	[ 'Authentication is denied'
+			=> sub { warn "Error: got 'Authentication is denied' message\n";
+				 $errflag = 1;
+				} ],
+	[ timeout	=> sub { warn "Error: expect timed out ($timeout1 seconds)\n";
+				 $errflag = 1;
+				} ],
+	[ eof		=> sub { if ($spawn_ok) {
+				   $exp->hard_close();
+				   $rc = $exp->exitstatus();
+				   exit($rc>>8);
+				 } else {
+				   $errflag = 1;
+				 }
+				} ],
+	);
+
+
+  if ($errflag) {
+    exit(-1);
+  }
+
+  # Usually there is a newline sitting there waiting to be read after a
+  # passwd prompt which causes an extra blank line on the screen this 
+  # surpresses it.
+  $exp->expect(1,
+	[ '\r\n' 	=> sub { } ],
+	);
+
+  #
+  # Handle extra newline suppression
+  #
+  if ($opt_x) {
+    $exp->expect(1,
+	[ '\r\n' 	=> sub { } ],
+	);
+  }
+
+
+  # Turn STDOUT logging back on if got pass specified number of prompts
+  if ($count >= $supress) {
+    $exp->log_stdout(1);
+  }
+
+  $count++;
+  $timeout1 = $timeout2; # By default initial password timeout is different
+			 # then rest. Use of -t option makes them all the same.
+}
+
+
+#
+# Wait for EOF
+#
+$exp->expect(undef,
+	[ eof		=> sub { } ]
+	);

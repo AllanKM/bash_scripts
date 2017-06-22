@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ***************************************************************** -->
+<!--                                                                   -->
+<!-- Licensed Materials - Property of IBM                              -->
+<!--                                                                   -->
+<!-- 5724-S68                                                          -->
+<!--                                                                   -->
+<!-- Copyright IBM Corp. 2001, 2007  All Rights Reserved.              -->
+<!--                                                                   -->
+<!-- US Government Users Restricted Rights - Use, duplication or       -->
+<!-- disclosure restricted by GSA ADP Schedule Contract with           -->
+<!-- IBM Corp.                                                         -->
+<!--                                                                   -->
+<!-- ***************************************************************** -->
+<config xmlns="http://www.ibm.com/LotusConnections-config" xmlns:sloc="http://www.ibm.com/service-location" xmlns:tns="http://www.ibm.com/LotusConnections-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="LotusConnections" xsi:schemaLocation="http://www.ibm.com/LotusConnections-config LotusConnections-config.xsd">
+
+	<sloc:serviceReference enabled="true" href="https://SITE/activities" person_card_service_name_js_eval="generalrs.label_personcard_activitieslink" person_card_service_url_pattern="/service/html/mainpage#dashboard%2Cmyactivities%2Cemail%3D{email}" serviceName="activities" ssl_enabled="true" ssl_href="https://SITE/activities"/>
+
+	<sloc:serviceReference enabled="true" href="https://SITE/blogs" person_card_service_name_js_eval="generalrs.label_personcard_blogslink" person_card_service_url_pattern="/roller-ui/blog/{email}" serviceName="blogs" ssl_enabled="true" ssl_href="https://SITE/blogs"/>
+
+	<sloc:serviceReference enabled="true" href="https://SITE/communities" person_card_service_name_js_eval="generalrs.label_personcard_communitieslink" person_card_service_url_pattern="/service/html/allcommunities?email={email}" serviceName="communities" ssl_enabled="true" ssl_href="https://SITE/communities"/>
+
+	<sloc:serviceReference cache_index_capacity="300" custom_user_id_attribute="IBMuniqueIdentifier" serviceName="directory" sso_ltpa_token_enabled="true" waltz_communities_integration_auth="SSO" waltz_communities_integration_enabled="true" waltz_communities_integration_href="https://SITE/communities/dsx/" waltz_profiles_integration_auth="SSO" waltz_profiles_integration_enabled="true" waltz_profiles_integration_href="https://SITE/profiles/dsx/"/>
+	
+	<sloc:serviceReference enabled="true" href="https://SITE/dogear" person_card_service_name_js_eval="generalrs.label_personcard_dogearlink" person_card_service_url_pattern="?email={email}" serviceName="dogear" ssl_enabled="true" ssl_href="https://SITE/dogear"/>
+
+	<sloc:serviceReference enabled="true" href="https://SITE/profiles/ibm_semanticTagServlet" serviceName="personTag" ssl_enabled="true" ssl_href="https://SITE/profiles/ibm_semanticTagServlet"/>
+
+	<sloc:serviceReference enabled="true" href="https://SITE/profiles" person_card_service_name_js_eval="generalrs.label_personcard_profilelink" person_card_service_url_pattern="/html/simpleSearch.do?searchFor={email}&amp;searchBy=email" serviceName="profiles" ssl_enabled="true" ssl_href="https://SITE/profiles"/>
+    
+    <sloc:serviceReference enabled="false" href="admin_replace" person_card_service_name_js_eval="generalrs.label_personcard_quickrlink" person_card_service_url_pattern="/allfiles/people/{email}" serviceName="quickr" ssl_enabled="false" ssl_href="admin_replace"/>
+
+	<sloc:serviceReference enabled="false" href="admin_replace" serviceName="sametimeLinks" ssl_enabled="false" ssl_href="admin_replace">
+		<anonymousLogin enabled="false"/>
+	</sloc:serviceReference>
+	
+	<sloc:serviceReference enabled="true" href="https://SITE/homepage" serviceName="homepage" ssl_enabled="true" ssl_href="https://SITE/homepage"/>
+
+	<style enabled="true">
+		<!-- leave "admin_replace" for any fields you do not wish to override -->
+		<header url="http://SITE/common/v16/ibmlc/header.html"/>
+		<footer url="http://SITE/common/v16/ibmlc/footer.html"/>
+		<footer url="admin_replace"/>
+		<css url="admin_replace"/>
+		<cssRtl url="admin_replace"/>
+		<images url="admin_replace"/>
+		<caching value="private, max-age=3601"/>
+	</style>
+	
+    <!-- Uncomment and replace hostname as appropriate to enable virus scanning -->
+    <!--avFilter class="AVScannerICAP">
+        <property>av.scanner.servers=myscanner.host.com</property>
+        <property>exception.on.virus=yes</property>
+        <property>av.scanner.id=symantec</property>
+        <property>av.scanner.symantec=com.ibm.sn.av.icap.AVScannerICAP</property>
+    </avFilter-->
+
+	<forceConfidentialCommunications enabled="true"/>
+
+</config>

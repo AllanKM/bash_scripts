@@ -1,0 +1,243 @@
+#!/usr/bin/perl
+#
+# CommandExit example for simply compressing a non-compressed file
+# Clean files older than retention days old if:
+#   - specified on the command line with -r
+#     OR
+#   - number of days appended to script name and no controlling tty
+# Success/Failure logged to stdout and syslog (daemon.notice)
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Gather current working directory
+my $mycwd = getcwd;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mydname = $0;
+$mydname =~ s%/$mysname$%%;
+$mydname = $mycwd if ($mydname eq "" || $mydname eq ".");
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Set defaults
+my $findcmd = "/usr/bin/find";
+my $compresscmd = "/usr/bin/gzip";
+my $compressargs = "-9";
+my $compressflg = 0;
+
+# Set default retention period to find and remove old files
+my $ddays = 0;
+if ($mysname =~ m/^.*?(\d+)$/) {
+  $ddays = $1;
+  $ddays = 0 unless ($tty =~ /vty|UNKNOWN/);
+}
+
+# Obtain arguments
+my $rc = &main::GetOptions(
+  # Script options
+  'c|nocompress',
+  'l|nosyslog',
+  'r|retain:i',
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $days = $main::opt_r || $ddays;
+
+# Validate options
+
+# Loop on filenames to process
+my $file;
+foreach $file (@ARGV) {
+
+  next if (! -e $file);
+
+  # Fully qualify pathname of file
+  $file = "$mycwd/$file" if ($file !~ /^\//);
+  $file =~ s%\/\/%/%g;
+
+  # Determine basename and dirname
+  my $base = $file;
+  $base =~ s%^.*/%%;
+  my $dir = $file;
+  $dir =~ s%\/$base$%%;
+  if (! -d $dir) {
+    logit($mysname,2,"Base directory \'%s\' not found for file \'$file\'",
+          $dir,$file);
+    next;
+  }
+
+  # Move the file to the dated directory
+  my $rc = 0;
+
+  # Compress the file, unless the -c option is specified
+  $compressflg = 0;
+  if (! defined $main::opt_c &&
+      -x $compresscmd &&
+      $base !~ /\.(Z|gz|bz2)$/) {
+    $compressflg = 1;
+    system($compresscmd,$compressargs,$file);
+    $rc = $? >> 8;
+    if ($rc != 0) {
+      logit($mysname,10,"daemon","notice",
+            "Unable to compress \'$file\' ($rc): $!");
+    }
+  }
+
+  # Clean up old files (if requested)
+  my $lcnt = 0;
+  my $rcnt = 0;
+  if ($dir eq $mydname && $days > 0) {
+    logit($mysname,2,"Unable to clean self directory");
+    $days = 0;
+  }
+  if ($days > 0) {
+    my @lst = ();
+    my $cmd = "$findcmd $dir -type f -mtime +$days -print 2>/dev/null";
+    if (open(CMD,"$cmd|")) {
+      chomp(@lst = <CMD>);
+      close(CMD);
+    }
+    $lcnt = @lst;
+    if ($lcnt > 0) {
+      $rcnt = unlink(@lst);
+      if ($lcnt != $rcnt) {
+        logit($mysname,2,"Unable to remove all $days old files ($lcnt!=$rcnt)");
+      }
+    }
+  }
+
+  # Log success/failure to syslog
+  my $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " Compress: ".($compressflg ? "Y" : "N");
+  if ($days > 0) {
+    $out .= " Days: $days Del: $lcnt";
+    $out .= "($rcnt)" if ($lcnt != $rcnt);
+  }
+  if ($rc == 0) {
+    $out .= " succeeded";
+  } else {
+    $out .= " failed";
+  }
+  if ($main::opt_l) {
+    logit($mysname,1,$out);
+  } else {
+    logit($mysname,9,"daemon","notice",$out);
+  }
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-c][-d datedir][-l][-r days] filename [filename ...]\n",
+        "  where: filename - full path to log file\n",
+        "         datedir  - date subdirectory format (default: %Y/%m/%d)\n",
+        "         days     - days to retain (default: $ddays; 0=do not clean)\n",
+        "         -c       - do not compress the log file\n",
+        "         -l       - do not log to syslog\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+print "$main::running_under_some_shell\n";
+print "$main::opt_c\n";
+print "$main::opt_l\n";
+print "$main::opt_r\n";

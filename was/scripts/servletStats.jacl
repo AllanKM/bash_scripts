@@ -1,0 +1,87 @@
+#*******************************************************************************************************
+# servletStats.jacl
+#
+#   Author: James Walton
+#   Initial Revision Date: 01/28/2008
+#*******************************************************************************************************
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+set printCSV 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+	set arg [lindex $argv $i]
+	if {$arg == "-server"} {
+		if {[incr i] < $argc} {
+			set appServer [lindex $argv $i]
+		} else {
+			set argerr 1
+		}
+	} elseif {$arg == "-node"} {
+		if {[incr i] < $argc} {
+			set nodeName [lindex $argv $i]
+		} else {
+			set argerr 2
+		}
+	} elseif {$arg == "-csv"} {
+		set printCSV 1
+	} else {
+		set argerr 3
+	}
+}
+
+if {![info exists appServer]} { set argerr 4 }
+
+if {$argerr} {
+	puts "Invalid command line invocation (reason code $argerr). Usage:"
+	puts "   wsadmin -f servletStats.jacl -server <appServerName> \[-node <nodeName>\] \[-csv\]"
+	puts "Given an application server name <appServerName>, this script will display all"
+	puts "servlets (with web module name) and their related statistics, such as response time.\n"
+	puts "** Adding the -csv flag for operations noted will print the output in CSV (comma separated) format."
+	exit
+}
+
+if {$printCSV} {
+	puts "$appServer"
+	puts "WebModule,Servlet,AvgResponse,TotalRequests,ConcurrentRequests,MaxConcurrentRequests,ErrCount"
+} else {
+	puts "====================================================================================================="
+	puts "                     :                      : Avg Response : Concurrent : Max Concurrent :"
+	puts "Web Module           : Servlet name         : Time (ms)    :  Requests  :    Requests    : Err Count"
+	puts "====================================================================================================="
+}
+if {[info exists nodeName]} {
+	set servletList [$AdminControl queryNames node=$nodeName,process=$appServer,type=Servlet,*]
+} else {
+	set servletList [$AdminControl queryNames process=$appServer,type=Servlet,*]
+}
+foreach servlet $servletList {
+	set srvFullName [$AdminControl getAttribute $servlet name]
+	set wmName [lindex [split $srvFullName "#"] 1]
+	set srvName [lindex [split $srvFullName "#"] 2]
+	set srvStats [$AdminControl getAttribute $servlet stats]
+	set theStats [lindex $srvStats [lsearch -regexp $srvStats "ServiceTime"]]
+	## Servlet response time average
+	set iAvg [expr ([lsearch -regexp $theStats "AverageStatistic"] + 1)]
+	set srvAvg [lindex $theStats $iAvg]
+	## Servlet total requests
+	set iCnt [expr ([lsearch -regexp $theStats "ConcurrentRequest"] - 1)]
+	set srvReq [lindex $theStats $iCnt]
+	## Servlet error count
+	set iErr [expr ([llength $theStats] - 1)]
+	set srvErr [lindex $theStats $iErr]
+	## Servlet concurrent request max
+	set iCRMax [expr ([lsearch -regexp $theStats "RangeStatistic"] + 2)]
+	set srvCRMax [lindex $theStats $iCRMax]
+	## Servlet concurrent request current
+	set iCRCur [expr ([lsearch -regexp $theStats "RangeStatistic"] + 3)]
+	set srvCRCur [lindex $theStats $iCRMax]
+	
+	if {$printCSV} {
+		puts "$wmName,$srvName,$srvAvg,$srvCRCur,$srvCRMax,$srvErr"
+	} else {
+		puts "$wmName  :  $srvName  :  $srvAvg  :  $srvCRCur  :  $srvCRMax  :  $srvErr"
+	}
+}

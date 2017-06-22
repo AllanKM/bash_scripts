@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ***************************************************************** -->
+<!--                                                                   -->
+<!-- Licensed Materials - Property of IBM                              -->
+<!--                                                                   -->
+<!-- 5724-E76                                                          -->
+<!--                                                                   -->
+<!-- Copyright IBM Corp. 2008  All Rights Reserved.                    -->
+<!--                                                                   -->
+<!-- US Government Users Restricted Rights - Use, duplication or       -->
+<!-- disclosure restricted by GSA ADP Schedule Contract with           -->
+<!-- IBM Corp.                                                         -->
+<!--                                                                   -->
+<!-- ***************************************************************** -->
+
+<!-- 5724-S68                                                          -->
+
+
+<!-- ************************************************************************************
+	This proxy configuration file handles Ajax request proxying for the Home Page component.
+	
+	The Home Page Ajax proxy is located at /homepage/web/proxy
+	
+	The default policy configuration of the Home Page Ajax proxy forwards all 
+	requests and includes the jsessionid, ltpa and ltpa2 tokens. As an out of the
+	box configuration this allows the shipped Home Page widgets to communicate with
+	the parent services and ensure that Single Sign On between them is in place.
+	
+	For secure deployments, this proxy configuration should be modified to
+	specifically lock down the target URLs that Home Page widgets should communicate
+	with. A sample set of mappings is included (and commented out) below. Administrators
+	should modify this configuration file to disable the standard policy and uncommment
+	and modify the locked down policy to suit the specifics of their deployment.
+	
+	If you utilise another Single Sign On solution other than WebSphere LTPA then you
+	will need to ensure that any SSO cookies are forwarded to URLs representing 
+	the Lotus Connections components. For instance, if you use Netegrity Siteminder then
+	the SMSESSION cookie must be configured to be forwarded by the proxy.
+	
+	************************************************************************************************ -->
+<config id="proxy-homepage-config"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:noNamespaceSchemaLocation="proxy-config.xsd"
+    xmlns:proxy="http://www.ibm.com/xmlns/prod/websphere/featurepack/v6.1/proxy-config">
+	<proxy-rules>
+	
+		<!-- This is the default set of mappings which allow all http and https traffic
+			to be proxied. Comment out these lines to restrict proxying
+		<proxy:mapping contextpath="/http/*" />
+		<proxy:mapping contextpath="/https/*" />
+                -->
+
+                <proxy:mapping contextpath="/http/www.ibm.com/*" />
+                <proxy:mapping contextpath="/https/www.ibm.com/*" />
+                <proxy:mapping contextpath="/http/www-951.ibm.com/*" />
+                <proxy:mapping contextpath="/https/www-951.ibm.com/*" />
+
+		<!-- These mappings define a locked down default configuration to allow widgets to
+			communicate only with Lotus Connections features. The context path should be defined
+			as follows:
+			
+			contextpath="/http/<feature_host>/<feature_path>/*	
+		-->
+		<!-- 
+			<proxy:mapping contextpath="/http/www.acme.com/activities/*"/>
+			<proxy:mapping contextpath="/https/www.acme.com/activities/*"/>
+			<proxy:mapping contextpath="/http/www.acme.com/blogs/*"/>
+			<proxy:mapping contextpath="/https/www.acme.com/blogs/*"/>
+			<proxy:mapping contextpath="/http/www.acme.com/communities/*"/>
+			<proxy:mapping contextpath="/https/www.acme.com/communities/*"/>
+			<proxy:mapping contextpath="/http/www.acme.com/dogear/*"/>
+			<proxy:mapping contextpath="/https/www.acme.com/dogear/*"/>
+			<proxy:mapping contextpath="/http/www.acme.com/profiles/*"/>	
+			<proxy:mapping contextpath="/https/www.acme.com/profiles/*"/>
+		-->
+
+		<!-- The allowAuthRequest attribute controls whether or not requests
+		that result in the target sending a 401 HTTP Basic Authentication challenge
+		will be sent back to the caller, allowing the caller to provide credentials. -->
+		<proxy:policy url="*" acf="none" allowAuthRequest="false">
+			<proxy:actions>
+				<proxy:method>GET</proxy:method>
+				<proxy:method>POST</proxy:method>
+				<proxy:method>PUT</proxy:method>
+				<proxy:method>DELETE</proxy:method>
+			</proxy:actions>
+			<proxy:cookies>
+				<proxy:cookie>SESSION_ibmpre_connections</proxy:cookie>
+				<proxy:cookie>LtpaToken</proxy:cookie>
+				<proxy:cookie>LtpaToken2</proxy:cookie>
+			</proxy:cookies>
+			<proxy:headers>
+				<proxy:header>User-Agent</proxy:header>
+				<proxy:header>Accept*</proxy:header>
+				<proxy:header>Content*</proxy:header>
+				<proxy:header>Authorization*</proxy:header>
+			</proxy:headers>
+		</proxy:policy>
+
+	</proxy-rules>
+</config>

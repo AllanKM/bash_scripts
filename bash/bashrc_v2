@@ -1,0 +1,34 @@
+# .bashrc that sets command prompt color to indicate EI zone and adds server information to Putty 
+# titlebar
+unset INPUTRC
+set -o emacs
+alias ll="ls -l"
+
+csv=`lssys -l realm,nodestatus,custtag -x csv $HOSTNAME | grep -v ^#`
+CUST=`echo $csv | cut -d, -f4`
+REALM=`echo $csv | cut -d, -f2`
+STATUS=`echo $csv | cut -d, -f3`
+TOK1=`echo $REALM | cut -c1-3`
+if [[ $TOK1 == "dmz" ]]
+then
+   PLEX=`echo $REALM | cut -d. -f4`
+   CUST="DMZ"
+else
+   PLEX=`echo $REALM | cut -d. -f3`
+fi
+case $PLEX in
+   p1) PLEX="Raleigh" ;;
+   p2) PLEX="St Louis" ;;
+   p3) PLEX="Boulder" ;;
+   *) PLEX="Unknown";;
+esac
+ZONE=`echo $REALM | cut -c1`
+case $ZONE in
+   b) ZONE_COLOR=34 ;;
+   y) ZONE_COLOR=33 ;;
+   g) ZONE_COLOR=32 ;;
+   d) ZONE_COLOR=31 ;;
+   *) ZONE_COLOR=37 ;;
+esac
+EI_TITLE="`hostname` Cust: $CUST Status: $STATUS Realm: $REALM Plex: $PLEX"
+export PS1="\[\e]2;${EI_TITLE}\a\]\[\e[${ZONE_COLOR};1m\u@\h:\w> \]\[\e[0m\]"

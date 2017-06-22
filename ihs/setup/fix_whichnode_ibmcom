@@ -1,0 +1,51 @@
+#!/bin/sh
+#---------------------------------------------------------------
+
+#if [ $# -eq 1 ]; then
+#  EVENT=$1
+#else [ $# -gt 0 ];
+#  echo ""
+#  echo " Missing parameters. Usage:"
+#  echo "  fix_whichnode <event>"
+#  echo ""
+#  exit
+#fi
+
+ECHO="/bin/echo"
+SHORTHOST=`/bin/hostname -s`
+
+EVENT=$1
+
+#case "$SHORTHOST" in
+#  px1*)
+#	PLEX=plex1
+#  ;;
+#  px2*)
+#	PLEX=plex2
+#  ;;
+#  px3*)
+#	PLEX=plex3
+#  ;;
+#  *)
+#	echo "no idea"
+#	exit 1
+#  ;;
+#esac
+#
+#LONGHOST=${SHORTHOST}e1.${PLEX}.event.ibm.com
+
+#EVENTLONG="www.$EVENT.org"
+
+$ECHO "Fixing Admin/whichnode"
+#rm -rf /www/$EVENT/htdocs/Admin/whichnode 
+#mkdir -p /www/$EVENT/htdocs/Admin
+#ln -sf /fs/common/htdocs/Admin/nodes/${LONGHOST} /www/$EVENT/htdocs/Admin/whichnode
+
+mkdir -p /www/projects/corporate/www/content/Admin
+rm -rf /www/projects/corporate/www/content/Admin/*
+ln -sf /fs/common/htdocs/Admin/nodes/$SHORTHOST /projects/corporate/www/content/Admin/whichnode
+echo "$SHORTHOST" > /fs/common/htdocs/Admin/nodes/${SHORTHOST}.txt
+ls -l /projects/corporate/www/content/Admin/whichnode
+chown pubinst.apps /fs/common/htdocs/Admin/nodes/${SHORTHOST}.txt
+chmod u+rw,g+rw,o+r /fs/common/htdocs/Admin/nodes/${SHORTHOST}.txt
+

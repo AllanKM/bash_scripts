@@ -1,0 +1,94 @@
+#!/bin/ksh
+
+#################################################################
+#
+#  This script synchs daedalus code and conf dirs.  It then calls
+#  The create_daedalus_dirs_std script to read the customers
+#  configuration file and create the necessary directories
+#
+#################################################################
+
+echo "Setting umask"
+umask 002
+
+#Default values
+CUSTOMER_TAG=""
+CUSTOMER_ENV=""
+PUBCONFIG=""
+LOCAL_DIST=""
+
+#Process command-line options
+until [ -z "$1" ] ; do
+        case $1 in
+                cust=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTOMER_TAG=$VALUE; fi ;;
+                env=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTOMER_ENV=$VALUE; fi ;;
+                config=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then PUBCONFIG=$VALUE; fi ;;
+                ldist=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then LOCAL_DIST=$VALUE; fi ;;
+                *)      print -u2 -- "#### Unknown argument: $1"
+                        print -u2 -- "#### Usage: $0 [ cust=< Customer Tag > ]"
+                        print -u2 -- "####           [ env=< Customer Env > ] [ config=< Pub config file > ]"
+                        print -u2 -- "####           [ ldist=< Indicates rather this is a local distributor > ]"
+                        exit 1
+                        ;;
+        esac
+        shift
+done
+
+echo "Checking to ensure initial install of daedalus code was performed"
+if [ ! -e /etc/rc.daedalus -o ! -d /opt/IBM/daedalus_dikran ]; then
+  echo "   Initial install of daedalus code not completed, aborting"
+  exit 2
+fi
+
+echo "Setting base dir"
+if [ -e /lfs ]; then
+  echo "   Using /lfs for publishing files"
+  BASEDIR="/lfs"
+elif [ -e /www ]; then
+  echo "   Using /www for publishing files"
+  BASEDIR="/www"
+else
+  echo "   Local filesystem to use as base dir not detected, aborting"
+  exit 3
+fi
+
+echo "Determine which standard to follow"
+if [[ -d /fs/${CUSTOMER_TAG} && ${CUSTOMER_ENV} = "" ]]; then
+   GLOBAL_BASE="/fs/${CUSTOMER_TAG}"
+elif [[ -d /fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG} && ${CUSTOMER_ENV} != "" ]]; then
+   GLOBAL_BASE="/fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG}"
+else
+   echo "Can not find global master base directory"
+   echo "Aborting daedalus sync"
+   exit 1
+fi
+
+echo "Check to make sure requested config file exist"
+CONFIGFILE=`echo $PUBCONFIG | sed s/[/]/#/g | awk -F"#" '{print $NF}'`
+if [[ $LOCAL_DIST == "LDist" ]]; then
+  CONFIGFILE=`echo ${CONFIGFILE} | cut -c 3-`
+  SITE=`/lfs/system/tools/configtools/get_plex.sh`
+  if [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  fi
+  CONFIGFILE=${SITE}${CONFIGFILE}
+fi
+
+if [[ ! -f ${GLOBAL_BASE}/config/${CONFIGFILE} ]]; then
+   echo "Requested config file does not exist in the global master"
+   echo "Aborting daedalus sync"
+   exit 1
+fi
+
+echo "Sync daedalus code"
+${BASEDIR}/system/tools/configtools/filesync /fs/system/images/publishing/daedalus_dikran/ /opt/IBM/daedalus_dikran/ avc 1 1
+
+echo "Sync customer files"
+if [ ! -d /projects/$CUSTOMER_TAG ]; then
+  mkdir /projects/$CUSTOMER_TAG
+fi
+${BASEDIR}/system/tools/configtools/filesync ${GLOBAL_BASE}/config/${CONFIGFILE} /projects/${CUSTOMER_TAG}/config/ "avc --exclude=RCS" 1 0
+
+echo "Calling create_daedalus_dirs_std"
+${BASEDIR}/system/tools/daedalus/setup/create_daedalus_dirs_std $LOCAL_DIST $PUBCONFIG
+

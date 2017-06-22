@@ -1,0 +1,36 @@
+#!/bin/ksh
+# resume a held replication connection
+
+instance=$1
+user="cn=root"
+password=$2
+if [ -z $instance ]; then
+	echo "instance name must be supplied"
+	exit
+fi
+if [ ! -d /db2_database/${instance}/idsslapd-${instance} ]; then
+        echo ldap instance ${instance} not found
+        exit
+fi
+if [ -z $password ]; then
+        echo Password for instance ${instance} user $user required as 2nd parameter
+        exit
+fi
+
+while read line; do
+   if [[ "$line" = "dn: "* ]]; then
+      if [[ "$line" = "dn: cn=ssl"* ]]; then
+         gotstanza=1
+      else
+         unset gotstanza
+      fi
+    elif [[ "$line" = "ibm-slapdsecureport:"* && -n "$gotstanza" ]]; then
+      port=$(set -- $line; print $2)
+    elif [[ "$line" = "ibm-slapdipaddress:"* ]]; then
+      host=$( set -- $line; print $2 )
+    elif [[ "$line" = "ibm-slapdserverid:"* ]]; then
+      serverid=$( set -- $line; print $2 )
+    fi
+done < /db2_database/$instance/idsslapd-$instance/etc/ibmslapd.conf
+
+sudo ldapexop -h $host -p ${port} -K /db2_database/${instance}/idsslapd-${instance}/etc/ldapauth.kdb -D "${user}" -w ${password}  -op controlrepl -action resume -rc "o=ibm,c=us"

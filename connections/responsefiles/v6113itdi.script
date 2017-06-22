@@ -1,0 +1,64 @@
+################################################################################
+# Update Installer, version 1.2.1.6
+# Response file created Jun 14, 2008 7:50:54 PM.
+# For more information, see the Update Installer User's Guide.
+################################################################################
+
+
+################################################################################
+# -uuid <uuid>
+# Identifies the 32-character UUID of the offering that will be updated by Update Installer.
+# If more than one instance of the offering is installed, the -discriminant
+# option is required.
+# -discriminant <discriminant>
+# Identifies the discriminant that uniquely identifies an installed instance
+# of the offering to Solution Install.
+#
+# uuid FADDBA0181B51D9316EF30CC8EB4700D = IBM Tivoli Directory Integrator v6.1.1 (6.1.1.0)
+# Offering Details:
+# 
+#  Product:
+#    IBM Tivoli Directory Integrator v6.1.1
+# Version:
+#    6.1.1.0
+# Release Date:
+#    Feb 7, 2007
+# Discriminant:
+#    /opt/IBM/TDI/V6.1.1
+# Installation Date:
+#    Jun 13, 2008
+# Features Installed:
+#    Runtime Server
+#    Javadocs (TDI API reference) 
+#    Examples (TDI Example Configs) 
+#   
+################################################################################
+
+-uuid FADDBA0181B51D9316EF30CC8EB4700D
+-discriminant "/opt/IBM/TDI/V6.1.1"
+
+
+################################################################################
+# -mdvFile <mdv-file-list>
+# Identifies one or more maintenance package, separated by
+# spaces, to be installed or uninstalled by Update Installer.
+#
+# -mdvFile /fs/system/images/ldap/tdi6.1.1/fixes/TDI_MAIN_IU.jar
+# Maintenance Details:
+# 
+#  Maintenance Package Name:
+#    IBM Tivoli Directory Integrator v6.1.1 - FP0003
+#  Version:
+#    6.1.1.3
+#  Release Date:
+#    Mar 12, 2008
+#  Type:
+#    FixPack
+#  Applicable Products:
+#    IBM Tivoli Directory Integrator v6.1.1
+#  
+################################################################################
+
+-mdvFile "/fs/system/images/ldap/tdi6.1.1/fixes/TDI_MAIN_IU.jar"
+
+

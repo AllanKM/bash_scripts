@@ -1,0 +1,4 @@
+/db2_database/lcibmdb/sqllib/db2dump/db2diag.log {
+	        weekly
+	        rotate 9
+	}

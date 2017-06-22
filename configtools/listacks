@@ -1,0 +1,27 @@
+#!/usr/local/bin/perl -w
+use strict;
+use Term::ANSIColor qw(:constants);
+$Term::ANSIColor::AUTORESET = 1;
+use Data::Dumper;
+use Sys::Hostname;
+
+my @args = ( '/opt/IBM/ITMscripts/OmniQuery',
+   '-noalerts',
+   '-noheader',
+   '-nototals',
+   '-acklist EI_AckName,OwnerUID,EI_AckEndTime,EI_Node,EI_Summary,EI_AlertKey',
+   '-delimiter ";"' );
+
+my $cmd = join(" ",@args);
+$ARGV[0]=hostname if defined $ARGV[0] && $ARGV[0] eq "-n";   
+my @rows; 
+open CMD, "$cmd |";
+while ( <CMD> ) {
+   push @rows, [ split(/;/,$_) ] if ! $ARGV[0] || $_ =~/$ARGV[0]/i;
+}
+close CMD;
+
+foreach my $row ( sort {$b->[2] cmp $a->[2]} @rows ) {
+   printf "%s%-60.60s | %-20s | %s\n\t%s%s | %s%s | %s%s",CYAN,$row->[0],$row->[1],$row->[2],GREEN,$row->[3],WHITE,$row->[4],YELLOW,$row->[5];
+}
+print RESET;

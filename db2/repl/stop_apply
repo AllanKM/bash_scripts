@@ -1,0 +1,12 @@
+#!/bin/ksh
+
+if [[ $# -eq 0 ]]
+  then
+    print "Usage: $(basename $0) ApplyQual"
+    exit -1
+fi
+
+
+AQ="$1"
+
+asnastop $AQ

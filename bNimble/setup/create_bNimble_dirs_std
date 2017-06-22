@@ -1,0 +1,185 @@
+#!/bin/ksh
+
+##########################################################
+#
+# This script is use to read a bNimble config, determine
+# what directories need to be created, and creates them.  
+# It also checks if this is an ssl enabled config and if
+# it is, checks to see if the .bNimble file is create properly.
+# It calls a vi session if not.  This script is
+# only ran after the initialize and sync scripts.
+#
+##########################################################
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 3 ]; then
+  BNIMBLE_VERSION=$1
+  PUBCONFIG=$2
+  USER_ID=$3
+elif [ $# -eq 4 -a $1 -a $1 == "LDist" ]; then
+  LOCAL_DIST=$1
+  BNIMBLE_VERSION=$2
+  SITE_PUBCONFIG=$3
+  USER_ID=$4
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."
+  echo "   Format is <local_distributor> <bNimble_version>"
+  echo "   <site_pub_config> <user id>"
+  echo "                        OR"
+  echo "   Format is <bNimble_version> <pub_config> <user_id>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   Script parameters were not added to configuration"
+  echo "   script for this event."
+  echo "   Format is <local_distributor> <bNimble_version>"
+  echo "   <site_pub_config> <user_id>"
+  echo "                        OR"
+  echo "   Format is <bNimble_version> <pub_config> <user_id>"
+  echo ""
+  exit 1
+fi
+
+if [ $LOCAL_DIST ]; then
+  SITE=`/lfs/system/tools/configtools/get_plex.sh`
+  if [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  fi
+  CONFIGFILEPATH=`echo $SITE_PUBCONFIG | awk -F / {'print "/" $2 "/" $3 "/" $4 "/"'}`
+  CONFIGFILE=`echo $SITE_PUBCONFIG | awk -F / {'print $NF'} | cut -c 3-`
+  PUBCONFIG=${CONFIGFILEPATH}${SITE}${CONFIGFILE}
+fi
+
+echo "Checking if bNimble code and customer files exist"
+if [ -d /projects/$CUSTOMER_TAG ]; then
+  if [ ! -f $PUBCONFIG ]; then
+    echo "   Customer files have been installed, but"
+    echo "    requested config file is not present, aborting"
+    exit 2
+  fi
+else
+  echo "   Customer files have not been installed, aborting"
+  exit 2
+fi
+
+if [ ! -e /etc/rc.bNimble -o ! -d /opt/IBM/$BNIMBLE_VERSION ]; then
+  echo "   Base bNimble code not installed, aborting"
+  exit 2
+fi
+
+echo "Checking config for new bNimble directories"
+/etc/rc.bNimble print ${PUBCONFIG} | grep -E 'home|Disk-Queue-Directory|Document-Root|Backup-Root' | awk '{print $3}' > /tmp/init.$$
+
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+  if [ ! -d $DIRECTORY ]; then 
+    echo "   Creating $DIRECTORY"
+    mkdir -p $DIRECTORY
+    if [ $? -eq 1 ]; then
+      echo "      $0: Unable to create $DIRECTORY"
+    fi
+  fi
+done
+
+rm -f /tmp/init.$$
+
+echo "Checking to see if this is a ssl or hybrid ssl install"
+SSL_TYPE=`cat $PUBCONFIG | grep "^#.*param.*USE_SSL" | awk {'print $NF'}`
+
+if [ $SSL_TYPE == "true" -o $SSL_TYPE == "hybrid" ]; then
+  echo "   This confg supports ssl, checking to see if .bNimble file"
+  echo "     exits and rather there is an entry for the keystore"
+
+  KEYSTORE=`cat $PUBCONFIG | grep "#.*param.*KEYSTORE" | awk {'print $NF'} | awk -F / {'print $NF'}`
+  TRUSTSTORE=`cat $PUBCONFIG | grep "#.*param.*TRUSTSTORE" | awk {'print $NF'} | awk -F / {'print $NF'}`
+
+  if [ ! -d /home/$USER_ID ]; then
+    echo "   Creating $USER_ID home dir"
+    mkdir -p /home/$USER_ID
+  fi
+
+  if [ ! -f /home/${USER_ID}/.bNimble ]; then
+    echo "   Copying storepass template to $USER_ID home dir"
+    cp /lfs/system/tools/bNimble/conf/storepass_template /home/$USER_ID/.bNimble
+  fi
+
+  LINE_COUNT=`cat /home/${USER_ID}/.bNimble | grep -E "${KEYSTORE}|${TRUSTSTORE}" | wc -l`
+
+  if [ $LINE_COUNT -eq 0 -a $TRUSTSTORE != $KEYSTORE ]; then
+    echo "   Neither keystore passwords are present in .bNimble file"
+    echo "     Lets enter the required info"
+    echo ""
+    echo "##############################################################"
+    echo ""
+    echo "The following are prompts for the missing keystore passwords"
+    echo ""
+
+    echo "Enter storepass for $KEYSTORE => "
+    read ANSWER
+    echo "keystore $KEYSTORE storepass $ANSWER" >> /home/${USER_ID}/.bNimble
+    echo ""
+    echo "Enter storepass for $TRUSTSTORE =>"
+    read ANSWER
+    echo "keystore $TRUSTSTORE storepass $ANSWER" >> /home/${USER_ID}/.bNimble 
+
+    echo ""
+    echo "##############################################################"
+    echo ""
+
+  elif [ $LINE_COUNT -eq 0 -a $TRUSTSTORE == $KEYSTORE ]; then
+    echo "   Both truststore and keystore are the same but there"
+    echo "     is no entry for the password in .bNimble file"
+    echo "     Lets enter the required info"
+    echo ""
+    echo "##############################################################"
+    echo ""
+    echo "The following are prompts for the missing keystore password"
+    echo ""
+
+    echo "Enter storepass for $KEYSTORE => "
+    read ANSWER
+    echo "keystore $KEYSTORE storepass $ANSWER" >> /home/${USER_ID}/.bNimble
+
+    echo ""
+    echo "##############################################################"
+    echo ""
+
+  elif [ $LINE_COUNT -eq 1 -a $TRUSTSTORE != $KEYSTORE  ]; then
+    echo "   One of the keystores not listed in the .bNimble"
+    echo "     file.  Lets enter the required info"
+    echo ""
+    echo "##############################################################"
+    echo ""
+    echo "The following are prompts for the missing keystore password"
+    echo ""
+
+    if [ `cat /home/${USER_ID}/.bNimble | grep -E \"${KEYSTORE}\" | wc -l` -eq 0 ]; then
+      echo "Enter storepass for $KEYSTORE => "
+      read ANSWER
+      echo "keystore $KEYSTORE storepass $ANSWER" >> /home/${USER_ID}/.bNimble
+    fi
+    if [ `cat /home/${USER_ID}/.bNimble | grep -E \"${TRUSTSTORE}\" | wc -l` -eq 0 ]; then
+      echo "Enter storepass for $TRUSTSTORE =>"
+      read ANSWER
+      echo "keystore $TRUSTSTORE storepass $ANSWER" >> /home/${USER_ID}/.bNimble 
+    fi
+
+    echo ""
+    echo "##############################################################"
+    echo ""
+
+  else
+    echo "   .bNimble file is complete"
+  fi
+else
+  echo "   This is not a ssl enabled config"
+fi
+

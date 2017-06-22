@@ -1,0 +1,143 @@
+#!/bin/ksh
+
+##################################################################
+#
+#  This script is used to set daedalus directory and file 
+#  ownership and permissions after an install or sync of daedalus 
+#  It first checks to make sure the user and group exist that
+#  you want to set ownership to and creates them if needed.
+# 
+##################################################################
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 4 ]; then
+  CUSTOMER_TAG=$1
+  PUBCONFIG=$2
+  USER_ID=$3
+  USER_GROUP=$4
+elif [ $# -eq 5 -a $1 -a $1 == "LDist" ]; then
+  LOCAL_DIST=$1
+  CUSTOMER_TAG=$2
+  SITE_PUBCONFIG=$3
+  USER_ID=$4
+  USER_GROUP=$5
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "  The incorrect number of arguments were added to "
+  echo "  configuration script for this event."
+  echo "  Format is [<local_dist>] <customer_tag> <pub_config>"
+  echo "  <user_id> <user_group>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "  Script parameters were"
+  echo "  not added to configuration script for this event."
+  echo "  Format is [<local_dist>] <customer_tag> <pub_config>"
+  echo "  <user_id> <user_group>"
+  echo ""
+  exit 1
+fi
+
+if [ $LOCAL_DIST ]; then
+  if [ `hostname -s | cut -c 1` == "a" ]; then
+    SITE=p1
+  elif [ `hostname -s | cut -c 1` == "d" ]; then
+    SITE=p2
+  elif [ `hostname -s | cut -c 1` == "g" ]; then
+    SITE=p3
+  elif [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  else
+    SITE=""
+  fi
+  CONFIGFILEPATH=`echo $SITE_PUBCONFIG | awk -F / {'print "/" $2 "/" $3 "/" $4 "/"'}`
+  CONFIGFILE=`echo $SITE_PUBCONFIG | awk -F / {'print $NF'} | cut -c 3-`
+  PUBCONFIG=${CONFIGFILEPATH}${SITE}${CONFIGFILE}
+fi
+
+echo "Checking if daedalus code and customer files exist"
+if [ -d /projects/$CUSTOMER_TAG ]; then
+  if [ ! -f $PUBCONFIG ]; then
+    echo "   Customer files have been installed, but"
+    echo "    requested config file is not present, aborting"
+    exit 2
+  fi
+else
+  echo "   Customer files have not been installed, aborting"
+  exit 2
+fi
+
+if [ ! -e /etc/rc.daedalus -o ! -d /opt/IBM/daedalus_dikran ]; then
+  echo "Base daedalus code not installed, aborting"
+  exit 2
+fi
+
+echo "Checking if log directory exist"
+if [ ! -d /logs/daedalus_dikran ]; then
+  echo "   Log directory does not exist, aborting"
+  exit 2
+fi
+
+echo "Checking existance of $USER_GROUP group creating it as needed"
+lsgroup $USER_GROUP > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  /fs/system/tools/auth/bin/mkeigroup -r local -f $USER_GROUP
+fi
+
+echo "Checking existance of $USER_ID user creating it as needed"
+id $USER_ID > /dev/null 2>&1
+if [  $? -ne 0 ]; then
+  /fs/system/tools/auth/bin/mkeiuser  -r local -f $USER_ID $USER_GROUP
+fi
+
+echo "Changing ownership and perms on $USER_ID home directory"
+chown -R ${USER_ID}.${USER_GROUP} /home/$USER_ID
+chmod 700 /home/$USER_ID
+
+echo "Changing ownership and perms of product files to be owned by root"
+echo "and group eiadm"
+chown -R root.eiadm /opt/IBM/daedalus_dikran   
+
+find /opt/IBM/daedalus_dikran -type d -exec chmod 775 {} \;
+find /opt/IBM/daedalus_dikran -type f -exec chmod 664 {} \;
+
+echo "Changing ownership/perms of config files to be owned by root/$USER_ID"
+echo "and group eiadm"
+chown root.eiadm /projects/${CUSTOMER_TAG}
+chown root.eiadm /projects/${CUSTOMER_TAG}/config
+chmod 775 /projects/${CUSTOMER_TAG}
+chmod 775 /projects/${CUSTOMER_TAG}/config
+chown root.eiadm ${PUBCONFIG}
+chmod 660 ${PUBCONFIG}
+
+echo "Changing ownership and perms of log dirs to be owned by $USER_ID"
+chown ${USER_ID}.eiadm /logs/daedalus_dikran
+chmod 750 /logs/daedalus_dikran
+chmod -R g-s /logs/daedalus_dikran
+chmod g+s /logs/daedalus_dikran
+if [ `ls -l /logs/daedalus_dikran/| grep -v "total 0" | wc -l` -gt 0 ]; then
+  chown -R ${USER_ID}.eiadm /logs/daedalus_dikran/*
+fi
+
+echo "Changing ownership and perms of directories specified in config"
+/etc/rc.daedalus print ${PUBCONFIG} | grep -E 'root|altroot' | grep -v 'root.*root' | grep -v 'root.*/savefile$' | awk '{print $3}' | sort | uniq > /tmp/init.$$
+
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+  echo "Acting on $DIRECTORY"
+  if [ -d $DIRECTORY ]; then
+    chown ${USER_ID}.${USER_GROUP} $DIRECTORY
+    chmod 755 $DIRECTORY
+    chmod g-s $DIRECTORY
+  else
+    echo "      $DIRECTORY does not exist"
+  fi
+done
+
+rm -f /tmp/init.$$

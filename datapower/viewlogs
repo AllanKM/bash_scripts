@@ -1,0 +1,15 @@
+#!/bin/ksh
+for f in *.log; do 
+	 grep -vE 'LDAP authentication: Could not bind|user\(admin\):|could not establish SSL for incoming connection|illegal char|peer did not send a certificate|Error parsing response|default rule|Compilation warning:|mismatched|compiling|arget\(eci-log\):' $f | \
+	#grep -vE 'LDAP authentication: Could not bind|user\(admin\):|illegal char|Error parsing response|default rule|Compilation warning:|mismatched|compiling|arget\(eci-log\):' $f | \
+	tac | \
+	sed '/\[notice\].*[Cc]onfiguration.*saved/q' | \
+	tac | \
+	sed -e '1i\
+	*****************************************************\
+	'$f'\
+	*****************************************************'    | \
+	less; 
+done
+	# sed 's/^.*\[notice\].*[Cc]onfiguration.*$/***** '$f' ****** /' | \
+	# sed 's/^.*Log has been archived successfully.*$/***** '$f' ****** /'  \

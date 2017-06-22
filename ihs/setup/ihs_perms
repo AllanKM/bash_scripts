@@ -1,0 +1,307 @@
+#!/bin/ksh
+
+# Set IHS permissions according to ITCS104 specifications
+# Set perms for base install and log directory
+
+#Default values
+DESTDIR=/usr/HTTPServer
+FULLVERSION=2.0.47.1
+
+uname -a | grep Linux
+
+if [[ "$?" -eq 0 ]]; then
+CHMOD="chmod "
+CHMODR="chmod -R "
+else
+CHMOD="chmod -h"
+CHMODR="chmod -hR"
+fi
+
+
+#process command-line options
+until [ -z "$1" ] ; do
+        case $1 in
+                root=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then DESTDIR=$VALUE; fi ;;
+                version=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then FULLVERSION=$VALUE; fi ;;
+                *)      print -u2 -- "#### Unknown argument: $1"
+                        print -u2 -- "#### Usage: $0 [ root=<IHS install root directory ] [ version=<desired IHS version> ]"
+                        exit 1
+                        ;;
+        esac
+        shift
+done
+
+ihs_perms_global ()
+{
+
+  $CHMOD  770 ${DESTDIR}/*
+  $CHMOD  660 ${DESTDIR}/version.signature
+  $CHMOD  660 ${DESTDIR}/_uninst/*
+  $CHMOD 775 ${DESTDIR}/bin/*
+  $CHMOD 660 ${DESTDIR}/bin/envvars ${DESTDIR}/bin/envvars-std
+  $CHMOD 660 ${DESTDIR}/build/*
+  $CHMOD 770 ${DESTDIR}/build/instdso.sh ${DESTDIR}/build/libtool
+  $CHMOD 660 ${DESTDIR}/conf/*
+  $CHMOD 660 ${DESTDIR}/deinstl/*
+  $CHMOD 660 ${DESTDIR}/error/*
+  $CHMOD 770 ${DESTDIR}/error/include
+  $CHMOD 660 ${DESTDIR}/error/include/*
+  $CHMOD 660 ${DESTDIR}/example_module/*
+  $CHMOD 660 ${DESTDIR}/icons/*
+  $CHMOD 660 ${DESTDIR}/include/*
+  $CHMOD 660 ${DESTDIR}/lib/*
+  $CHMOD 660 ${DESTDIR}/license/*
+  $CHMOD 660 ${DESTDIR}/modules/*
+  $CHMOD 660 ${DESTDIR}/readme/*
+  $CHMOD 770 ${DESTDIR}/ssl/ikeyman
+  $CHMOD 660 ${DESTDIR}/ssl/ikeyman/*
+  $CHMOD 770 ${DESTDIR}/ssl/ikeyman/en_US
+  $CHMOD 660 ${DESTDIR}/ssl/ikeyman/en_US/*
+  $CHMOD 660 ${DESTDIR}/tivready/*
+
+  if [[ -d ${DESTDIR}/keys ]]; then
+	chown -PR root.apps ${DESTDIR}/keys
+        $CHMOD 0750 ${DESTDIR}/keys
+        $CHMOD 0640 ${DESTDIR}/keys/* 2>/dev/null
+  fi
+
+  if [[ -d ${DESTDIR}/htdocs ]]; then
+        chown pubinst.apps ${DESTDIR}/htdocs
+        $CHMOD 755 ${DESTDIR}/htdocs
+  fi
+
+  if [[ -d ${DESTDIR}/cgi-bin ]]; then
+        $CHMOD 755 ${DESTDIR}/cgi-bin
+  fi
+
+  ls -l ${DESTDIR}/bin/eiRotate*  >/dev/null 2>&1
+  if [[ $? -eq 0 ]]; then
+	# webinst need to be able to run eiRotate
+	chgrp apps ${DESTDIR}/bin/eiRotate*
+  fi
+   
+}
+ 
+ihs_perms_global_61 ()
+{
+  $CHMOD 770 ${DESTDIR}/*
+  if [[ -d ${DESTDIR}/GSKitImage ]]; then
+    $CHMOD 660 ${DESTDIR}/GSKitImage/*
+    $CHMOD 770 ${DESTDIR}/GSKitImage/gskit.sh
+  fi
+  $CHMOD 660 ${DESTDIR}/LICENSE.txt ${DESTDIR}/version.signature
+  if [[ -d ${DESTDIR}/Plugins ]]; then
+    $CHMOD 770 ${DESTDIR}/Plugins/*
+    $CHMOD 770 ${DESTDIR}/Plugins/bin/*
+    ls ${DESTDIR}/Plugins/bin/*.a  > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/Plugins/bin/*.a 
+    fi
+    ls ${DESTDIR}/Plugins/bin/*.so > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/Plugins/bin/*.so
+    fi 
+    find ${DESTDIR}/Plugins/config/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/config/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 660 ${DESTDIR}/Plugins/configuration/*
+    $CHMOD 660 ${DESTDIR}/Plugins/etc/*
+    $CHMODR 770 ${DESTDIR}/Plugins/java/jre
+    ls ${DESTDIR}/Plugins/java/COPYRIGHT > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/Plugins/java/COPYRIGHT
+    fi
+    ls ${DESTDIR}/Plugins/java/copyright > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/Plugins/java/copyright
+    fi
+    find ${DESTDIR}/Plugins/java/jre/lib/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/java/jre/lib/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 660 ${DESTDIR}/Plugins/lafiles/*
+    find ${DESTDIR}/Plugins/lib/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/lib/* -type f -exec $CHMOD 660 {} \; 
+    $CHMOD 660 ${DESTDIR}/Plugins/plugins/*
+    find ${DESTDIR}/Plugins/properties/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/properties/* -type f -exec $CHMOD 660 {} \;
+    find ${DESTDIR}/Plugins/roadmap/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/roadmap/* -type f -exec $CHMOD 660 {} \;
+    find ${DESTDIR}/Plugins/uninstall/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/Plugins/uninstall/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 770 ${DESTDIR}/Plugins/uninstall/uninstall
+    $CHMODR 770 ${DESTDIR}/Plugins/uninstall/java/bin
+  fi
+  if [[ -d ${DESTDIR}/UpdateInstaller ]]; then
+    $CHMOD 770 ${DESTDIR}/UpdateInstaller/*
+    $CHMOD 660 ${DESTDIR}/UpdateInstaller/update.jar ${DESTDIR}/UpdateInstaller/version.txt
+    $CHMOD 770 ${DESTDIR}/UpdateInstaller/bin/*
+    find ${DESTDIR}/UpdateInstaller/bin/jni/* -type d -exec $CHMOD  770 {} \;
+    find ${DESTDIR}/UpdateInstaller/bin/jni/* -type f -exec $CHMOD  660 {} \;
+    find ${DESTDIR}/UpdateInstaller/docs/* -type d -exec $CHMOD  770 {} \;
+    find ${DESTDIR}/UpdateInstaller/docs/* -type f -exec $CHMOD 660 {} \;
+    find ${DESTDIR}/UpdateInstaller/framework/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/UpdateInstaller/framework/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 770 ${DESTDIR}/UpdateInstaller/framework/utils/detectprocess.sh
+    $CHMODR 770 ${DESTDIR}/UpdateInstaller/java/jre
+    ls ${DESTDIR}/UpdateInstaller/java/COPYRIGHT > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/UpdateInstaller/java/COPYRIGHT
+    fi
+    ls ${DESTDIR}/UpdateInstaller/java/copyright > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+       $CHMOD 660 ${DESTDIR}/UpdateInstaller/java/copyright
+    fi
+    find ${DESTDIR}/UpdateInstaller/java/jre/lib/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/UpdateInstaller/java/jre/lib/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 660 ${DESTDIR}/UpdateInstaller/lafiles/*
+    $CHMOD 660 ${DESTDIR}/UpdateInstaller/lib/*
+    find ${DESTDIR}/UpdateInstaller/properties/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/UpdateInstaller/properties/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 660 ${DESTDIR}/UpdateInstaller/responsefiles
+    find ${DESTDIR}/UpdateInstaller/uninstall/* -type d -exec $CHMOD 770 {} \;
+    find ${DESTDIR}/UpdateInstaller/uninstall/* -type f -exec $CHMOD 660 {} \;
+    $CHMOD 770 ${DESTDIR}/UpdateInstaller/uninstall/uninstall
+    $CHMODR 770 ${DESTDIR}/UpdateInstaller/uninstall/java/bin
+    if [[ `ls ${DESTDIR}/UpdateInstaller/maintenance| wc -l` -gt 0 ]]; then
+      $CHMOD 660 ${DESTDIR}/UpdateInstaller/maintenance/*
+    fi
+  fi
+  $CHMOD 770 ${DESTDIR}/bin/*
+  $CHMOD 660 ${DESTDIR}/bin/envvars ${DESTDIR}/bin/envvars-std
+  $CHMOD 660 ${DESTDIR}/build/*
+  $CHMOD 770 ${DESTDIR}/build/instdso.sh ${DESTDIR}/build/libtool
+  $CHMOD 660 ${DESTDIR}/codepages/*
+  $CHMOD 660 ${DESTDIR}/conf/*
+  $CHMOD 660 ${DESTDIR}/error/*
+  $CHMOD 770 ${DESTDIR}/error/include
+  $CHMOD 660 ${DESTDIR}/error/include/*
+  $CHMOD 660 ${DESTDIR}/example_module/*
+  $CHMOD 775 ${DESTDIR}/icons
+  $CHMOD 664 ${DESTDIR}/icons/*
+  $CHMOD 775 ${DESTDIR}/icons/small
+  $CHMOD 664 ${DESTDIR}/icons/small/*
+  $CHMOD 660 ${DESTDIR}/include/*
+  ls ${DESTDIR}/java/COPYRIGHT > /dev/null 2>&1
+  if [[ $? -eq 0 ]]; then
+     $CHMOD 660 ${DESTDIR}/java/COPYRIGHT
+  fi
+  ls ${DESTDIR}/java/copyright > /dev/null 2>&1
+  if [[ $? -eq 0 ]]; then
+     $CHMOD 660 ${DESTDIR}/java/copyright
+  fi
+  $CHMOD 770 ${DESTDIR}/java/jre
+  find ${DESTDIR}/java/jre/* -type d -exec $CHMOD 770 {} \;
+  find ${DESTDIR}/java/jre/* -type f -exec $CHMOD 660 {} \;
+  $CHMODR 770 ${DESTDIR}/java/jre/bin
+  $CHMOD 660 ${DESTDIR}/lafiles/*
+  $CHMOD 660 ${DESTDIR}/lib/*
+  $CHMOD 660 ${DESTDIR}/license/*
+  find ${DESTDIR}/man/* -type d -exec $CHMOD 770 {} \;
+  find ${DESTDIR}/man/* -type f -exec $CHMOD 660 {} \;
+  $CHMOD 660 ${DESTDIR}/modules/*
+  find ${DESTDIR}/properties/* -type d -exec $CHMOD 770 {} \;
+  find ${DESTDIR}/properties/* -type f -exec $CHMOD 660 {} \;
+  $CHMOD 660 ${DESTDIR}/readme/*
+  find ${DESTDIR}/uninstall/* -type d -exec $CHMOD 770 {} \;
+  find ${DESTDIR}/uninstall/* -type f -exec $CHMOD 660 {} \;
+  $CHMOD 770 ${DESTDIR}/uninstall/uninstall
+  $CHMODR 770 ${DESTDIR}/uninstall/java/bin    
+
+  if [[ -d ${DESTDIR}/htdocs ]]; then
+        chown pubinst.apps ${DESTDIR}/htdocs
+        chmod 755 ${DESTDIR}/htdocs
+  fi
+
+  if [[ -d ${DESTDIR}/cgi-bin ]]; then
+        chmod 755 ${DESTDIR}/cgi-bin
+  fi
+
+}
+
+echo "Adding ids as needed"
+echo "Checking existance of apps group creating it as needed"
+lsgroup apps > /dev/null 2>&1
+if [[ $? -ne 0 ]]; then
+    /fs/system/tools/auth/bin/mkeigroup -r local -f apps
+else
+    echo "   Group apps already exist"
+fi
+
+echo "Checking existance of webinst user creating it as needed"
+id webinst > /dev/null 2>&1
+if [[  $? -ne 0 ]]; then
+    /fs/system/tools/auth/bin/mkeiuser  -r local -f webinst apps
+else
+    echo "   ID webinst already exist"
+fi
+
+echo "Checking existance of pubinst user creating it as needed"
+id pubinst > /dev/null 2>&1
+if [[  $? -ne 0 ]]; then
+    /fs/system/tools/auth/bin/mkeiuser  -r local -f pubinst apps
+else
+    echo "   ID pubinst already exist"
+fi
+
+
+echo "Setting permissions for the IHS install directories and binaries"
+chown root.eiadm ${DESTDIR} 
+chmod 775 ${DESTDIR}
+
+case `uname` in
+AIX)
+	find ${DESTDIR}/* ! -type l | grep -v htdocs | grep -v keys | grep -v cgi-bin | xargs -I{} chown root.eiadm {}
+;;
+Linux)
+	find ${DESTDIR}/* ! -type l | grep -v htdocs | grep -v keys | grep -v cgi-bin | xargs -i{} chown root.eiadm {}
+;;
+esac
+
+VERSION=`echo ${FULLVERSION} | cut -d"." -f1,2`
+case $VERSION in
+   6.1)
+       ihs_perms_global_61
+   ;;
+   *)
+      ihs_perms_global
+   ;;
+esac
+
+case `uname` in
+AIX)
+	find ${DESTDIR}/* ! -type l -group apps | xargs -I{} chmod g-w {}
+	find ${DESTDIR}/* ! -type l | grep -v htdocs | grep -v cgi-bin | grep -v icons | xargs -I{} chmod o-rwx {}
+;;
+Linux)
+	find ${DESTDIR}/* ! -type l -group apps | xargs -i{} chmod g-w {}
+	find ${DESTDIR}/* ! -type l | grep -v htdocs | grep -v cgi-bin | grep -v icons | xargs -i{} chmod o-rwx {}
+;;
+esac
+
+ls -l /opt/HPODS/LCS/bin/eiRotate >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+        echo "Setting perms on eiRotate"
+	chmod 0755 /opt/HPODS/LCS/bin/eiRotate
+fi
+
+HTTPDIR=`echo ${DESTDIR} | cut -d"/" -f3`
+if [[ -d /logs/${HTTPDIR} ]]; then
+	#Don't want to sudo su - to view logs 
+	echo "Setting perms on /logs/${HTTPDIR}"
+        find /logs/${HTTPDIR} -type d \( ! -name '*install*' -a ! -name '*update*' ! -name *tmp* \) -exec chown webinst.eiadm {} \;
+        find /logs/${HTTPDIR} -type d \( ! -name '*install*' -a ! -name '*update*' ! -name *tmp* \) -exec chmod 2750 {} \;
+
+fi
+
+#Look for /projects/${HTTPDIR}/conf/globalpermlist.cfg and set permissions accordingly
+if [ -f "/projects/${HTTPDIR}/conf/globalpermlist.cfg" ]; then
+   echo "Setting permission as outlined in"
+   echo "/projects/${HTTPDIR}/conf/globalpermlist.cfg"
+   cat /projects/${HTTPDIR}/conf/globalpermlist.cfg | /lfs/system/tools/configtools/set_permissions.sh 
+fi
+#Look for /projects/${HTTPDIR}/conf/ihspermlist.cfg and set permissions accordingly
+if [ -f "/projects/${HTTPDIR}/conf/ihspermlist.cfg" ]; then
+   echo "Setting permission as outlined in"
+   echo "/projects/${HTTPDIR}/conf/ihspermlist.cfg"
+   cat /projects/${HTTPDIR}/conf/ihspermlist.cfg | /lfs/system/tools/configtools/set_permissions.sh 
+fi
+
+

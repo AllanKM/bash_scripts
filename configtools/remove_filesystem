@@ -1,0 +1,133 @@
+#!/bin/ksh
+#------------------------------------------------------------------------------
+#
+# Script Name:
+#
+#   remove_filesystem
+#
+# Description:
+#
+#   Removes File Systems on AIX and Linux
+#   Assumptions: On AIX 5.3, we only want jfs2 filesystems.
+#		 On AIX 5.1 or 5.2, we only want jfs filesystems.
+#		 Only Sles 9 and Sles 10 are supported for Linux
+#		 LV Names will be a subset of the FS name on new filesystems
+#
+# Change history:
+#
+#   Date      Init  Description
+#   07/30/08  MTA   Creation
+#
+#------------------------------------------------------------------------------
+
+Usage()
+{
+  print -u2 "\nUsage: remove_filesystem [-f] <FS Name>\n"
+  exit 1
+}
+
+aixFS()
+{
+  exist=`df $fs |grep $fs`
+  if [[ "$exist" = "" ]] ; then
+     print "\nError: Filesystem $fs does not exist, exiting..."
+     exit 1
+  fi
+  
+  roles=`lssys -1 -l role $host`
+  print "\n$host has role(s) of $roles"
+  if [[ "$flag" != "force" ]] ; then
+     print "Are you sure you want to remove $fs (y/n)\n"; read ans
+     if [[ "$ans" != "y" ]] ; then
+        exit 1
+     fi
+  fi
+
+  umount $fs
+  if [[ $? -ne 0 ]] ; then
+     print "\nError: umount failed, exiting..."
+     exit 1
+  fi
+
+  rmfs -r $fs
+  if [[ $? -ne 0 ]] ; then
+     print "\nError: Remove failed, exiting..."
+     exit 1
+  fi
+
+  print "\n\n$fs has been removed."
+}
+
+LinuxFS()
+{
+
+  exist=`df $fs |grep $fs`
+  if [[ "$exist" = "" ]] ; then
+     print "\nError: Filesystem $fs does not exist, exiting..."
+     exit 1
+  fi
+  
+  roles=`lssys -1 -l role $host`
+  print "\n$host has role(s) of $roles"
+  if [[ "$flag" != "force" ]] ; then
+     print "Are you sure you want to remove $fs (y/n)"; read ans
+     if [[ "$ans" != "y" ]] ; then
+        exit 1
+     fi
+  fi
+
+  vg=`df $fs |grep mapper |awk -F/ '{print $4}' |awk -F\- '{print $1}'`
+  lv=`df $fs |grep mapper |awk -F/ '{print $4}' |awk -F\- '{print $2}'`
+  
+  # Unmount the file system
+  umount $fs
+  if [[ $? -ne 0 ]] ; then
+     print "\nError: umount failed, exiting..."
+     exit 1
+  fi
+
+  # Remove the logical volume
+  /sbin/lvremove -f /dev/$vg/$lv
+  if [[ $? -ne 0 ]] ; then
+     print "\nError: lvremove failed, exiting..."
+     exit 1
+  fi
+
+  # Remove the /etc/fstab entry
+  DATE=`date +%m-%d-%y`
+  cp /etc/fstab /etc/fstab.$DATE
+  grep -v $fs /etc/fstab > /tmp/fstab.tmp
+  mv /tmp/fstab.tmp /etc/fstab
+  chmod 644 /etc/fstab
+
+  print "\n\n$fs has been removed."
+}
+
+############################################################
+# Main
+############################################################
+
+if [[ "$1" = "" ]] ; then
+   Usage
+fi
+
+host=`hostname`
+
+while getopts f OPT
+  do
+    case "$OPT" in
+      f)        flag="force"; shift 1;;
+    esac
+  done
+
+fs="$1"
+
+OS=$(uname)
+case $OS in
+  AIX)		aixFS;;
+  Linux)	LinuxFS;;
+  *)		print "\nUnsupported OS, exiting.\n"; 
+		exit 1
+esac
+
+

@@ -1,0 +1,436 @@
+################################################################################
+#
+# InstallShield Options File Template
+#
+# This file can be used to create an options file (i.e., response file) for the
+# wizard "Setup". Options files are used with "-options" on the command line to
+# modify wizard settings.
+# 
+################################################################################
+
+################################################################################
+#
+# Disable the OS level prerequisite checking
+#
+#    true | false
+#
+-V disableOSPrereqChecking=true
+
+################################################################################
+#
+# Custom Dialog: License
+#
+-V LICENSE_ACCEPT_BUTTON="true"
+
+
+################################################################################
+#
+# Custom Dialog: License
+#
+
+-V LICENSE_REJECT_BUTTON="false"
+
+################################################################################
+# The log level for the installation and configuration
+#
+# ALL - Log all message
+# DEBUG_MAX - Log max debug message
+# DEBUG_MID - Log minimal debug message
+# INFO - Log only information message
+# WARN - Log only warning message
+# ERROR - Log only error message
+# FATAL - Log only fatal error message
+# OFF - Do not log all message
+#
+-W LogSetting.logLevel=WARNING
+
+################################################################################
+# Legal values are:
+#
+# true - log output to console
+# false - log not output to console
+#
+-W LogSetting.consoleOut=true
+
+# The program will exit if the log path is not writtable. You can use "-V LOG_DIR" to change the log path 
+# The default path is "C:\Program Files\ibm\tivoli\common" (Windows) and "/var/ibm/tivoli/common" (UNIX)
+#-V LOG_DIR=/logs/itcam
+
+################################################################################
+#
+# ITCAM for WebSphere Data Collector 6.1 Install Location
+#
+-P installLocation=/opt/IBM/itcam/WebSphere/DC
+
+################################################################################
+#
+# Allow offline install and configuration
+#
+# The option that offline mode to be used when configuring the product. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+# 
+#    true - Indicates that the offline configuration type is allowed during the 
+#			configuation and the program will skip the Manager Server connection
+#			varification test.
+#               
+#    false - Indicates that the offline configuration type is NOT allowed during the 
+#			configuation and the program will quit if fail on the Manager Server 
+#			connection varification test.
+#
+-V DC_OFFLINE_ALLOW=false
+
+################################################################################
+#
+# Allow offline configuration
+#
+# The option that offline mode to be used when configuring the product. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+# 
+#    true - Indicates that the offline configuration type is allowed during the 
+#			configuation and the program will skip the TEMA connection
+#			varification test.
+#               
+#    false - Indicates that the offline configuration type is NOT allowed during the 
+#			configuation and the program will quit if fail on the TEMA
+#			connection varification test.
+#
+-V TEMA_OFFLINE_ALLOW="false"
+
+
+################################################################################
+#
+# Launch DC configurator after installation
+#
+# The option that the configurator will be launched after installation. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+# 
+#    true - Indicates that the configurator will be launched automatically just after
+#			Installation finished.
+#               
+#    false - Indicates that the configurator will be defered and user can launch it
+#			 later manually from <installlocation>/config_dc/config_dc.bat or
+#			 <installlocation>/config_dc/config_dc.sh
+#
+-V LAUNCH_CONFIG=true
+
+################################################################################
+#
+# Defer launch DC configurator after installation
+#
+# The option that the configurator will be defered after installation. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+#               
+#    true - Indicates that the configurator will be defered and user can launch it
+#			 later manually from <installlocation>/config_dc/config_dc.bat or
+#			 <installlocation>/config_dc/config_dc.sh
+# 
+#    false - Indicates that the configurator will be launched automatically just after
+#			Installation finished.
+#
+-V DEFER_CONFIG=false
+
+################################################################################
+#
+# Config Data Collector to WebSphere
+#
+# The option that the Data Collector will be configured or Un-configured.Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+#               
+#    true - Indicates that the Data Collector will be configured.
+# 
+#    false - Indicates that the configurator will be will be Un-configured.
+#
+-V DC_CCUC_CONFIG="true"
+-V DC_CCUC_UNCONFIG="false"
+
+################################################################################
+#
+# Allow to re-configure the Data Collector
+#
+# Legal values are:
+# 
+# 	true - Indicates that re-configure the Data Collector
+#
+# 	false - Indicates that not to re-configure the Data Collector and quit the installer if 
+# 	the specified app server had been configured.
+#
+-V DC_RECONFIG_ALLOW=true
+
+################################################################################
+#
+# Managing Server Host Name 
+#
+# Type a host name that the Domain Name System service can resolve before
+# you proceed. You must provide the fully qualified host name.
+#
+# For example, -V DC_MSKS_SERVERNAME=ms1.cn.ibm.com
+#
+-V DC_MSKS_SERVERNAME=at1008i.event.ibm.com
+
+################################################################################
+# Port number used for Primary Manager Server Codebase
+#
+# You must provide port numbers which do not occupied by other applications.
+#
+# For example, -V DC_MSKS_CODEBASEPORT=9122
+#
+-V DC_MSKS_CODEBASEPORT=9122
+
+################################################################################
+# 
+# ITCAM for WebSphere Managing Server 6.1 Install Location
+#
+# The install location of the Managing Server. Specify a valid directory into which the
+# product had been installed. If the directory contains spaces, enclose it in
+# double-quotes. For example, to install the product to C:\Program Files\My
+# Product, use
+# 
+#    -V DC_MS_AMHOME="C:\Program Files\My MS"
+#
+-V DC_MS_AMHOME=/opt/IBM/itcam/WebSphere/MS
+
+################################################################################
+# 
+#  Configure WebSphere Application Server(WAS)
+#
+# The option that the ITCAM for WebSphere Data Collector will be configured. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+# 
+#    true - Indicates that the ITCAM for WebSphere Data Collector will be configured.
+#               
+#    false - Indicates that the ITCAM for WebSphere Data Collector will NOT be configured.
+#
+-V DC_CC_ITCAMFWAS="true"
+
+################################################################################
+#
+# 
+#  Configure WebSphere Application Server(WAS)
+#
+# The option that the WebSphere Application Server will be configured. Stored as a
+# Variable and must be set with -V.
+# 
+# Legal values are:
+# 
+#    true - Indicates that the WebSphere Application Server will be configured.
+#               
+#    false - Indicates that the WebSphere Application Server will NOT be configured.
+#
+-V DC_CAS_WAS="true"
+
+################################################################################
+# 
+# Configure WebSphere Enterprise Service Bus(ESB)
+#
+#
+-V DC_CAS_ESB="false"
+
+################################################################################
+# 
+# Configure WebSphere Process Server
+#
+#
+-V DC_CAS_PS="false"
+
+################################################################################
+# 
+# Configure WebSphere Portal Server
+#
+-V DC_CAS_WPS="false"
+
+################################################################################
+# 
+# Configure WebSphere WorkPlace Mail Server
+#
+-V DC_CAS_WCSMAIL="false"
+
+################################################################################
+# 
+# Configure WebSphere Application Server's server full name
+#
+# For example, 
+#	-V APP_SERVER_NAMES="cells/emilyNode06Cell/nodes/emilyNode06/servers/server1"
+#
+-V APP_SERVER_NAMES="cells/yzp51ud/nodes/at1007d/servers/at1007d_events_guestbook , cells/yzp51ud/nodes/at1007d/servers/at1007d_events_netpoll , cells/yzp51ud/nodes/at1007d/servers/at1007d_events_queryx , cells/yzp51ud/nodes/at1007d/servers/at1007d_events_m2m"
+
+################################################################################
+#
+# 
+# Configure WebSphere Application Server's node full name
+#
+# For example, 
+#	-V WS_NODE_NAME="cells/emilyNode01Cell/nodes/emilyNode06"
+#
+-V WS_NODE_NAME=cells/yzp51ud/nodes/at1007d
+
+################################################################################
+# 
+# Configure WebSphere Application Server's profile home directory
+#
+-V DC_WD_PROFILEHOME=/usr/WebSphere51/AppServer
+
+################################################################################
+# 
+# Configure WebSphere Application Server's profile short name
+#
+# For example,
+#	-V DC_WD_PROFILENAME="profile6"
+#
+-V DC_WD_PROFILENAME="NULL"
+
+################################################################################
+#
+# 
+# Configure WebSphere Application Server's base directory
+#
+# For example, -V DC_WD_WASBASEDIR="D:\IBM\AppServer"
+#
+-V DC_WD_WASBASEDIR=/usr/WebSphere51/AppServer
+
+################################################################################
+#
+# 
+# WebSphere Application Server's version if Configure a WebSpere Application Server
+#
+# WebSphere Portal Server's version if Configure a WebSpere Portal Server
+#
+# WebSphere Process Server's version if Configure a WebSpere Process Server
+#
+# For example, -V DC_WD_WASVER="60"
+#
+-V DC_WD_WASVER="51"
+
+################################################################################
+# 
+# Data Collector host name
+#
+# Type a host name that the Domain Name System service can resolve before
+# you proceed. You must provide the fully qualified host name or the IP address
+# of the host.
+#
+# For example, -V DC_ASL_HOSTNAME=dc1.cn.ibm.com
+#
+-V DC_ASL_HOSTNAME=yzp51udManager.event.ibm.com
+
+################################################################################
+# 
+# Configure WebSphere Application Server' soap port
+#
+# For example, -V DC_ASL_SOAPPORT="8880"  
+#
+-V DC_ASL_SOAPPORT=8879
+
+################################################################################
+# 
+# WebSphere Application Server globle security user name
+#
+-V DC_ASL_USERNAME=SECURITY_USER
+
+################################################################################
+# 
+# WebSphere Application Server globle security password
+#
+-V DC_ASL_PASSWD=SECURITY_PASSWORD
+
+
+################################################################################
+#
+# For ESB, Portal and Process Server only
+# Based WebSphere Application Server base directory
+#
+# If the directory contains spaces, enclose it in double-quotes.
+#
+# For example, -V WAS_BASEDIR="D:\IBM\AppServer"
+#
+-V WAS_BASEDIR=/usr/WebSphere51/AppServer
+
+################################################################################
+#
+# For ESB, Portal and Process Server only
+# Based WebSphere Application Server Version
+#
+# For example, -V WAS_BASE_VERSION="60"
+#
+###-V WAS_BASE_VERSION=<value>
+
+
+################################################################################
+#
+# For TEMA
+#
+# The Configure selection of the TEMA feature. Legal values are:
+# 
+# true - Indicates that Configure the Tivoli Enterprise Monitoring Agent
+# false - Indicates that not to Configure the Tivoli Enterprise Monitoring Agent
+#
+-V DC_CC_TEMA=true
+
+################################################################################
+#
+# For TEMA
+#
+# GC log file path
+#
+-V GC_LOG_PATH="NULL"
+
+################################################################################
+# DC side IP address or full qualified Host name
+#
+# 
+# The IP or Host name will be used by DC to communicate with MS.
+# If there are more then one NIC or multiple IP address configured on DC machine, choose
+# one of them.
+#
+# For example:
+# -V AM_SOCKET_BINDIP=9.181.93.95
+# or
+# -V AM_SOCKET_BINDIP=dc.cn.ibm.com
+#
+-V AM_SOCKET_BINDIP=at1007de0.event.ibm.com
+
+################################################################################
+#
+# For DC side if the firewall is enabled 
+#
+# Legal values are:
+# 
+# true - Firewall enabled
+# false - Firewall disabled
+#
+-V FIREWALL_ENABLED=false
+
+################################################################################
+#
+# If the DC is behind firewall, you should set this port number.
+# This port number should be configured as allowable in firewall software 
+# which the DC host locates on.
+# 
+# Legal values are:
+#
+# from "8200" to "8299"
+#
+###-V PROBE_RMI_PORT=<value>
+
+################################################################################
+#
+# If the DC is behind firewall, you should set this port number.
+# This port number should be configured as allowable in firewall software 
+# which the DC host locates on.
+# 
+# Legal values are:
+#
+# from "8300" to "8399"
+#
+###-V PROBE_CONTROLLER_RMI_PORT=<value>

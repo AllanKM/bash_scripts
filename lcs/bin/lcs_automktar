@@ -1,0 +1,470 @@
+#!/usr/bin/perl
+
+# Parses all the lcs_client configuration files looking for
+# matching "sites" to run lcs_mktar against.
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mycwd = getcwd();
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mydname = $0;
+$mydname =~ s%/$mysname$%%;
+$mydname = $mycwd if ($mydname eq "" || $mydname eq ".");
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Hardcodes
+my $mytime = time();
+my $oneday = 24*60*60;                  # 1-day in seconds
+
+my $piddir = "/var/run";                # PID file directory
+my $pidfile = "$piddir/$mysname.pid";   # Process id "lock" file
+my $logdir = "/var/log/lcs";            # LCS logging directory
+
+my $lcsmktar = "$mydname/lcs_mktar";
+
+my $daemon = "lcs_client";
+my $cfgdir = "/opt/HPODS/LCS/conf";
+my $cfgbase = "$cfgdir/$daemon";
+my $cfgext = ".conf";
+
+my @flglst = (
+  "empty",
+);
+
+my @cfglst = (
+  "logdirectory",
+  "logroot",
+  "logextension",
+  "loginterval",
+);
+
+# Defaults
+my $autoset = "s050";
+my $dfltsite = "  $$ LCS";
+my $date = "";
+my $debug = 0;
+my $depth = 1;
+my $empty = 1;
+my $findfile = 'SystemErr_%y.%m.%d*,SystemOut_%y.%m.%d*';
+my $findpath = '/logs/was??';
+my $nologging = 0;
+my $preview = 0;
+my $sitespec = 'jvmtar.*';
+my $trace = 0;
+my $verbose = 0;
+
+# Define log file directives
+my %logarr = (
+  'auditlog' => "",
+  'errorlog' => "",
+  'tracelog' => "",
+);
+
+my $dfltset = "  $$ LCS";
+my $set = $dfltset;
+my %work = ();
+Getopt::Long::Configure("posix_default");
+my $rc = &main::GetOptions(
+  # Script options
+  'date:s' => sub { $date=$_[1] },
+  'debug' => sub { $debug=1 },
+  'depth:i' => sub { $depth=$_[1] },
+  'empty' => sub { $empty=1 },
+  'findfile:s' => sub { $findfile=$_[1] },
+  'findpath:s' => sub { $findpath=$_[1] },
+  'mktar:s' => sub { $lcsmktar=$_[1] },
+  'noempty' => sub { $empty=0 },
+  'nologging' => sub { $nologging=1 },
+  'preview' => sub { $preview=1 },
+  'set:s' => sub { $autoset=$_[1] },
+  'sitespec:s' => sub { $sitespec=$_[1] },
+  'trace' => sub { $trace=1 },
+  'verbose' => sub { $verbose=1 },
+
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+if (! -x $lcsmktar) {
+  logit($mysname,\%logarr,98,"lcs_mktar ($lcsmktar) is not available");
+  exit 1;
+}
+
+# lcsmktar parameters
+# %mktarhsh{set}{sitematch}{cmdlinearg} = cmdlinevalue
+my %mktarhsh = (
+  $autoset => {
+    $sitespec => {
+      depth => $depth,
+      empty => $empty,
+      findpath => $findpath,
+      findfile => $findfile,
+      # logdirectory from instance
+      # logroot from instance
+      # logextension from instance
+      # loginterval from instance
+      ### global cmdline args if specified
+    },
+  },
+);
+
+# Create piddir directory if needed
+mkdirs($piddir,0,0,0755) if (! -d $piddir);
+
+# Create logdir directory if needed
+mkdirs($logdir,0,0,0755) if (! -d $logdir);
+
+# Already running, make sure, then bail out, otherwise create pidfile "lock"
+if (-f $pidfile) {
+  my($pid,$found,$p);
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  $found = 0;
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,\%logarr,98,"Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,\%logarr,98,"Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+if (open(PIDFILE,">$pidfile")) {
+  print PIDFILE "$$\n";
+  close(PIDFILE);
+} else {
+  logit($mysname,\%logarr,98,"Unable to obtain pidfile lock: $!");
+  exit 0;
+}
+
+### MAIN
+
+# The rest of the command line is list of sites to handle
+my @sitelst = ();
+@sitelst = @ARGV if (@ARGV);
+
+# Obtain a list of all $daemon instances
+logit($mysname,\%logarr,64+$verbose,"Gathering list of instances");
+my %instances = ();
+my %sites = ();
+if (opendir(DIR,$cfgdir)) {
+  my($cfg,$instance);
+  foreach $cfg (grep($_ =~ /^$daemon.*$cfgext$/,(readdir(DIR)))) {
+    ($instance = $cfg) =~ s%^$daemon(.*)$cfgext$%$1%;
+    $instance = "$daemon$instance";
+    loadfile(\%{$instances{$instance}},"$cfgdir/$cfg",$dfltsite,0);
+    $sites{@{$instances{$instance}{$dfltsite}{site}}[$[]} = $instance;
+  }
+  close(DIR);
+}
+
+# Determine working set of sites from command line or all daemon instances
+my $s;
+if (@sitelst) {
+  foreach $s (@sitelst) {
+    if (defined $sites{$s}) {
+      $work{$s}++;
+    }
+ }
+} else {
+  grep($work{$_}++,keys %sites);
+}
+
+# Loop on all sites to run script for
+my ($sitematch,$a,$i);
+my $runflg = 0;
+my $cmd = "$lcsmktar";
+$cmd .= " -debug" if ($debug);
+$cmd .= " -nologging" if ($nologging);
+$cmd .= " -preview" if ($preview);
+$cmd .= " -trace" if ($trace);
+$cmd .= " -verbose" if ($verbose);
+foreach $s (sort keys %work) {
+  my $found = 0;
+  foreach $set (sort keys %mktarhsh) {
+    my $subcmd = "";
+    foreach $sitematch (sort keys %{$mktarhsh{$set}}) {
+      if (($s eq $sitematch) ||
+          ($sitematch =~ /\W+/ && $s =~ /$sitematch/)) {
+        $found++;
+        $i = "";
+        $i = $sites{$s} if (defined $sites{$s});
+        $subcmd .= " -date '$date'" if ($date ne "");
+        foreach $a (@flglst) {
+          $subcmd .= " -$a"
+            if (defined $mktarhsh{$set}{$sitematch}{$a} &&
+                $mktarhsh{$set}{$sitematch}{$a} > 0);
+        }
+        foreach $a (@cfglst) {
+          if (defined $mktarhsh{$set}{$sitematch}{$a}) {
+            $subcmd .= " -$a '".${mktarhsh{$set}{$sitematch}{$a}}."'";
+          } elsif ($i ne "" && 
+                   defined $instances{$i}{$dfltsite}{$a}) {
+            $subcmd .= " -$a '".@{$instances{$i}{$dfltsite}{$a}}[$[]."'";
+          }
+        }
+        foreach $a (sort keys %{$mktarhsh{$set}{$sitematch}}) {
+          next if (grep($_ =~ /^$a/i,@flglst) || grep($_ =~ /^$a/i,@cfglst));
+          $subcmd .= " -$a '".$mktarhsh{$set}{$sitematch}{$a}."'";
+        }
+        last;
+      }
+    }
+    if ($found) {
+      $cmd .= " -set $set$subcmd -endset";
+      last;
+    }
+  }
+  if (! $found) {
+    logit($mysname,\%logarr,64+$verbose,"Skipping site $s - no match found");
+  } else {
+    $runflg++;
+  }
+}
+
+$rc = 0;
+if ($runflg) {
+  # Execute the cmd created
+  logit($mysname,\%logarr,64+$verbose,"Running: %s",$cmd);
+  system($cmd);
+  $rc = $? >> 8;
+}
+
+# Log the command was run
+if (! $debug && ! $preview) {
+  logit($mysname,\%logarr,64+$verbose,"Logging the execution");
+  my $out = "";
+  $out = "User: $realuser";
+  $out .= "($effuser)" if ($realuser ne $effuser);
+  $out .= " TTY: $tty";
+  $out .= " RC: $rc";
+  $out .= " CMD: $0 ".join(" ",@allargv);
+  if ($out ne "") {
+    logit($mysname,\%logarr,72,"daemon","notice","%s",$out);
+    #logit($mysname,\%logarr,2,"%s",$out);
+  }
+}
+
+# Clean up PID "lock" file
+unlink ($pidfile) if ($pidfile ne "" && -e $pidfile);
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-date date][-depth depth][-findfile file[,file,...]]\n",
+        "    [-findpath path[,path,...]][-mktar exec][-set set]\n",
+        "    [-sitespec sitespec][-empty\|-noempty]\n",
+        "    [-nologging][-preview][-debug][-trace][-verbose]\n",
+        "  where: date       - date to process like YYYYMMDD[hh[mm[ss]]]\n",
+        "         depth      - path levels to shift for tar relative path\n",
+        "         exec       - lcs_mktar script\n",
+        "                      (default: lcsmktar)\n",
+        "         file       - filenames to find\n",
+        "                      (default: $findfile)\n",
+        "         path       - pathnames to find\n",
+        "                      (default: $findpath)\n",
+        "         set        - auto set name for mktar exec\n",
+        "                      (default: $autoset)\n",
+        "         sitespec   - matching lcs_client site name\n",
+        "                      (default: $sitespec)\n",
+        "         -empty     - create empty tar file if nothing to tar\n",
+        "                      (default: $empty)\n",
+        "         -noempty   - turn off -empty flag\n",
+        "         -nologging - do not log to audit/error/trace logs\n",
+        "         -preview   - show what would be done - do nothing\n",
+        "         -trace     - turn on trace logging\n",
+        "         -verbose   - describe events each step of the way\n";
+}
+
+sub logit {
+  my($me,$laref,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority,$filetype);
+  my(%logarr) = %$laref;
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+    "auditlog" => 16,
+    "errorlog" => 32,
+    "tracelog" => 64,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle file logs
+  foreach $filetype (sort keys %logarr) {
+    if ($logarr{$filetype} ne "") {
+      if ($logtype & $logtypes{$filetype}) {
+        my $logfile = $logarr{$filetype};
+        $logfile = POSIX::strftime($logfile,localtime());
+        if (open(LOGFILE,">>$logfile")) {
+          if (@myargs) {
+            printf LOGFILE "$date $me\[$$\]: $format\n", @myargs;
+          } else {
+            print LOGFILE "$date $me\[$$\]: $format\n";
+          }
+          close(LOGFILE);
+        }
+      }
+    }
+  }
+
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+print "$main::running_under_some_shell\n";

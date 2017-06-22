@@ -1,0 +1,16 @@
+/logs/lcibmdb/backup.log {
+        weekly
+        rotate 9
+}
+/logs/lcibmdb/clean_db2_backups.log {
+        weekly
+        rotate 9
+}
+/logs/lcibmdb/prunedb2logs.log {
+        weekly
+        rotate 9
+}
+/logs/lcibmdb/runstats.log {
+        weekly
+        rotate 9
+}

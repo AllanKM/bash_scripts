@@ -1,0 +1,12 @@
+#Sat Jun 14 21:14:24 UTC 2008
+action=create
+activities.password={PASSWORD_REMOVED}
+blogs.password={PASSWORD_REMOVED}
+communities.password={PASSWORD_REMOVED}
+dbHome=/opt/IBM/db2/V9.1
+dbInstance=lcibmdb
+dbtype=db2
+dogear.password={PASSWORD_REMOVED}
+features=activities, blogs, communities, dogear, homepage, profiles
+homepage.password={PASSWORD_REMOVED}
+profiles.password={PASSWORD_REMOVED}

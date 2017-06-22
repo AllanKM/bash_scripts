@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- ***************************************************************** -->
+<!--                                                                   -->
+<!-- Licensed Materials - Property of IBM                              -->
+<!--                                                                   -->
+<!-- 5724_S68                                                          -->
+<!--                                                                   -->
+<!-- Copyright IBM Corp. 2001, 2006  All Rights Reserved.              -->
+<!--                                                                   -->
+<!-- US Government Users Restricted Rights - Use, duplication or       -->
+<!-- disclosure restricted by GSA ADP Schedule Contract with           -->
+<!-- IBM Corp.                                                         -->
+<!--                                                                   -->
+<!-- ***************************************************************** -->
+
+<config id="profiles"
+	xmlns="http://www.ibm.com/profiles-config"
+	xmlns:tns="http://www.ibm.com/profiles-config"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.ibm.com/profiles-config profiles-config.xsd">
+
+
+	<!-- START PROFILES DATA MODELS SECTION -->
+	<profileDataModels>	
+		<profileExtensionAttributes>
+			<!-- 
+				This extension attribute is required by the 'MyLinks' profile widget
+			-->
+			<xmlFileAttribute 
+				extensionId="profileLinks" 
+				schemaFile="profile-links.xsd" 
+				indexBindingExpr="/linkroll/link/@name | /linkroll/link/@url"/>
+		</profileExtensionAttributes>
+	
+		<profileDataModel>
+			<!-- =================================================================================== -->
+			<!-- This section is used to define attributes that are updated via the drafting process -->
+			<!--   In most deployments you should never edit the config for this section.			 -->
+			<!-- Example: <draftableAttribute>displayName</draftableAttribute>                  	 -->
+			<!-- Example: Example: <draftableExtensionAttribute extensionIdRef="tieline"/>			 -->
+			<!-- =================================================================================== -->
+		</profileDataModel>	
+	</profileDataModels>
+	<!-- END PROFILES DATA MODELS SECTION -->
+
+
+	<!-- START LAYOUT CONFIGURATION SECTION-->
+	<layoutConfiguration>
+
+		<profileLayout profileType="default">
+			<jobInformation>
+				<attribute showLabel="false" appendHtml="&lt;br/&gt;">organizationTitle</attribute>
+				<attribute showLabel="false" appendHtml="&lt;br/&gt;">employeeTypeDesc</attribute>
+				<editableAttribute showLabel="false" prependHtml="&lt;strong&gt;" appendHtml="&lt;/strong&gt;&lt;br/&gt;">jobResp</editableAttribute>
+				<editableAttribute showLabel="true" hideIfEmpty="true" hcard="true" email="secretaryEmail" uid="secretaryUid" appendHtml="&lt;br/&gt;">secretaryName</editableAttribute>
+				<!-- <editableAttribute showLabel="true">secretaryUid</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">secretaryEmail</editableAttribute> -->
+				<!-- <editableAttribute showLabel="false">isManager</editableAttribute> -->
+				<!-- <editableAttribute showLabel="false">employeeNumber</editableAttribute> -->
+				<!-- <editableAttribute showLabel="false">managerUid</editableAttribute> -->
+				<!-- <editableAttribute showLabel="false">shift</editableAttribute> -->
+				<!-- <editableAttribute showLabel="false">deptNumber</editableAttribute> -->
+				<!-- <attribute showLabel="false">workLocation.address1</attribute> -->
+				<!-- <attribute showLabel="false">workLocation.address2</attribute> -->
+				<attribute showLabel="false" appendHtml=", ">workLocation.city</attribute>
+				<attribute showLabel="false" appendHtml=", ">workLocation.state</attribute>
+				<!-- <attribute showLabel="false">workLocation.postalCode</attribute> -->
+				<attribute showLabel="false">countryDisplayValue</attribute>
+				<!-- <attribute showLabel="false">countryCode</attribute> -->
+			</jobInformation>
+			<contactInformation>
+				<!-- <editableAttribute showLabel="true">courtesyTitle</editableAttribute> -->
+				<editableAttribute showLabel="true" disabled="true">displayName</editableAttribute>
+				<!-- <editableAttribute showLabel="true">preferredFirstName</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">preferredLastName</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">alternateLastname</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">nativeFirstName</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">nativeLastName</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">preferredLanguage</editableAttribute> -->
+				<editableAttribute showLabel="true">bldgId</editableAttribute>
+				<editableAttribute showLabel="true">floor</editableAttribute>
+				<editableAttribute showLabel="true">officeName</editableAttribute>
+				<editableAttribute showLabel="true">telephoneNumber</editableAttribute>
+				<editableAttribute showLabel="true">ipTelephoneNumber</editableAttribute>
+				<editableAttribute showLabel="true">mobileNumber</editableAttribute>
+				<editableAttribute showLabel="true">pagerNumber</editableAttribute>
+				<!-- <editableAttribute showLabel="true">pagerType</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">pagerId</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true">pagerServiceProvider</editableAttribute> -->
+				<editableAttribute showLabel="true">faxNumber</editableAttribute>
+				<attribute showLabel="true" email="true">email</attribute>
+				<editableAttribute showLabel="true" email="true">groupwareEmail</editableAttribute>
+				<!-- <editableAttribute showLabel="true" link="true">calendarUrl</editableAttribute> -->
+				<!-- <editableAttribute showLabel="true" link="true">freeBusyUrl</editableAttribute> -->
+				<editableAttribute showLabel="true" link="true">blogUrl</editableAttribute>			
+			</contactInformation>
+			<associatedInformation>
+				<editableAttribute showLabel="true" richtext="true">description</editableAttribute>
+				<editableAttribute showLabel="true" richtext="true">experience</editableAttribute>
+			</associatedInformation>
+		</profileLayout>
+  
+        <!-- TODO define schema and add loginRequired = true | false -->
+		<widgets xmlns:tns="http://www.ibm.com/profiles-config">
+			<definitions>
+				<widgetDef defId="reportStructure" url="{profilesContextRoot}/widget-catalog/report-chain.xml">
+					<configData>
+						<attr key="numberOfNameToDisplay" value="4" />
+					</configData>
+				</widgetDef>
+				<widgetDef defId="multiFeedReader" url="{profilesContextRoot}/widget-catalog/multifeedreader.xml">
+				<configData>
+					<attr key="communityResourceId"		value="communityResourceId"/>
+					<attr key="communityFeedUrl"		value="{communitiesSvcRef}/service/atom/communities/all?email={email}&amp;ps=5"/>
+					<attr key="dogearResourceId"		value="dogearResourceId"/>
+					<attr key="dogearFeedUrl"	 		value="{dogearSvcRef}/atom?email={email}&amp;sort=date&amp;sortOrder=desc&amp;ps=5&amp;showFavIcon=true{appLangParam}"/>
+					<attr key="blogsResourceId"			value="blogsResourceId"/>
+					<attr key="blogsFeedUrl"			value="{blogsSvcRef}/roller-ui/feed/{email}?order=asc&amp;maxresults=5&amp;sortby=0"/>
+					<attr key="activitiesResourceId"	value="activitiesResourceId"/>
+					<attr key="activitiesFeedUrl"		value="{activitiesSvcRef}/service/atom2/activities?public=only&amp;email={email}&amp;authenticate=no&amp;ps=5"/>
+				</configData>
+				</widgetDef>
+				<widgetDef defId="friends" url="{profilesContextRoot}/widget-catalog/friends.xml" 
+				    fullPageView="true" showFullPageViewLinkInNavBar="true" navBarResourceBundleId="friendsFullPageTitle"/>
+				<widgetDef defId="linkRoll" url="{profilesContextRoot}/widget-catalog/linkroll.xml"/>
+				<widgetDef defId="socialTags" url="{profilesContextRoot}/widget-catalog/tags.xml" 
+				    helpBodyResourceBundleId="socialTagsHelpBody"/>
+				<widgetDef defId="structTags" url="{profilesContextRoot}/widget-catalog/structure-tag.xml"/>
+			</definitions>
+			<layout profileType="default">
+				<page pageId="profilesView">
+					<widgetInstance uiLocation="col3" defIdRef="reportStructure"/>
+					<widgetInstance uiLocation="col3" defIdRef="friends"/>
+					<widgetInstance uiLocation="col3" defIdRef="linkRoll"/>
+					<widgetInstance uiLocation="col1" defIdRef="socialTags"/>
+					<widgetInstance uiLocation="col2" defIdRef="multiFeedReader"/>
+				</page>
+				<page pageId="reportingStructureView">
+				</page>
+				<page pageId="editProfileView"/>
+				<page pageId="searchResultView"/>
+				<page pageId="fullPageWidgetView"/>
+			</layout>
+		</widgets>
+	</layoutConfiguration>
+	<!-- END LAYOUT CONFIGURATION SECTION-->
+	
+	<apiConfiguration>
+		<apiModel profileType="default">
+			<editableApiAttribute>jobResp</editableApiAttribute>
+			<editableApiAttribute>secretaryUid</editableApiAttribute>
+			<!-- <editableApiAttribute>secretaryUid</editableApiAttribute> -->
+			<!-- <editableApiAttribute>secretaryEmail</editableApiAttribute> -->
+			<!-- <editableApiAttribute>isManager</editableApiAttribute> -->
+			<!-- <editableApiAttribute>employeeNumber</editableApiAttribute> -->
+			<!-- <editableApiAttribute>managerUid</editableApiAttribute> -->
+			<!-- <editableApiAttribute>shift</editableApiAttribute> -->
+			<!-- <editableApiAttribute>deptNumber</editableApiAttribute> -->
+			<!-- <editableApiAttribute>courtesyTitle</editableApiAttribute> -->
+			<!-- <editableApiAttribute>displayName</editableApiAttribute> -->
+			<!-- <editableApiAttribute>preferredFirstName</editableApiAttribute> -->
+			<!-- <editableApiAttribute>preferredLastName</editableApiAttribute> -->
+			<!-- <editableApiAttribute>alternateLastname</editableApiAttribute> -->
+			<!-- <editableApiAttribute>nativeFirstName</editableApiAttribute> -->
+			<!-- <editableApiAttribute>nativeLastName</editableApiAttribute> -->
+			<!-- <editableApiAttribute>preferredLanguage</editableApiAttribute> -->
+			<editableApiAttribute>bldgId</editableApiAttribute>
+			<editableApiAttribute>floor</editableApiAttribute>
+			<editableApiAttribute>officeName</editableApiAttribute>
+			<editableApiAttribute>telephoneNumber</editableApiAttribute>
+			<editableApiAttribute>ipTelephoneNumber</editableApiAttribute>
+			<editableApiAttribute>mobileNumber</editableApiAttribute>
+			<editableApiAttribute>pagerNumber</editableApiAttribute>
+			<!-- <editableApiAttribute>pagerType</editableApiAttribute> -->
+			<!-- <editableApiAttribute>pagerId</editableApiAttribute> -->
+			<!-- <editableApiAttribute>pagerServiceProvider</editableApiAttribute> -->
+			<editableApiAttribute>faxNumber</editableApiAttribute>
+			<editableApiAttribute>groupwareEmail</editableApiAttribute>
+			<!-- <editableApiAttribute>calendarUrl</editableApiAttribute> -->
+			<!-- <editableApiAttribute>freeBusyUrl</editableApiAttribute> -->
+			<editableApiAttribute>blogUrl</editableApiAttribute>
+			<editableApiAttribute>description</editableApiAttribute>
+			<editableApiAttribute>experience</editableApiAttribute>
+			
+			<!-- This attribute is required by the profile links feature -->
+			<editableApiExtensionAttribute extensionIdRef="profileLinks"/>
+			
+			<!-- Needed to make timezone editable in UI -->
+			<editableApiAttribute>timezone</editableApiAttribute>
+		</apiModel>
+	</apiConfiguration>
+
+	<!--  START FULL-TEXT CONFIG -->
+	<IndexingTask enabled="true">
+		<startDelay>1</startDelay><!-- minutes -->
+		<taskinterval>720</taskinterval><!-- 12 hours -->
+		<indexpath>${PROFILES_INDEX_DIR}</indexpath>
+		<lastIndexTime>${PROFILES_INDEX_DIR}/lastUpdate</lastIndexTime><!--  file w/date of last indexing op. String: "yyyy-mm-dd" -->
+		<implclass>com.ibm.peoplepages.internal.service.index.lucene.LuceneIndexService</implclass>
+	</IndexingTask>
+	<!--  END FULL-TEXT CONFIG -->
+
+	<!--  CACHE CONFIG START -->
+	<caches>
+		<fullReportsToChainCache>
+			<enabled>false</enabled>
+			<size>500</size>
+			<refreshTime>23:00</refreshTime><!-- 24 hour time -->
+			<refreshInterval>1440</refreshInterval>
+			<!-- minutes -->
+			<startDelay>5</startDelay><!-- minutes -->
+			<ceouid>CEO_UID</ceouid><!-- the uid of the top of the org structure pyramid-->
+		</fullReportsToChainCache>
+		<miniReportsToChainCache>
+			<enabled>false</enabled>
+			<size>485000</size><!-- the expected number of entries in the mini reports to cache -->
+			<refreshTime>23:30</refreshTime><!-- 24 hour time -->
+			<refreshInterval>1440</refreshInterval>
+			<!-- minutes -->
+			<startDelay>10</startDelay><!-- minutes -->
+			<filePath>
+				${PROFILES_CACHE_DIR}/reportsToData.txt
+			</filePath>
+		</miniReportsToChainCache>
+		<profileObjectCache>
+			<refreshTime>22:30</refreshTime> <!-- 24 hour time -->
+			<refreshInterval>1440</refreshInterval> <!-- minutes -->
+			<startDelay>10</startDelay> <!-- minutes -->
+		</profileObjectCache>
+	</caches>
+	<!--  CACHE CONFIG END -->
+
+	<!--  DATA ACCESS CONFIG START -->
+	<dataAccess>
+		<!-- indicates if organizational data is available (i.e. managerUid) -->
+		<organizationalStructureEnabled>false</organizationalStructureEnabled>
+		<!-- indicates which fields need to be resolved before being displayed -->
+		<!-- WARNING: in most deployments the resolvedCodes section should not be modified -->
+		<resolvedCodes>
+			<resolvedCode>workLocationCode</resolvedCode>
+			<resolvedCode>orgId</resolvedCode>
+			<resolvedCode>employeeTypeCode</resolvedCode>
+			<resolvedCode>countryCode</resolvedCode>
+			<resolvedCode>departmentCode</resolvedCode>
+		</resolvedCodes>
+		<!-- search preferences -->
+		<!-- WARNING: in most deployments the departmentSearchOnCode, departmentSearchOnCode, -->
+		<!-- and locationSearchOnCode should not be modified -->
+		<search>
+			<departmentSearchOnCode>false</departmentSearchOnCode>
+			<departmentField>organization</departmentField>
+			<locationSearchOnCode>false</locationSearchOnCode>
+			<maxRowsToReturn>250</maxRowsToReturn>
+			<pageSize>10</pageSize>
+			<firstNameSearch enabled="false" />
+			<kanjiNameSearch enabled="true" default="false" />
+		</search>
+	</dataAccess>
+	<!--  DATA ACCESS CONFIG END -->
+
+	<!-- LOGIN ATTRIBUTES CONFIG -->
+	<!-- this section maps login attributes configured on WAS to their corresponding field in Profiles-->
+	<!-- the value in loginField is really what's important here -->
+	<loginAttributes>
+		<loginAttribute>
+			<loginField>uid</loginField>
+			<profilesField>uid</profilesField>
+		</loginAttribute>
+		<loginAttribute>
+			<loginField>mail</loginField>
+			<profilesField>email</profilesField>
+		</loginAttribute>
+		<loginAttribute>
+			<loginField>ADMIN_REPLACE</loginField>
+			<profilesField>loginId</profilesField>
+		</loginAttribute>
+	</loginAttributes>
+	<!-- LOGIN ATTRIBUTES END -->
+
+	<!-- STATISTICS CONFIG START -->
+	<statistics enabled="true">
+		<statisticsFilePath>${PROFILES_STATS_DIR}</statisticsFilePath>
+		<statisticsFileName>profilesStats</statisticsFileName>
+	</statistics>
+	<!-- STATISTICS CONFIG END -->
+
+	<acf enabled="true" />	
+    <sametimeAwareness enabled="false"/>
+	<structuredTags enabled="false" />
+	<tagOthers enabled="true"/>
+	<javelinGWMailSearch enabled="false"/>
+</config>

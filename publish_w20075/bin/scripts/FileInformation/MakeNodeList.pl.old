@@ -1,0 +1,36 @@
+#!/usr/local/bin/perl
+
+
+my $port = $ARGV[0];
+
+my $arrayLength = scalar(@ARGV);
+
+my %hostnames;
+
+for( $i = 1; $i < $arrayLength; $i++){
+
+@cmdLineResults = `cat /.fs/system/config/nd-gen/allnodes.conf | grep -i $ARGV[$i] | awk '{print \$1}'`;
+
+print $cmdLineResults;
+
+foreach $item (@cmdLineResults){
+	chomp ($item);
+	$hostnames{$item} = 1;
+}
+
+}
+
+open (HOSTFILE, ">HostFile");
+
+foreach $host (keys(%hostnames)){
+
+  if( $host !~ /e1$/ ){
+	$host .= "e1";
+  }
+
+print HOSTFILE "http://$host:$port/fileinformation", "\n";
+
+}
+
+close (HOSTFILE);
+

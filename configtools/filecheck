@@ -1,0 +1,26 @@
+#!/bin/ksh
+
+filesource=$1
+filedest=$2
+fileback=`print $filedest | sed s/\/\./g`
+fix=$3
+pid=$$
+
+sumsource=`sum $filesource`
+sumdest=`sum $filedest`
+
+if [ "$sumsource" != "$sumdest" ]
+then
+	if [ "$fix" = "fix" ]
+	then
+		echo "Back up:  cp $filedest /tmp/$fileback.$pid"
+		echo "Fixing: cp -f $filesource $filedest"
+		cp -f $filesource $filedest
+		exit 1
+	else
+		echo "Reporting"
+		exit 1
+	fi
+fi
+
+exit 0

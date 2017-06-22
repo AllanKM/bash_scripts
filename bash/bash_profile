@@ -1,0 +1,16 @@
+# Place for the team to share bash_profile lines that work well in the EI
+# Just copy this file to ~/.bash_profile and it will be used each time as you log in if bash is set as your shell
+# .bash_profile
+
+# Get the aliases and functions
+if [ -f ~/.bashrc ]; then
+        . ~/.bashrc
+fi
+
+# User specific environment and startup programs
+
+PATH=$PATH:$HOME/bin:/lfs/system/bin:/fs/system/bin
+BASH_ENV=$HOME/.bashrc
+USERNAME=""
+
+export USERNAME BASH_ENV PATH

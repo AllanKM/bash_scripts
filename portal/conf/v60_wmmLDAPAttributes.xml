@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE repositoryAttributes SYSTEM "wmmAttributesMap.dtd">
+<repositoryAttributes repositoryName="wmmLDAP">
+
+        <!-- Sample mapping file, based on the following settings
+        * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+                Member Type             Member RDN      LDAP RDN        Object Class
+        * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+                Person                  uid             uid             inetOrgPerson                                                     
+                Group                   cn              cn              groupOfNames                                                      
+                Organization            o               o               organization                                              
+                OrganizationalUnit      ou              ou              organizationalUnit                              
+        * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * 
+        -->
+
+        <!-- * * * * *  Internal attributes * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * -->
+
+        <!-- Define which LDAP attribute is mapped to external identifier -->
+        <attributeMap   wmmAttributeName="extId" 
+                        applicableMemberTypes="Person;Group;Organization;OrganizationalUnit"
+                        pluginAttributeName="ibm-entryUUID"
+                        dataType="String"       
+                        multiValued="false"
+                        readOnly="true"/>
+                        
+        <!-- Define which LDAP attribute is used for storing static group members -->
+        <attributeMap   wmmAttributeName="groupMember"
+                        pluginAttributeName="uniqueMember"
+                        applicableMemberTypes="Group"
+                        dataType="String"
+                        valueLength="1024"
+						readOnly="true"
+                        multiValued="true" />
+                        
+        <!-- Define which LDAP attribute is used for storing dynamic group queries -->
+        <!-- If no dynamic groups are used, comment out this map to improve performance -->
+        <!--attributeMap   wmmAttributeName="groupMemberURL"
+                        pluginAttributeName="memberURL"
+                        applicableMemberTypes="Group"
+                        dataType="String"
+                        valueLength="1024"
+                        multiValued="true" /-->
+
+        <!-- * * * * *  Common schema attributes * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * ** * * * * * * * -->
+        
+        <attributeMap   wmmAttributeName="uid"
+                        pluginAttributeName="uid"
+                        applicableMemberTypes="Person"
+                        requiredMemberTypes="Person"                    
+                        dataType="String"
+                        valueLength="256"
+						readOnly="true"
+                        multiValued="false" />
+
+        <attributeMap   wmmAttributeName="sn" 
+                        pluginAttributeName="sn"
+                        applicableMemberTypes="Person"                  
+                        requiredMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="128" 
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="givenName"
+                        pluginAttributeName="givenName"
+                        applicableMemberTypes="Person"                  
+                        dataType="String" 
+                        valueLength="128" 
+						readOnly="true"
+                        multiValued="true" />
+                        
+        <attributeMap   wmmAttributeName="initials"
+                        pluginAttributeName="initials"
+                        applicableMemberTypes="Person"
+                        dataType="String"
+                        valueLength="20"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="ibm-primaryEmail"
+                        pluginAttributeName="mail"
+                        applicableMemberTypes="Person"
+                        dataType="String"
+                        valueLength="256"
+						readOnly="true"
+                        multiValued="false" />
+        
+        <attributeMap   wmmAttributeName="displayName"
+                        pluginAttributeName="displayName"
+                        applicableMemberTypes="Person"
+                        dataType="String"
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="preferredLanguage"
+                        pluginAttributeName="preferredLanguage"
+                        applicableMemberTypes="Person"
+                        dataType="String"
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="false" />
+                        
+        <attributeMap   wmmAttributeName="o"
+                        pluginAttributeName="o"
+                        applicableMemberTypes="Organization;Person"
+                        requiredMemberTypes="Organization"                      
+                        dataType="String"
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="false" />          
+                        
+        <attributeMap   wmmAttributeName="ou"
+                        pluginAttributeName="ou"
+                        applicableMemberTypes="OrganizationalUnit;Person"
+                        requiredMemberTypes="OrganizationalUnit"                        
+                        dataType="String"
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="false" />          
+
+        <attributeMap   wmmAttributeName="cn"
+                        pluginAttributeName="cn"
+                        applicableMemberTypes="Person;Group"
+                        requiredMemberTypes="Group"                     
+                        dataType="String"
+                        valueLength="256" 
+						readOnly="true"
+                        multiValued="false" />  
+
+        <attributeMap   wmmAttributeName="description"
+                        pluginAttributeName="description"
+                        applicableMemberTypes="Person;Group;Organization;OrganizationalUnit"                    
+                        dataType="String"
+                        valueLength="1024"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="userPassword"
+                        pluginAttributeName="userPassword"
+                        applicableMemberTypes="Person"
+                        dataType="String"
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="false" />
+
+        <!-- Read only attribute -->
+        <attributeMap   wmmAttributeName="createTimestamp"
+                        pluginAttributeName="createTimestamp"
+                        applicableMemberTypes="Person;Group;Organization;OrganizationalUnit"  
+                        dataType="Timestamp" 
+                        multiValued="false" 
+                        readOnly="true"/>
+        
+        <!-- Read only attribute -->                    
+        <attributeMap   wmmAttributeName="modifyTimestamp" 
+                        pluginAttributeName="modifyTimestamp"
+                        applicableMemberTypes="Person;Group;Organization;OrganizationalUnit"  
+                        dataType="Timestamp" 
+                        multiValued="false" 
+                        readOnly="true"/>
+                        
+        <attributeMap   wmmAttributeName="jpegPhoto"
+                        pluginAttributeName="jpegPhoto"
+                        applicableMemberTypes="Person"
+                        dataType="ByteArray"  
+                        valueLength="250000" 
+						readOnly="true"        
+                        multiValued="true" />   
+      
+        <attributeMap   wmmAttributeName="labeledURI"
+                        pluginAttributeName="labeledURI"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="32700" 
+						readOnly="true"            
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="carLicense"
+                        pluginAttributeName="carLicense"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" /> 
+
+        <attributeMap   wmmAttributeName="telephoneNumber"
+                        pluginAttributeName="telephoneNumber"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="32"
+						readOnly="true"
+                        multiValued="true" /> 
+
+        <attributeMap   wmmAttributeName="facsimileTelephoneNumber"
+                        pluginAttributeName="facsimileTelephoneNumber"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="32"
+                        multiValued="true" /> 
+
+        <attributeMap   wmmAttributeName="pager"
+                        pluginAttributeName="pager"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="32"
+						readOnly="true"
+                        multiValued="true" /> 
+
+        <attributeMap   wmmAttributeName="mobile"
+                        pluginAttributeName="mobile"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="32"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="homePostalAddress"
+                        pluginAttributeName="homePostalAddress"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="500"
+						readOnly="true"
+                        multiValued="true" />  
+
+        <attributeMap   wmmAttributeName="postalAddress"
+                        pluginAttributeName="postalAddress"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="500"
+						readOnly="true"
+                        multiValued="true" />  
+
+        <attributeMap   wmmAttributeName="roomNumber"
+                        pluginAttributeName="roomNumber"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="256"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="localityName"
+                        pluginAttributeName="l"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="stateOrProvinceName"
+                        pluginAttributeName="st"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="street"
+                        pluginAttributeName="street"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="postalCode"
+                        pluginAttributeName="postalCode"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="40"
+						readOnly="true"
+                        multiValued="true" />
+                        
+        <attributeMap   wmmAttributeName="employeeNumber"
+                        pluginAttributeName="employeeNumber"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="20"
+						readOnly="true"
+                        multiValued="false" />
+
+        <attributeMap   wmmAttributeName="employeeType"
+                        pluginAttributeName="employeeType"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="manager"
+                        pluginAttributeName="manager"
+                        applicableMemberTypes="Person"
+                        dataType="MemberIdentifier" 
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="secretary"
+                        pluginAttributeName="secretary"
+                        applicableMemberTypes="Person"
+                        dataType="MemberIdentifier" 
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="businessCategory"
+                        pluginAttributeName="businessCategory"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" /> 
+
+        <attributeMap   wmmAttributeName="departmentNumber"
+                        pluginAttributeName="departmentNumber"
+                        applicableMemberTypes="Person"
+                        dataType="String" 
+                        valueLength="128"
+						readOnly="true"
+                        multiValued="true" />
+
+        <attributeMap   wmmAttributeName="seeAlso"
+                        pluginAttributeName="seeAlso"
+                        applicableMemberTypes="Person;Organization;OrganizationalUnit"
+                        dataType="MemberIdentifier" 
+						readOnly="true"
+                        multiValued="true" />
+
+	<attributeMap 	wmmAttributeName="ibm-jobTitle" 
+			pluginAttributeName="title" 
+			applicableMemberTypes="Person" 
+			dataType="String" 
+			valueLength="128" 
+			readOnly="true"
+			multiValued="true"/>
+
+	<attributeMap 	wmmAttributeName="countryName" 
+			pluginAttributeName="c" 
+			applicableMemberTypes="Person" 
+			dataType="String" 
+			valueLength="128" 
+			readOnly="true"
+			multiValued="true"/>
+
+	<attributeMap wmmAttributeName="authenid"
+                pluginAttributeName="authenid"
+                applicableMemberTypes="Person"
+                dataType="String"
+                valueLength="256"
+                readOnly="true"
+                multiValued="false"/>
+
+</repositoryAttributes>

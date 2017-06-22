@@ -1,0 +1,42 @@
+{
+        name = daedalus
+        port = 6308
+       	home = /logs/bNimble/deletetool
+				root = root
+        max-retry = 0
+        defer-time = 15
+        logger = logger
+				global-threads = 0
+}
+{
+        name = logger
+        interface = logger
+        log-name = bNimbledeletetool.log
+        log-size = 10000000
+        wrap-log = no
+        log-flags = TYPE_ALL
+        log-include-millisecs = false
+        log-include-threadID = true
+        log-triggerID-len = 3
+        log-threadID-len = 5
+        suffix = yyyyMMddHH
+}
+
+{
+	name = basicauth
+	class = com.ibm.events.bnimble.plugin.basicauth.BasicAuth
+	user-pw-pairs = devtest:4jf98m6m487vt todds:3xplor3r krusch:hoover
+}
+
+{
+	name		= Listfiles 
+	class		= com.ibm.events.bnimble.plugin.deletetool.ListFiles
+	document-root   = /www/testme
+}
+
+{
+	name		= DeleteFiles 
+	class		= com.ibm.events.bnimble.plugin.deletetool.DeleteFiles
+	document-root   = /www/testme
+	http-auth = basicauth
+}

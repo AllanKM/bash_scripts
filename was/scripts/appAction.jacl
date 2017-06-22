@@ -1,0 +1,238 @@
+#*******************************************************************************************************
+# appAction.jacl
+#
+#   Author: James Walton
+#   Date: 03/14/2006
+#*******************************************************************************************************
+
+proc setVirtualHost { appName virtualHost version} {
+  global AdminApp
+  global AdminConfig
+  
+  # Check that virtualHost is valid
+  puts "Verifying that virtual host is valid..."
+  set vhosts [$AdminConfig list VirtualHost]
+  foreach host $vhosts {
+    set vhname [lindex [lindex [$AdminConfig show $host name] 0] 1]
+    if {$vhname == $virtualHost} {
+      break
+    } else {
+      set vhname ""
+    }
+  }
+  # Non-valid virtual host should kick out with an error
+  if {$vhname == ""} {
+    return 1
+  }
+  # Strip out and populate a list of modules with params
+  puts "Searching for web modules..."
+  set webmodinfo [$AdminApp view $appName -MapWebModToVH]
+  # Version 6.0 uses "module:" and "host:", 5.1 uses "Module:" and "Host:"
+  if {$version == "5.1"} {
+  	set modVar "Module:"
+  	set hostVar "Host:"
+  } elseif {$version == "6.0" || $version == "6.1"} {
+  	set modVar "module:"
+  	set hostVar "host:"
+  } else {
+    puts "Error: Invalid WAS version - $version - found."
+    return 1
+  }
+  set webmods [lrange $webmodinfo [lsearch $webmodinfo $modVar] [llength $webmodinfo]]
+  set modList {}
+  while {[llength $webmods] > 0} {
+    set indexVH [expr [lsearch $webmods $hostVar] + 1]
+    lappend modList [lrange $webmods 0 $indexVH]
+    if {$indexVH == [llength $webmods]} {
+      break
+    } else {
+      set tmpmods $webmods
+      set webmods [lrange $tmpmods [expr $indexVH + 2] [llength $tmpmods]]
+    }
+  }
+  # Cycle through modules, grab params, associate modules with vhost
+  puts "Associating web modules with new virtual host..."
+  foreach mod $modList {
+    set iMOD [expr [lsearch $mod $modVar] + 1]
+    set iURI [expr [lsearch $mod "URI:"] + 1]
+    set iVH [expr [lsearch $mod $hostVar] + 1]  
+    set modName [lrange $mod $iMOD [expr $iURI - 2]]
+    set modURI [lrange $mod $iURI [expr $iVH - 3]]
+    set currentModVH [lindex $mod $iVH]
+    set args "\{\"$modName\" $modURI $virtualHost\}"
+    $AdminApp edit $appName "-MapWebModToVH {$args}"
+  }
+  return 0
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-action"} {
+    if {[incr i] < $argc} {
+      set actionName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-server"} {
+    if {[incr i] < $argc} {
+      set serverName [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-cluster"} {
+    if {[incr i] < $argc} {
+      set clusterName [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-app"} {
+    if {[incr i] < $argc} {
+      set appName [lindex $argv $i]
+    } else {
+      set argerr 5
+    }
+  } elseif {$arg == "-ear"} {
+    if {[incr i] < $argc} {
+      set earName [lindex $argv $i]
+    } else {
+      set argerr 6
+    }
+  } elseif {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+    } else {
+      set argerr 7
+    }
+  } elseif {$arg == "-vhost"} {
+    if {[incr i] < $argc} {
+      set virtualHost [lindex $argv $i]
+    } else {
+      set argerr 8
+    }
+  } else {
+    set argerr 9
+  }
+}
+
+if {[info exists actionName] && $actionName != "list" && ![info exists appName] && \
+ ![info exists earName] && ![info exists clusterName]} {
+  set argerr 10
+}
+if {[lsearch -exact "install update list" $actionName] < 0} {
+  set argerr 11
+}
+if {([info exists serverName] && [info exists clusterName]) || \
+    ([info exists serverName] && [info exists nodeName]) || \
+    ([info exists clusterName] && [info exists nodeName])} {
+  set argerr 12
+}
+if {($actionName == "install" || $actionName == "update") && [info exists serverName]} {
+  set argerr 13
+}
+if {[info exists virtualHost] && !($actionName == "install" || $actionName == "update")} {
+  set argerr 14
+}
+
+if { $argerr } {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f appAction.jacl -action install -app <appName> -ear <\/pathTo\/name.ear> -cluster <clusterName> \[-vhost <virtualHost>\]"
+  puts "   wsadmin -f appAction.jacl -action update -app <appName> -ear <\/pathTo\/name.ear> \[-vhost <virtualHost>\]"
+  puts "   wsadmin -f appAction.jacl -action list \[-server <serverName> | -cluster <clusterName> | -node <nodeName>\]"
+  puts "Installs application <appName>, using the EAR file <\/pathTo\/name.ear>, to cluster <clusterName>."
+  puts "The option to install to a server is purposefully not allowed."
+  puts "Updates application <appName>, using the EAR files <\/pathTo\/name.ear>, cluster name is not needed."
+  puts "The list action requires no additional arguments, by default it lists all applications."
+  puts "Or, the list action can be passed -cluster, -server, or -node to list only applications deployed"
+  puts "on those objects."
+  puts ""
+  puts "Actions: install | update | list"
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+set dmgr [$AdminControl completeObjectName name=dmgr,type=Server,*]
+set version [$AdminControl getAttribute $dmgr platformVersion]
+  
+if {$actionName == "install"} {
+  # Install new App to Cluster
+  set args "-cluster $clusterName -appname $appName"
+  puts [$AdminApp install $earName $args]
+  puts "$appName installed - updating virtual host..."
+  if {[info exists virtualHost]} {
+    set result [setVirtualHost $appName $virtualHost $version]
+    if {$result != 0} {
+      puts "Error: Virtual Host not set properly, please check virtual host name and edit in the console."
+    }
+  }
+  puts "Saving configuration..."
+  $AdminConfig save
+  puts "You must synchronize your changes across the cell for them to fully take effect."
+} elseif {$actionName == "update"} {
+  # Update existing App
+  set args "-update -appname $appName"
+  puts [$AdminApp install $earName $args]
+  if {[info exists virtualHost]} {
+    set result [setVirtualHost $appName $virtualHost $version]
+    if {$result != 0} {
+      puts "Error: Virtual Host not set properly, please check virtual host name and edit in the console."
+    }
+  }
+  puts "Saving configuration..."
+  $AdminConfig save
+  puts "You must synchronize your changes across the cell for them to fully take effect."
+} elseif {$actionName == "list"} {
+  if {[info exists serverName]} {
+    # Get apps on specified AppServer
+    set server [$AdminConfig getid /ServerEntry:$serverName/]
+    set dAppList [split [lindex [lindex [$AdminConfig show $server {deployedApplications}] 0] 1] \;]
+    puts $serverName
+    foreach dApp $dAppList {
+      set appname [lindex [split $dApp \/] 2]
+      puts "  $appname"
+    }
+  } elseif {[info exists clusterName]} {
+    # Get apps on specified Cluster
+    set cluster [$AdminConfig getid /ServerCluster:$clusterName/]
+    set memberList [lindex [lindex [$AdminConfig show $cluster {members}] 0] 1]
+    puts $clusterName
+    foreach member $memberList {
+      set mname [lindex [split $member (] 0]
+      puts "  $mname"
+      set server [$AdminConfig getid /ServerEntry:$mname/]
+      set dAppList [split [lindex [lindex [$AdminConfig show $server {deployedApplications}] 0] 1] \;]
+      foreach dApp $dAppList {
+        set appname [lindex [split $dApp \/] 2]
+        puts "    $appname"
+      }
+      puts ""
+    }
+  } elseif {[info exists nodeName]} {
+    # Get apps on specified Node
+    set node [$AdminConfig getid /Node:$nodeName/]
+    set serverList [$AdminConfig list ServerEntry $node]
+    puts $nodeName
+    foreach server $serverList {
+      set dAppList [split [lindex [lindex [$AdminConfig show $server {deployedApplications}] 0] 1] \;]
+      set sName [lindex [split $server (] 0]
+      puts "  $sName"
+      foreach dApp $dAppList {
+        set appname [lindex [split $dApp \/] 2]
+        puts "    $appname"
+      }
+    }
+  } else {
+    # List all applications
+    puts [$AdminApp list]
+  }
+} else {
+  puts "Invalid action requested, and somehow slipped through - please try again."
+}
+

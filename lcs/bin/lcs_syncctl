@@ -1,0 +1,363 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+my $daemon = "lcs_ctl";
+my $cfgdir = "/opt/HPODS/LCS/conf";
+my $cfgbase = "$cfgdir/";
+my $cfgext = ".conf";
+my $logdir = "/var/log/lcs";
+my $piddir = "/var/run";
+my $tmpdir = "/tmp/$mysname.$$";
+my $lstfile = "$tmpdir/nodes.lst";
+my $cmdfile = "$tmpdir/task.sh";
+
+my $sudo = "sudo";
+my $mklcsctlsh = "/fs/system/images/lcs/scripts/mklcs_ctl.sh";
+my $tivtask = "/Tivoli/scripts/tiv.task";
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+# Obtain arguments
+my %work = ();
+my $dfltsite = "  $$ LCS";
+my $site = $dfltsite;
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'dssh' => sub { $clargs{$_[0]} = 1 },
+  'instance:s' => sub { $clargs{$_[0]} = $_[1] },
+  'sd' => sub { $clargs{$_[0]} = 1 },
+  'verbose' => sub { $clargs{$_[0]} = 1 },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+# Qualify the specified instance with the daemon name
+if (defined $clargs{instance}) {
+  my $i = $clargs{instance};
+  $i = "$daemon$i" if ($i !~ /^$daemon/);
+  $clargs{instance} = $i;
+} else {
+  $clargs{instance} = $daemon;
+}
+
+# Determine configuration file to use
+my $cfgfile = $clargs{instance};
+$cfgfile = "$cfgbase$cfgfile$cfgext";
+
+# Override configuration file specified with existing configuration
+$clargs{configuration} = $cfgfile;
+
+# Define the instance for substitution reasons
+$work{$dfltsite}{instance} = $clargs{instance}
+  if (defined $clargs{instance});
+
+# Load configuration file
+my %configuration = ();
+if (defined $clargs{configuration}) {
+  my $file = $clargs{configuration};
+  $file = "$cfgdir/$file" if ($file !~ /^\//);
+  logit($mysname,1,"Loading configuration file: $file")
+    if ($clargs{verbose});
+  if (-r $file) {
+    loadfile(\%configuration,$file,$dfltsite,1);
+  } else {
+    logit($mysname,2,"Unable to locate configuration file: $file");
+    exit 1;
+  }
+}
+
+# Obtain a unique list of all aggregates and collectors
+my %hosts = ();
+foreach my $s (keys %configuration) {
+  if (defined $configuration{$s}{aggregate}) {
+    grep($hosts{$_}++,@{$configuration{$s}{aggregate}});
+  }
+  # Removed collectors since they all point to CNAMEs
+  #if (defined $configuration{$s}{collector}) {
+  #  grep($hosts{$_}++,@{$configuration{$s}{collector}});
+  #}
+}
+
+# If dssh or sd then obtain all aggregates/collectors
+# and attempt to run on the nodes
+#   If sd - generate a file with list of nodes
+#     /Tivoli/scripts/tiv.task -a -y -f file script
+#       where: file - contains each node, one per line
+#              script - mklcs_ctl script
+#     /fs/system/images/lcs/scripts/mklcs_ctl.sh -useignore \
+#       [-instance instance]
+#   If dssh - combine node list for -w and issue:
+#     dssh -wnodelist sudo /fs/system/images/lcs/bin/mklcs_ctl.sh -useignore \
+#       [-instance instance]
+#   Otherwise, just run the mklcs_ctl
+#     /fs/system/images/lcs/scripts/mklcs_ctl.sh -useignore \
+#       [-instance instance]
+
+my $cmd = "";
+if (defined $clargs{dssh}) {
+  $cmd = "dssh -w".join(',',sort keys %hosts);
+  $cmd .= " $sudo $mklcsctlsh -useignore";
+  $cmd .= " -instance $clargs{instance}" if (defined $clargs{instance});
+  $cmd .= " -verbose" if ($clargs{verbose});
+  logit($mysname,1,"Executing: $cmd") if ($clargs{verbose});
+  system($cmd);
+} elsif (defined $clargs{sd}) {
+  # Make sure we are root and continue
+  if ($effuser ne "root") {
+    logit($mysname,2,"Must be run as root (currently: $effuser)");
+    exit 1;
+  }
+
+  # Need the EI Tivoli Software Distribution script $tivtask
+  if (! -x $tivtask) {
+    logit($mysname,2,"Unable to locate $tivtask");
+    exit 1;
+  }
+
+  # Make temporary directory
+  mkdirs($tmpdir,0,0,0755) if (! -d $tmpdir);
+  if (! -d $tmpdir) {
+    logit($mysname,2,"Unable to create temporary directory $tmpdir");
+    exit 1;
+  }
+
+  # Create nodelist file
+  if (open(LST,">$lstfile")) {
+    my $ok = 0;
+    $ok = 1 if (print LST join("\n",sort keys %hosts)."\n");
+    close(LST);
+    if ($ok) {
+      # Create script file
+      if (open(TSK,">$cmdfile")) {
+        $cmd = "\n$mklcsctlsh -useignore";
+        $cmd .= " -instance $clargs{instance}" if (defined $clargs{instance});
+        $cmd .= " -verbose" if ($clargs{verbose});
+        $cmd .= "\n";
+        $ok = 0;
+        $ok = 1 if (print TSK $cmd);
+        close(TSK);
+        if ($ok) {
+          # Execute tiv.task
+          chmod(0755,$cmdfile);
+          $cmd = "$tivtask -a -y -f $lstfile $cmdfile";
+          logit($mysname,1,"Executing: $cmd") if ($clargs{verbose});
+          system($cmd);
+        } else {
+          logit($mysname,2,"Unable to create task script $cmdfile");
+        }
+      } else {
+        logit($mysname,2,"Unable to open task script $cmdfile");
+      }
+    } else {
+      logit($mysname,2,"Unable to create node list $lstfile");
+    }
+  } else {
+    logit($mysname,2,"Unable to open node list $lstfile");
+  }
+
+  # Clean up node list, task script and temporary directory
+  logit($mysname,1,"Removing temporary directory $tmpdir")
+    if ($clargs{verbose});
+  $cmd = "rm -rf $tmpdir";
+  system($cmd) if (-d $tmpdir);
+} else {
+  # Make sure we are root and continue
+  if ($effuser ne "root") {
+    logit($mysname,2,"Must be run as root (currently: $effuser)");
+    exit 1;
+  }
+
+  $cmd = "$mklcsctlsh -useignore";
+  $cmd .= " -instance $clargs{instance}" if (defined $clargs{instance});
+  $cmd .= " -verbose" if ($clargs{verbose});
+  logit($mysname,1,"Executing: $cmd") if ($clargs{verbose});
+  system($cmd);
+}
+
+# Log the command was run
+logit($mysname,1,"Logging the execution")
+  if ($clargs{verbose});
+my $out = "";
+$out = "User: $realuser";
+$out .= "($effuser)" if ($realuser ne $effuser);
+$out .= " TTY: $tty";
+$out .= " CMD: $0 ".join(" ",@allargv);
+if ($out ne "") {
+  logit($mysname,8,"daemon","notice","%s",$out);
+  #logit($mysname,2,"%s",$out);
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-dssh|-sd][-instance name][-verbose]\n",
+        "  where: name       - instance name to discern multiple configs\n",
+        "         -dssh      - use EI tool dssh to distribute commands\n",
+        "         -sd        - use Tivoli Software Distribution\n",
+        "         -verbose   - describe events each step of the way\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+print "$main::running_under_some_shell\n";
+
+

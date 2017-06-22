@@ -1,0 +1,150 @@
+#!/bin/ksh
+
+BLACK="\033[30;1;49m"
+RED="\033[31;1;49m"
+GREEN="\033[32;1;49m"
+YELLOW="\033[33;3;49m"
+BLUE="\033[34;49;1m"
+MAGENTA="\033[35;49;1m"
+CYAN="\033[36;49;1m"
+WHITE="\033[37;49;1m"
+RESET="\033[0m"
+#=======================================================
+# check we used sudo to invoke this script
+#=======================================================
+if [[ $SUDO_USER = "" ]]; then
+	print "$0 requires SUDO privileges"
+	exit
+fi
+
+if [[ $# -ne 2 ]]; then
+	print "Syntax: $0 <instance_name> <cn root pw>"
+	exit
+fi
+
+instance=$1
+if [ -z "$instance" ]; then
+	echo Need to enter ldap instance name
+	exit
+fi
+if [ ! -d /db2_database/$instance ]; then
+	echo $instance LDAP instance not found
+	exit
+fi
+shift
+pw=$1
+shift
+opts=$@
+# find secure port for the instance
+typeset -l line
+host=`hostname -s`
+#=========================================================
+# get LDAP version for this instance
+#=========================================================
+while read line; do
+	#dn: cn=smaldpdb, CN=IDS INSTANCES
+	#cn: smaldpdb
+	#ids-instanceDesc: SMA
+	#ids-instanceLocation: /db2_database/smaldpdb
+	#ids-instanceVersion: 6.1
+	#objectClass: TOP
+	#objectClass: ids-instance
+
+	if [[ "$line" = "cn: $instance"* ]]; then
+		want=1
+	fi
+	if [[ "$line" = "ids-instanceversion:"* ]] && [[ "$want" = "1" ]]; then
+		version="V${line#*: }"
+		break
+	fi
+done < /opt/IBM/ldap/idsinstinfo/idsinstances.ldif
+
+#=========================================================
+# get LDAPS port / IP address / Serverid
+#=========================================================
+while read line; do
+   if [[ "$line" = "dn: "* ]]; then
+      if [[ "$line" = "dn: cn=ssl"* ]]; then
+         gotstanza=1
+      else
+         unset gotstanza
+      fi
+    elif [[ "$line" = "ibm-slapdsecureport:"* && -n "$gotstanza" ]]; then
+      port=$(set -- $line; print $2)
+    elif [[ "$line" = "ibm-slapdipaddress:"* ]]; then
+      host=$( set -- $line; print $2 )
+    elif [[ "$line" = "ibm-slapdserverid:"* ]]; then
+      serverid=$( set -- $line; print $2 )
+    fi
+done < /db2_database/$instance/idsslapd-$instance/etc/ibmslapd.conf
+
+zone=$(lssys -x csv -l realm -n | grep -v \# | cut -d, -f 2 | cut -d. -f1)
+case $zone in
+  b) zone=blue ;;
+  g) zone=green ;;
+  y) zone=yellow ;;
+  *) print "cant determine client keystore to use"
+  exit
+  ;;
+  esac
+common="-h $host -p $port -D cn=root -K /etc/security/ldap/ei_${zone}_ldap_client.kdb -w $pw $opts"
+
+#=========================================================
+# Get the replication agreement for the server
+#=========================================================
+[[ -n "$debug" ]] && echo ldapsearch $common -bo=ibm,c=us ibm-replicaserverid=$serverid dn
+ra=`/opt/IBM/ldap/$version/bin/ldapsearch $common -bo=ibm,c=us ibm-replicaserverid=$serverid dn`
+
+if [ -n $ra ]; then
+	#===============================
+	# show replication attributes
+	#===============================
+	[[ -n "$debug" ]] && echo "ldapsearch $common -b $ra objectclass=ibm-replicationagreement ibm-replicationstate ibm-replicationpendingchangecount ibm-replicationLastResult"
+	/opt/IBM/ldap/$version/bin/ldapsearch $common -b "$ra" "objectclass=ibm-replicationagreement" ibm-replicationstate ibm-replicationpendingchangecount ibm-replicationLastResult ibm-replicaURL ibm-replicationonhold ibm-replicationChangeLDIF |&
+	exec 4>&p
+	exec 5<&p
+
+	while read -u5 line; do
+		
+		if [[ $line = "ibm-replicationonhold=true" ]]; then
+			print "$line"
+			print -u2 -- "$RED#### Replication has been suspended by administrator action$RESET"
+		elif [[ "$line" = "cn=peer"* ]]; then 
+			failedra=$line
+		elif [[ "$line" = "ibm-replicationstate="* ]]; then
+			print "$line"
+			state=${line##*=}
+			if [[ "$state" != "ready" ]]; then
+				print -u2 -- "$RED#### Replication is not in ready state$RESET"
+			fi
+	
+		elif [[ "$line" = "ibm-replicationpendingchangecount="* ]]; then
+			print "$line"
+			count=${line##*=}
+
+			if [ $count -gt 0 ]; then
+				print -u2 -- "$RED#### Replication has $count updates queued$RESET"
+			fi
+		elif [[ "$line" = "ibm-replicationlastresult="* ]]; then
+			print $line
+			set -- $(print $line)
+			failedid=$2
+			error=$3
+		elif [[ "$line" = "ibm-replicationchangeldif"* ]]; then
+			if [[ "$count" -gt 0 ]]; then
+		   	print "\n##### Failing update content ####"
+		   fi
+		else 
+			print "$line"
+		fi
+		
+		
+		
+	done
+	if [[ "$error" -gt 0 ]]; then
+		print "To skip this object "
+		print "ldapexop $common -op controlqueue -ra $failedra -skip $failedid"
+	fi
+else
+	echo "Unable to find replication agreement for serverid $serverid"
+fi

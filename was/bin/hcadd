@@ -1,0 +1,164 @@
+#!/usr/local/bin/perl-current
+#------------------------------------------------------------------------------
+#
+# Script Name: hcadd
+#
+# Description:
+#
+#  Add or Update hc definition from dirstore
+#
+# Syntax:
+#
+#   hcadd role app hcname url successcriteria
+#
+# Change history:
+#
+#   Date      Init    Description
+#   09/21/09  MarcoZ  Creation
+#------------------------------------------------------------------------------
+
+
+use Getopt::Std;
+use EI::DirStore;
+
+
+sub usage() {
+  warn "Usage: hcadd -t was role app hcname url successcriteria chk_delay\n";
+  warn "Usage: hcadd -t ihs role was_hc_dirstore_name hc_name replacement_string \n";
+  warn "Usage: hcadd -t ihs2 role site url successcriteria \n";
+  warn "  e.g: hcadd -t was was.ibm.sso.pre search csa http://localhost:9048:/CommonSearchFrontend/healthcheck '(?s)(PASS.*){5,}?' 30\n";
+  warn "  e.g: hcadd -t ihs webserver.ibm.origin hc_was.ibm.sso.pre_search csa '<\$plex.www.ibm.com'\n";
+  warn "  e.g: hcadd -t ihs2 webserver.ibm.origin ibmstg http://129.42.60.212/site.txt  www.ibm.com \n";
+  exit 1;
+}
+
+
+getopts("ht") or usage;
+usage if $opt_h;
+if ($opt_t) {
+    $type = shift(@ARGV) or usage;
+    if ($type eq "was") {
+        $role = shift(@ARGV) or usage;
+        $app = shift(@ARGV) or usage;
+        $hcname = shift(@ARGV) or usage;
+        $url = shift(@ARGV) or usage;
+        $successcriteria = shift(@ARGV)  or usage;
+		  $chk_delay=shift(@ARGV)  or usage;
+        $name = "hc_$role\_$app";
+        $newattr = "$url@\@$successcriteria@\@$chk_delay";
+        update_all( $name, $hcname,$newattr );
+    } 
+    else{
+       if ($type eq "ihs") {
+           $role = shift(@ARGV) or usage;
+           $was_hc_dirstore_name = shift(@ARGV) or usage;
+           $hc_name = shift(@ARGV) or usage;
+           $replacement_string = shift(@ARGV) or usage;
+           $name = "hc_$role";
+           $hcname="$was_hc_dirstore_name@\@$hc_name";
+           $newattr = "$replacement_string";
+           update_all( $name, $hcname,$newattr );
+        }
+        else{
+            if ($type eq "ihs2") {
+                  $role = shift(@ARGV) or usage;
+                  $site = shift(@ARGV) or usage;
+                  $url = shift(@ARGV) or usage;
+                  $successcriteria = shift(@ARGV) or usage;
+                  $name = "hc_$role";
+                  $hcname="$site";
+                  $newattr = "$url@\@$successcriteria";
+                  update_all( $name, $hcname,$newattr );
+        }
+       else {
+              usage;
+       }
+     }
+   }
+  }
+  else {
+    usage;
+}
+
+
+sub delete_dirstore {
+        my ($dirstore_key,$dirstore_entry_ref) = @_;
+        my %entry;
+        dsGet(%entry,"software",$dirstore_key);
+ #       print Dumper($dirstore_entry_ref);
+        if (%entry) {
+            #   print "Deleting $dirstore_key\n";
+                dsUpdate("SOFTWARE",$dirstore_key,%{$dirstore_entry_ref}, type => "delete" );
+                delete $dirstore_entry_ref->{"instances"};
+        }
+}
+
+
+
+sub update_dirstore {
+        my ($dirstore_key,$dirstore_entry_ref) = @_;
+        my %entry;
+        dsGet(%entry,"software",$dirstore_key);
+ #       print Dumper($dirstore_entry_ref);
+        if (%entry) {
+       #  if ($dirstore_key) {
+                print "Updating $dirstore_key\n";
+                dsUpdate("SOFTWARE",$dirstore_key,%{$dirstore_entry_ref}, type => "add" );
+                delete $dirstore_entry_ref->{"instances"};
+        }
+        else {
+                print "Adding $dirstore_key\n";
+				 #  print "entry $dirstore_entry_ref->{'instances'}\n";
+                dsAdd("software",$dirstore_key,%{$dirstore_entry_ref}) or die ("failed to add $dirstore_key $dsErrMsg");
+        }
+}
+
+sub update_all{
+        my ($name,$hcname,$newattr) = @_;
+        if (not defined $ENV{DSLDAPUSER} and not defined $ENV{DSUSER}) {
+             dsConnect(user => "dsUpdate")  or die "Error: Couldn't connect: $dsErrMsg\n";
+        }
+        dsSearch(%results, "software",name =>"$name")  or die "Error: search failed: $dsErrMsg\n";
+        while (($key,$hashRef) = each(%results)) {
+             $others=0;
+             while (($attr,$attrHashRef) = each(%{$hashRef})) {
+                $count = 1;
+                while ($count <=@{$attrHashRef}) {
+                     if(@{$attrHashRef}[$count-1]=~/^$hcname@\@/){
+                          $dirstore_entry->{"instances"} =@{$attrHashRef}[$count-1];
+                          print  "Deleting $key: $dirstore_entry->{'instances'} \n";
+                          delete_dirstore($name,$dirstore_entry);  #delete dirstore
+                      }
+                      else {
+                        $others=1;
+                      }
+                     $count++;
+                }
+             }
+            if ($others<1){
+                dsDelete("software", "$name") or die "Error: Delete of $name failed: $dsErrMsg\n";
+            }
+        }
+
+        $len=length($newattr);
+        $slen=200-length(hcname);
+        while ($len > $slen){
+             $newsubstr=substr($newattr,0,$slen);
+             print "newsubstr=$newsubstr\n";
+             if ($newsubstr=~m/\@$/){
+                    $newsubstr=substr($newattr,0,$slen-2);
+                    print "newsubstr==$newsubstr\n";
+                    $newattr=substr($newattr,$slen-2);
+             }
+             else {
+                   $newattr=substr($newattr,$slen);
+             }
+            $len=length($newattr);
+            $subattr="$hcname@\@$newsubstr";
+            $dirstore_entry->{"instances"} = $subattr;
+            update_dirstore($name,$dirstore_entry);  # update dirstore
+        }
+        $subattr="$hcname@\@$newattr";
+        $dirstore_entry->{"instances"} =$subattr;
+        update_dirstore($name,$dirstore_entry);  # update dirstore
+}

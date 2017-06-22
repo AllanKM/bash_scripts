@@ -1,0 +1,9 @@
+/logs/nutch/cm*.log {
+  rotate 14
+  daily
+  compress
+  copytruncate
+  notifempty
+  missingok
+  nocreate
+}

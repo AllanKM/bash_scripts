@@ -1,0 +1,158 @@
+#!/bin/ksh
+stop_mq ()
+{
+QMGR=$1
+STATUS=`su - mqm -c "dspmq -m $QMGR" |grep STATUS |cut -d\( -f3 | cut -d\) -f1`
+case $STATUS in
+#Running 
+   "Running")
+       echo $QMGR
+       su - mqm -c "echo 'dis chs(*) where(chltype eq SVRCONN)' |runmqsc $QMGR |grep AMQ8420"  >/dev/null
+       if [ $? -eq 0 ]; then
+            echo "===>Stopping $QMGR"
+            su - mqm -c "endmqm -c $QMGR "
+            sleep 10
+       else
+           echo "WAS server is still connected to $QMGR. Check with coordinator of the maintenance !"
+       fi
+      ;;
+#Ending immediately, Ending preemptively, Ended normally, Ended immediately, Ended preemptively, Ended unexpectedly
+   "Ending immediately"|"Ending preemptively"|"Ended normally"|"Ended immediately"|"Ended preemptively"|"Ended unexpectedly")
+       echo "===> $QMGR has been stopped"
+       ;;
+# Starting,  Quiesing 
+    *)
+      echo "ATTENTION: Stop command is not executed because Queue Manager  $QMGR is in status $STATUS"
+      ;;
+esac
+
+}
+
+
+start_mq ()
+{
+QMGR=$1
+STATUS=`su - mqm -c "dspmq -m $QMGR" |grep STATUS |cut -d\( -f3 | cut -d\) -f1`
+case $STATUS in
+   #Ended unexpectedly
+   "Ended unexpectedly")
+        echo "===>ATTENTION: Queue Manager $QMGR is in status $STATUS !" 
+        haveDone=0
+        while [ $haveDone -eq 0 ]; do
+        haveDone=1
+        echo "Do you still want to start it ?  input 'y' or 'n'"
+        read  answer
+            case $answer in
+               Y|y|Yes|yes|YES)
+                   echo got a 'yes'
+                   echo "===> Starting $QMGR "
+                   su - mqm -c "strmqm $QMGR"
+                   sleep 5
+                   ;;
+               N|n|No|no|NO)
+                   echo "got a 'no' ,do nothing with this $QMGR"
+                   ;;
+              *)
+                   echo  "got a 'invalid answer'"
+                   haveDone=0
+                   ;;
+            esac
+        done
+        ;;
+    #Ending immediately, Ending preemptively, Ended normally, Ended immediately, Ended preemptively
+   "Ending immediately"|"Ending preemptively"|"Ended normally"|"Ended immediately"|"Ended preemptively")
+          echo "===> Starting $QMGR "
+          su - mqm -c "strmqm $QMGR"
+          sleep 5
+         ;;
+    # Starting, Running, Quiesing    
+    *)
+          echo "ATTENTION: Start command should not be  executed because Queue Manager $QMGR is in status $STATUS"
+          ;;
+esac
+}
+
+
+status_mq ()
+{
+QMGR=$1
+su - mqm -c "dspmq -m $QMGR" |grep STATUS
+echo "==>Checking for MQ $QMGR processes"
+NUMPROCS=`ps -ef |grep -v grep |grep -v $0 |grep -v ITM |grep $QMGR |wc -l | sed s/\ //g`
+echo "$NUMPROCS processes found running"
+if [[ "$NUMPROCS" = "0" ]] ; then
+    echo "==>No process found running for MQ $QMGR"    
+else
+    echo "==>Checking for MQ $QMGR Listener"
+    ps -ef |grep $QMGR |grep -v grep |grep lsr 
+    if [ $? -eq 0 ]; then
+      echo "Listener process found running for MQ $QMGR"
+     else   
+      echo "ATTENTION:No Listener process found running for MQ $QMGR"
+    fi
+fi
+}
+
+
+#MAIN
+usage="Command syntax: sudo rc.mq <stop|start|status> <detail>"
+if [[ ! -z $1 ]]; then
+    action=$1
+else
+    print $usage
+    exit
+fi
+
+if [[ ! -z $2 ]]; then
+    detail=$2
+else
+    print $usage
+    exit
+fi
+
+if [[ "$SUDO_USER" != "" ]]; then
+      cd /var/mqm/qmgrs
+      if [ $? -ne 0 ]; then
+           print -u2 -- "######### Unable to list qmgrs in /var/mqm/qmgrs directory"
+           exit 1
+      fi
+     case $action in
+        start )
+             if [[ "$detail" != "all" ]]; then
+                 start_mq  $detail
+             else
+                 for QMGR in `ls | grep -v @SYSTEM`; do
+                      echo $QMGR | grep -i dummy > /dev/null
+                      if [ $? -eq 0 ]; then
+                          echo "Skipping DUMMY QMGR: [$QMGR]"
+                     else
+                         start_mq  $QMGR
+                     fi
+                 done
+              fi
+              ;;
+        stop)
+            if [[ "$detail" != "all" ]]; then
+                 stop_mq  $detail
+            else
+                 for QMGR in `su - mqm -c "dspmq" |grep STATUS |cut -d\( -f2 | cut -d\) -f1`; do
+                        stop_mq  $QMGR
+                done
+            fi
+           ;;
+       status)
+           if [[ "$detail" != "all" ]]; then
+                 status_mq  $detail
+           else
+                 for QMGR in `su - mqm -c "dspmq" |grep STATUS |cut -d\( -f2 | cut -d\) -f1`; do
+                          status_mq  $QMGR
+                done
+           fi
+          ;;
+        *)
+             print $usage
+             ;;
+     esac
+else
+     print "This script requires SUDO to run"
+fi

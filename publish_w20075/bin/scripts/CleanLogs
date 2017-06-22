@@ -1,0 +1,37 @@
+#!/bin/ksh
+#------------------------------------------------------------------------------
+#
+# Script Name: CleanLogs
+#
+# Description:
+#
+#   Cleans up the bnimble logs
+#   Compresses anything older than a day, deletes anything older than 30 days
+#
+# Syntax:
+#
+#   CleanLogs
+#
+# Change history:
+#
+#   Date      Init  	Description
+#   01/28/04  Bytor   	Creation
+#   05/12/04  BJ        fixed to work on AIX (took out -not)
+#   02/03/05  Stephet   Added bNimbleDeletetool.logs to this mix
+#------------------------------------------------------------------------------
+
+set -x
+
+print "Looking for bNimble Logs older than 30 days to delete"
+for i in $(find /logs/bNimble/ -mtime +30 -name "bNimble.log.*" -o -mtime +30 -name "bNimbledeletetool.log.*" )
+do
+print "Deleting $i"
+rm $i
+done
+
+#for i in $(find /logs/bNimble/ -mtime +1 -name "bNimble.log.*" -not -name "*.bz2" )
+for i in `find /logs/bNimble/ -mtime +1 -name "bNimble.log.*" -o -mtime +1 -name "bNimbledeletetool.log.*" | grep -v "bz2$"`
+do
+print "Compressing $i"
+bzip2 --best $i
+done

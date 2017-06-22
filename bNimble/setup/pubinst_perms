@@ -1,0 +1,14 @@
+#!/bin/ksh
+
+echo "Checking pubsinst user ID"
+id pubinst || /fs/system/tools/auth/bin/mkeiuser -f -r local pubinst apps
+
+echo "Changing ownership of content files to be owned by pubinst"
+chown -R pubinst.eiadm /www/system/tools/publish/ /logs/bNimble 
+
+chmod -R 755 /www/system/tools/publish/ /logs/bNimble 
+chmod g+s /www/system/tools/publish/ /logs/bNimble 
+
+chown -R root.eiadm /www/system/tools/publish/bin/rc.bNimble2 
+chmod -R 740 /www/system/tools/publish/bin/rc.bNimble2 
+

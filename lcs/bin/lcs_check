@@ -1,0 +1,5 @@
+#!/bin/ksh
+
+exec /bin/bash -c "su -"
+
+exit 0

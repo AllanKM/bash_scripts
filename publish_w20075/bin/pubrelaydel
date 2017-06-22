@@ -1,0 +1,262 @@
+#!/usr/local/bin/perl-current
+
+use File::Basename;
+
+$config_file="/fs/system/tools/publish/config/pubrelaydel.conf";
+$hostname=`hostname -s`;
+chomp $hostname;
+$doit=1;
+$this_instance = $ARGV[0];
+$transmit_jar = "/lfs/system/tools/bNimble/lib/Transmit.jar";
+
+require "$config_file";
+
+$| = 1;
+
+sub printInstances {
+	foreach $thiscfg (sort keys %PUBCONFIG) {
+		#print "Checking host $PUBCONFIG{$thiscfg}{hosts} and instance $PUBCONFIG{$thiscfg}{instance}\n";
+		foreach $cfghost (@{$PUBCONFIG{$thiscfg}{hosts}}) {
+			#print "cfghost $cfghost\n";
+			if ($cfghost eq $hostname) { 
+				print "Match:  $PUBCONFIG{$thiscfg}{instance}\n";
+				print "$PUBCONFIG{$thiscfg}{instance}\n";
+			}
+		}
+	}
+}
+
+
+sub initConfig {
+	foreach $thiscfg (sort keys %PUBCONFIG) {
+		print "Checking host $PUBCONFIG{$thiscfg}{hosts} and instance $PUBCONFIG{$thiscfg}{instance}\n";
+		#if (($PUBCONFIG{$thiscfg}{hosts} eq $hostname) && ($PUBCONFIG{$thiscfg}{instance} eq $this_instance)) {
+		foreach $cfghost (@{$PUBCONFIG{$thiscfg}{hosts}}) {
+			#print "cfghost $cfghost\n";
+			if (($cfghost eq $hostname) && ($PUBCONFIG{$thiscfg}{instance} eq $this_instance)) { 
+				print "Found config: $thiscfg\n";
+				$myconfig = $thiscfg;
+			}
+		}
+	}
+
+	if (! $myconfig) {
+		print "Didn't find a config for $hostname with instance $this_instance -- exiting...\n";
+		exit 1;
+	}
+
+	$instance = $PUBCONFIG{$myconfig}{instance};
+	$manifest_prefix = $PUBCONFIG{$myconfig}{manifest_prefix};
+	$manifest_dir = $PUBCONFIG{$myconfig}{manifest_dir};
+	$file_path_trim = $PUBCONFIG{$myconfig}{file_path_trim};
+	$manifest_archive_dir = $PUBCONFIG{$myconfig}{manifest_archive_dir};
+	$docroot = $PUBCONFIG{$myconfig}{docroot};
+	$delete_files = $PUBCONFIG{$myconfig}{delete_files};
+	$publish_files = $PUBCONFIG{$myconfig}{publish_files};
+	$publish_manifests = $PUBCONFIG{$myconfig}{publish_manifests};
+	$URL = $PUBCONFIG{$myconfig}{url};
+	$daemon_time = $PUBCONFIG{$myconfig}{daemon_time};
+	$KEYSTORE = $PUBCONFIG{$myconfig}{keystore};
+	$KEYSTOREPASS = $PUBCONFIG{$myconfig}{keystorepass};
+	$logfile = $PUBCONFIG{$myconfig}{logfile};
+	$bnimble_event = $PUBCONFIG{$myconfig}{bnimble_event};
+
+	print "instance = $instance\n";
+	print "manifest_prefix = $manifest_prefix\n";
+	print "manifest_dir = $manifest_dir\n";
+	print "file_path_trim = $file_path_trim\n";
+	print "manifest_archive_dir = $manifest_archive_dir\n";
+	print "docroot = $docroot\n";
+	print "delete_files = $delete_files\n";
+	print "publish_files = $publish_files\n";
+	print "publish_manifests = $publish_manifests\n";
+	print "URL = $URL\n";
+	print "daemon_time = $daemon_time\n";
+	print "logfile = $logfile\n";
+	print "bnimble_event = $bnimble_event\n";
+
+	$JAVA="/usr/java14/bin/java";
+#	$CERT_FLAGS="-Djavax.net.ssl.trustStore=$KEYSTORE -Djavax.net.ssl.trustStorePassword=$KEYSTOREPASS -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=$KEYSTOREPASS";
+	$CERT_FLAGS="-Djavax.net.ssl.trustStore=$KEYSTORE -Djavax.net.ssl.trustStorePassword=I0x2ZisO -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=I0x2ZisO";
+	@allfiles = readdir MANIFEST_DIR;
+
+	$BPUT="$JAVA -Xmx256M $CERT_FLAGS -jar $transmit_jar -u $URL -e $bnimble_event -t 2";
+	print "$BPUT\n";
+	
+}
+
+sub reset {
+	@ManifestFiles = ();
+	%DeleteFiles = ();
+	@PublishManifests = ();	
+}	
+
+sub DateStamp {
+        my $lines = shift || 20;
+        my ($time,$pid,$line);
+        return if $pid = open(STDOUT, "|-");
+        die "cannot fork: $!" unless defined $pid;
+        open(LOG, ">> $logfile"); 
+        while (<STDIN>) {
+                $line = $_;
+                $time = localtime;
+                print LOG "$time: $line";
+        }
+        close LOG; exit;
+}
+
+
+sub findManifests { 
+	print "changing to $manifest_dir\n";
+	opendir MANIFEST_DIR,$manifest_dir;
+	@allfiles = readdir MANIFEST_DIR;
+	foreach $this_file (@allfiles) {
+		#print "file: $this_file\n";
+		if ($this_file =~ /^${manifest_prefix}/) {
+			print "found manifest: $this_file\n";
+			if (-z "$manifest_dir/$this_file") {
+				# note this should never happen on endpoints since 0 byte file will never be published
+				print "Skipping zero byte manifest file: $this_file\n";
+				#system ("mv $manifest_dir/$this_file $docroot/temp");
+				#unlink ("$manifest_dir/$this_file);
+                        }else {
+				push (@ManifestFiles, $this_file);	
+			}
+		}
+	}
+}
+
+# /projects/icestage/content
+sub parseManifests {
+	chdir $manifest_dir; 
+	foreach $this_file (sort @ManifestFiles) { 
+		print "Reading $this_file\n";
+		open (MANIFEST, "cat $this_file |");	
+		while (<MANIFEST>) {
+			chomp;
+			$this_content = $_;
+			print "BEFORE: $this_content\n";
+			$this_content =~ s~$file_path_trim~~g;
+			print "AFTER: $this_content\n";
+			if ($this_content =~ /^-/) {
+				($junk,$delfile) = split(/ /,$this_content);
+				$delfile =~ s~^/~~g;
+				print "Delete: $delfile\n";
+				$DeleteFiles{$delfile} = "1";
+			}else {
+				$this_content =~ s~^/~~g;
+				print "keep: $this_content\n";
+				$DeleteFiles{$this_content} = "0";
+			}
+		}
+		close MANIFEST;
+		system ("mv $manifest_dir/$this_file $manifest_archive_dir");
+		print "mv $manifest_dir/$this_file $manifest_archive_dir\n";
+#		if ($manifest_dir ne "/projects/iceprod/content/temp") {
+#			print "Saving $this_file\n";
+#			system ("cp $this_file $docroot/temp");
+#		}
+#		print "Deleting $this_file\n";
+#		unlink("$this_file");
+	}
+}
+
+sub addManifestsToPublish {
+	chdir $manifest_dir;
+	foreach $this_file (sort @ManifestFiles) {
+		#print "cp $this_file $docroot/temp\n";
+		#system("cp $this_file $docroot/temp");
+		$this_manifest = "$manifest_archive_dir/$this_file";
+
+		print "mv $this_manifest $docroot/manifest/$this_file\n";
+
+		print "BEFORE MANIFEST: $this_manifest\n";
+		$this_manifest =~ s~$docroot~~g;
+		print "AFTER MANIFEST: $this_manifest\n";
+		$this_manifest =~ s~^/~~g;
+		print "keep manifest: $this_manifest\n";
+		$DeleteFiles{$this_manifest} = "0";
+
+		print "Adding $pubthis to publish\n";
+		#$DeleteFiles{$pubthis} = 0;
+		push(@PublishManifests, $pubthis);
+	}
+}
+
+
+sub publishFiles {
+	print "\nPublishing Files\n";
+	print "chdir to $docroot\n";
+	chdir $docroot;
+	open (PUBLISH, "| $BPUT");
+	foreach $this_content (sort keys %DeleteFiles) {
+		if ($DeleteFiles{$this_content} eq 0) {
+			print "publish: $this_content ($DeleteFiles{$this_content})\n";
+			print PUBLISH "$this_content\n";
+		}
+	}
+	close PUBLISH;
+	sleep 2;
+#	print "\nPublishing Manifest Files\n";
+#	open (PUBLISH, "| $BPUT");
+#	foreach $this_manifest (sort @PublishManifests) {
+#		print "publish m: $this_manifest\n";
+#		print PUBLISH "$this_manifest\n";
+#	}
+#	close PUBLISH;
+}
+
+sub deleteFiles {
+	print "Deleting files, chdir to $docroot\n";
+	chdir $docroot;
+	foreach $this_content (sort keys %DeleteFiles) {
+		if ($DeleteFiles{$this_content} eq 1) {
+			print "UNLINK: $this_content\n";
+			system("ls -ld $this_content");
+			unlink("$this_content");
+			system("ls -ld $this_content");
+		}
+	}
+	# manifest files get deleted earlier, don't need this section
+#	chdir $manifest_dir;
+#	foreach $this_manifest (@ManifestFiles) {
+#		print "UNLINK manifest: $this_manifest\n";
+#		system("ls -ld $this_manifest");
+#		unlink ($this_manifest);
+#		system("ls -ld $this_manifest");
+#	}
+}
+
+sub iterate {
+	&reset;
+	&findManifests;
+	&parseManifests;
+	($publish_manifests eq "yes") and &addManifestsToPublish;
+	($publish_files eq "yes") and &publishFiles;
+#	sleep 2;
+	($delete_files eq "yes") and &deleteFiles;
+}
+
+#log
+
+if ($this_instance eq "list") {
+	&printInstances;
+	exit;
+}
+
+&initConfig;
+print "Starting\n";
+#&DateStamp;
+
+if ($daemon_time) {
+	while (true) {
+		$now = localtime;
+		print "Begin loop $now\n";
+		&iterate;
+		print "Pause for $daemon_time seconds...\n";
+		sleep $daemon_time
+	}
+}else {
+	print "Single run and exit\n";
+	&iterate;
+}

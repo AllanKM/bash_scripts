@@ -1,0 +1,243 @@
+#*******************************************************************************************************
+# serverAction.jacl
+#
+#   Author: James Walton
+#   Revision Date: 31 Oct 2006
+#*******************************************************************************************************
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+set useCell 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-action"} {
+    if {[incr i] < $argc} {
+      set actionName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-server"} {
+    if {[incr i] < $argc} {
+      set serverName [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-attr"} {
+    if {[incr i] < $argc} {
+      set attrMod [lindex $argv $i]
+    } else {
+      set argerr 10
+    }
+  } elseif {$arg == "-cell"} {
+      set useCell 1
+  } else {
+    set argerr 5
+  }
+}
+
+if {[info exists serverName] && ![info exists nodeName]} {
+  set nodeName $env(local.node)
+}
+if {[info exists actionName]} {
+	if {![info exists serverName] && $actionName != "list"} {
+	  set argerr 6
+	}
+	if {[lsearch -exact "start stop list status modify dump" $actionName] < 0} {
+	  set argerr 7
+	}
+	if {$actionName == "list" && $useCell == 0} {
+  	  set nodeName $env(local.node)
+	}
+	if {$actionName == "list" && [info exists serverName]} {
+	  set argerr 8
+	}
+	if {$actionName == "modify" && ![info exists serverName] && ![info exists attrMod]} {
+	  set argerr 9
+	}
+	if {$actionName == "dump" && $useCell == 1} {
+	  puts "WARNING!! You were about to execute a heap dump for every server in the cell!!"
+	  puts "No Soup For You!! ;)"
+	  set argerr 10
+	}
+} else {
+  puts "Error: Must specify an action!"
+  set argerr 11
+}
+
+
+if { $argerr } {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f serverAction.jacl -action <actionName> -server <serverName> \[-node <nodeName>\]"
+  puts "   wsadmin -f serverAction.jacl -action list \[-cell\]"
+  puts "   wsadmin -f serverAction.jacl -action modify -server <serverName> -attr <attributeModifications> \[-node <nodeName>\]"
+  puts "Executes the selected action on server <serverName> of node <nodeName>."
+  puts "If -node <nodeName> is not given, script will assume local node is to be used."
+  puts "The list action requires no additional arguments, by default it lists all servers on the"
+  puts "local node, the optional argument -cell will list all servers in the cell."
+  puts ""
+  puts "For attribute modification, specify the attribute type followed by the new values."
+  puts "  Example - new heap sizings (min 512M, max 1024M): -attr heap:512/1024"
+  puts "  Example - new appserver JSESSIONID cookie name  : -attr cookie:JSESSIONID_CUST_APP"
+  puts "  Example - new runAs user and group (webinst/mqm): -attr runas:webinst/mqm"
+  puts "  Example - change m2m settings for an appserver  : -attr m2m:cluster_cust_m2m"
+  puts "  Example - turn off m2m settings for an appserver: -attr m2m:off"
+  puts "  Example - adding entries to the JVM classpath   : -attr classpath:/projects/app1/lib:/projects/app1/properties"
+  puts "            Note that the classpath entries are delimited by ':'"
+  puts ""
+  puts "Actions: start | stop | list | status | modify | dump"
+  puts "Attributes: heap | cookie | runas | m2m | classpath"
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+
+if {$actionName == "start"} {
+  # Start AppServer - One node only
+  $AdminControl startServer $serverName $nodeName
+} elseif {$actionName == "stop"} {
+  # Stop AppServer - One node
+  $AdminControl stopServer $serverName $nodeName immediate
+} elseif {$actionName == "dump"} {
+  set jvmobj [$AdminControl queryNames WebSphere:type=JVM,process=$serverName,node=$nodeName,*]
+  $AdminControl invoke $jvmobj generateHeapDump
+} elseif {$actionName == "list"} {
+  # Get list of AppServers
+  set serverlist [$AdminConfig list Server]
+  foreach server $serverlist {
+    set sname [lindex [split $server (] 0]
+    set nname [lindex [split $server /] 3]
+    if {$useCell} {
+      puts "$nname: $sname"
+    } elseif {$nname == $nodeName} {
+      puts "$nname: $sname"
+    }
+  }
+} elseif {$actionName == "status"} {
+  # Get status for AppServer
+  puts "Node: $nodeName"
+  set server [$AdminControl queryNames WebSphere:name=$serverName,node=$nodeName,*]
+  if {[llength $server] > 0} {
+    set sname [$AdminControl getAttribute $server name]
+    set status [$AdminControl invoke $server getState]
+  } else {
+    set sname $serverName
+    set status "STOPPED or unavailable"
+  }
+  puts "$sname: $status"
+} elseif {$actionName == "modify"} {
+  set attrName [lindex [split $attrMod :] 0]
+  set attrValues [lindex [split $attrMod :] 1]
+  set attrTmp [lrange [split $attrMod :] 1 [llength [split $attrMod :]]]
+  puts "Modifying $attrName for $serverName to $attrTmp"
+  if {$attrName == "heap"} {
+    set heapMin [lindex [split $attrValues /] 0]
+    set heapMax [lindex [split $attrValues /] 1]
+    set jvmcfg [$AdminConfig getid /Node:$nodeName/Server:$serverName/JavaProcessDef:/JavaVirtualMachine:/]
+    set result [$AdminConfig modify $jvmcfg "{initialHeapSize $heapMin} {maximumHeapSize $heapMax}"]
+    if {$result != ""} {
+      puts "Error occurred while modifying server configuration - exiting without save."
+      puts $result
+      exit
+    }
+    $AdminConfig save
+    puts "The configuration changes have been saved."
+    puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } elseif {$attrName == "cookie"} {
+  	set cookieName $attrValues
+  	set asCookie [$AdminConfig getid /Node:$nodeName/Server:$serverName/ApplicationServer:/WebContainer:/SessionManager:/Cookie:/]
+  	set result [$AdminConfig modify $asCookie "{name $cookieName}"]
+  	if {$result != ""} {
+      puts "Error occurred while modifying server configuration - exiting without save."
+      puts $result
+      exit
+    }
+    $AdminConfig save
+    puts "The configuration changes have been saved."
+    puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } elseif {$attrName == "runas"} {
+    set runUser [lindex [split $attrValues /] 0]
+    set runGroup [lindex [split $attrValues /] 1]
+    set procexec [$AdminConfig showAttribute [$AdminConfig getid /Node:$nodeName/Server:$serverName/JavaProcessDef:/] execution]
+    set result [$AdminConfig modify $procexec "{runAsUser $runUser} {runAsGroup $runGroup}"]
+    if {$result != ""} {
+      puts "Error occurred while modifying server configuration - exiting without save."
+      puts $result
+      exit
+    }
+    $AdminConfig save
+    puts "The configuration changes have been saved."
+    puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } elseif {$attrName == "m2m"} {
+    if {$attrValues == "off"} {
+      set sessmgr [$AdminConfig getid /Node:$nodeName/Server:$serverName/ApplicationServer:/WebContainer:/SessionManager:/]
+      set result [$AdminConfig modify $sessmgr "{sessionPersistenceMode NONE}"]
+	} else {
+      set drsTemplate [$AdminConfig listTemplates DRSSettings $attrValues]
+      set sessmgr [$AdminConfig getid /Node:$nodeName/Server:$serverName/ApplicationServer:/WebContainer:/SessionManager:/]
+      set drscfg [$AdminConfig createUsingTemplate DRSSettings $sessmgr "{dataReplicationMode BOTH} {messageBrokerDomainName $attrValues}" $drsTemplate]
+      set result [$AdminConfig modify $sessmgr "{sessionPersistenceMode DATA_REPLICATION}"]
+	}
+    if {$result != "" && ![regexp "^(.*)$" $drscfg]} {
+      puts "Error occurred while modifying server configuration - exiting without save."
+      puts $drscfg
+      puts $result
+      exit
+    }
+    $AdminConfig save
+    puts "The configuration changes have been saved."
+    puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } elseif {$attrName == "classpath"} {
+    set attrMod [split $attrMod :]
+    set attrValues [lrange $attrMod 1 [llength $attrMod]]
+    set jvmcfg [$AdminConfig getid /Node:$nodeName/Server:$serverName/JavaProcessDef:/JavaVirtualMachine:/]
+    foreach path $attrValues {
+      set result [$AdminConfig modify $jvmcfg "{classpath $path}"]
+      if {$result != ""} {
+        puts "Error occurred while modifying server configuration - exiting without save."
+        puts $result
+        exit
+      }
+    }
+    $AdminConfig save
+    puts "The configuration changes have been saved."
+    puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } elseif {$attrName == "port"} {
+	set portName [lindex [split $attrValues /] 0]
+	set portVal [lindex [split $attrValues /] 1]
+	set nepList [$AdminConfig getid /Node:$nodeName/ServerIndex:/ServerEntry:$serverName/NamedEndPoint:/]
+	foreach nep $nepList {
+	  set nepName [$AdminConfig showAttribute $nep endPointName]
+	  if {$nepName == $portName} {
+		puts "Found and modifying port ($portVal) for $serverName ..."
+		set endpoint [$AdminConfig showAttribute $nep endPoint]
+		set result [$AdminConfig modify $endpoint "{port $portVal}"]
+		break
+	  }
+	}
+	if {$result != ""} {
+		  puts "Error occurred while modifying server configuration - exiting without save."
+		  puts $result
+		  exit
+	}
+	$AdminConfig save
+	puts "The configuration changes have been saved."
+	puts "Changes might need to be synchronized, and the appserver ($serverName) will need to be restarted."
+  } else {
+    puts "Invalid attribute specified."
+    exit
+  } 
+} else {
+  puts "Invalid action specified and somehow slipped under the radar - please try again."
+}

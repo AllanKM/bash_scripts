@@ -1,0 +1,9 @@
+/logs/wxs??/logs/*/SystemOut.log /logs/wxs??/logs/*/SystemErr.log {
+        rotate 12
+        weekly
+        copytruncate
+        compress
+        notifempty
+        missingok
+        nocreate
+}

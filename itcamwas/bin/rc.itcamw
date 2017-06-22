@@ -1,0 +1,8 @@
+#!/bin/bash
+# Script for managing the Managing Server so it doesn't bogart off with your ssh session.
+# USAGE:   rc.itcamw start|stop|status|forcestop [USER]
+# Example: rc.itcamw start webinst
+USER=${2:-root}
+su - $USER -c "(/opt/IBM/itcam/WebSphere/MS/bin/am-$1.sh > /logs/itcam/ms.log 2>&1 &)"
+echo "ITCAM for WebSphere Managing Server starting..."
+echo "Tail /logs/itcam/ms.log for progress (should take a couple minutes to complete)."

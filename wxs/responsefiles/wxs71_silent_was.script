@@ -1,0 +1,55 @@
+################################################################################
+# IBM WebSphere eXtreme Scale V7.0.0 InstallShield Options File
+################################################################################
+
+################################################################################
+# License Acceptance
+#
+-OPT silentInstallLicenseAcceptance="true"
+
+################################################################################
+# Non-blocking Prerequisite Checking
+#
+-OPT disableNonBlockingPrereqChecking="true"
+
+################################################################################
+# Install Location
+-OPT installLocation="/usr/WebSphere70/AppServer"
+
+################################################################################
+#  Optional Features Installation
+#
+-OPT selectServer="true"
+-OPT selectClient="true"
+
+################################################################################
+#  Profile list for augmentation
+#
+-OPT profileAugmentList=""
+
+################################################################################
+# Tracing Control
+#
+# The trace output format can be controlled via the option 
+# -OPT traceFormat=ALL
+# -OPT traceFormat=text
+# -OPT traceFormat=XML
+#
+# The amount of trace info captured can be controlled using the option:
+# -OPT traceLevel=INFO
+#
+# Trace    Numerical 
+# Level      Level    Description
+# -------  ---------  ---------------------------------------------------------
+# OFF         0       No trace file is produced
+# SEVERE      1       Only severe errors are output to trace file
+# WARNING     2       Messages regarding non-fatal exceptions and warnings are
+#                     added to trace file
+# INFO        3       Informational messages are added to the trace file
+#                     (this is the default trace level)
+# CONFIG      4       Configuration related messages are added to the trace file
+# FINE        5       Tracing method calls for public methods
+# FINER       6       Tracing method calls for non public methods except
+#                     getters and setters
+# FINEST      7       Trace all method calls, trace entry/exit will include
+#                     parameters and return value

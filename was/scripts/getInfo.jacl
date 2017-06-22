@@ -1,0 +1,146 @@
+#*******************************************************************************************************
+# getInfo.jacl
+#
+#   Author: James Walton
+#   Revision Date: 05/20/2005
+#*******************************************************************************************************
+
+proc processResourceList { resourceList } {
+	foreach res $resourceList {
+		set i [string last "(" $res]
+		set resName [string range $res 0 [expr $i - 1]]
+		set scopeFull [lindex [split [string range $res $i [string length $res]] |] 0]
+		set scopeFull [split [lindex [split $scopeFull (] 1] /]
+		set i [llength $scopeFull]
+		set scopeType [lindex $scopeFull [expr $i - 2]]
+		set scopeType [string range $scopeType 0 [expr [string length $scopeType] - 2]]
+		set scopeName [lindex $scopeFull [expr $i - 1]]
+		puts "$resName: $scopeType - $scopeName"
+	}
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-cell"} {
+    set getCell 1
+  } elseif {$arg == "-node"} {
+    set getNode 1
+  } elseif {$arg == "-resource"} {
+    if {[incr i] < $argc} {
+      set resourceName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } else {
+    set argerr 1
+  }
+}
+
+if {[info exists resourceName] && ([info exists getCell] || [info exists getNode])} {
+  set argerr 3
+}
+if {[info exists resourceName]} {
+  if {[lsearch -exact "jdbc datasource mqqueue mqqcf jmsprovider jmsdestination mailprovider mailsession virtualhost jaas ldap" $resourceName] < 0} {
+  set argerr 4
+  }
+}
+if {[info exists getCell] && [info exists getNode]} {
+  set argerr 5
+}
+
+if { $argerr } {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f getInfo.jacl -cell"
+  puts "   wsadmin -f getInfo.jacl -node"
+  puts "   wsadmin -f getInfo.jacl -resource <resourceName>"
+  puts "Retrives the requested information from the configuration repository."
+  puts "If -node or -cell are specified, no arguments are required."
+  puts "If -resource is specified, then one of the following arguments can be used."
+  puts ""
+  puts "Resources: "
+  puts "          jdbc           -  lists all JDBC Providers"
+  puts "          datasource     -  lists all Datasources"
+  puts "          mqqueue        -  lists all MQ Queues"
+  puts "          mqqcf          -  lists all MQ Queue Connection Factories"
+  puts "          jmsprovider    -  lists all JMS Providers"
+  puts "          jmsdestination -  lists all Generic JMS Destinations"
+  puts "          mailprovider   -  lists all Mail Providers"
+  puts "          mailsession    -  lists all Mail Sessions"
+  puts "          virtualhost    -  lists each Virtual Host and associated Host Aliases"
+  puts "          jaas           -  lists all JAAS Authentication Entries, alias and user"
+  puts "          ldap           -  lists configuration information for the LDAP Registry"
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+
+if {[info exists getCell]} {
+  # Get Cell Name
+  puts [$AdminControl getCell]
+} elseif {[info exists getNode]} {
+  # Get local Node Name
+  puts $env(local.node)
+} elseif {[info exists resourceName]} {
+  switch -exact -- $resourceName {
+    jdbc {
+      set jdbcList [$AdminConfig list JDBCProvider]
+      processResourceList $jdbcList
+    }
+    datasource {
+      set dsList [$AdminConfig list DataSource]
+      processResourceList $dsList
+    }
+    mqqcf {
+      set mqqcfList [$AdminConfig list MQQueueConnectionFactory]
+      processResourceList $mqqcfList
+    }
+    mqqueue {
+      set mqqList [$AdminConfig list MQQueue]
+      processResourceList $mqqList
+    }
+    jmsprovider {
+      set jmspList [$AdminConfig list JMSProvider]
+      processResourceList $jmspList
+    }
+    jmsdestination {
+      set jmsList [$AdminConfig list JMSDestination]
+      processResourceList $jmsList
+    }
+    mailprovider {
+      set mailpList [$AdminConfig list MailProvider]
+      processResourceList $mailpList
+    }
+    mailsession {
+      set mailList [$AdminConfig list MailSession]
+      processResourceList $mailList
+    }
+    virtualhost {
+      set vhosts [$AdminConfig list VirtualHost]
+      foreach vh $vhosts {
+        puts $vh
+        set aliases [lindex [lindex [$AdminConfig show $vh {aliases}] 0] 1]
+        foreach alias $aliases {
+          puts [$AdminConfig show $alias]
+        }
+        puts ""
+      }
+    }
+    jaas {
+      set jaaslist [$AdminConfig list JAASAuthData]
+      foreach jaas $jaaslist { puts [$AdminConfig show $jaas {alias userId}]; puts "" }
+    }
+    ldap {
+      set ldapreg [$AdminConfig list LDAPUserRegistry]
+      puts [$AdminConfig show $ldapreg]
+    }
+  }
+} else {
+  puts "Invalid commandline usage slipped through - please try again."
+}

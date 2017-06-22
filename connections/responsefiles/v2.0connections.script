@@ -1,0 +1,2100 @@
+################################################################################
+#
+# InstallShield Options File
+#
+# Wizard name: Install
+# Wizard source: sninstall.jar
+# Created on: Sun Jun 15 17:25:37 UTC 2008
+# Created by: InstallShield Options File Generator
+#
+# This file contains values that were specified during a recent execution of
+# Install. It can be used to configure Install with the options specified below
+# when the wizard is run with the "-options" command line option. Read each
+# setting's documentation for information on how to change its value.
+# 
+# A common use of an options file is to run the wizard in silent mode. This lets
+# the options file author specify wizard settings without having to run the
+# wizard in graphical or console mode. To use this options file for silent mode
+# execution, use the following command line arguments when running the wizard:
+# 
+#    -options "/tmp/InstallResponse.txt" -silent
+#
+################################################################################
+
+
+################################################################################
+#
+# Has the license been accepted
+#
+# The license must be accepted before installation so this value must be true
+# for the install to be successful. Example: -G licenseAccepted=true
+#
+
+
+-G licenseAccepted=true
+
+
+################################################################################
+#
+# User Input Field - enableResponseFile
+#
+#
+
+
+-W responseFilePanel.enableResponseFile="ResponseFileAndInstall"
+
+
+################################################################################
+#
+# User Input Field - responseFileLocation
+#
+#
+
+
+-W responseFilePanel.responseFileLocation="/tmp/InstallResponse.txt"
+
+
+################################################################################
+#
+# User Input Field - encodePassword
+#
+#
+
+
+-W passwordHandler.encodePassword="true"
+
+
+################################################################################
+#
+# User Input Field - wasdetected
+#
+#
+
+
+-W wasSelection.wasdetected="/usr/WebSphere61/AppServer"
+
+
+################################################################################
+#
+# User Input Field - wasselected
+#
+#
+
+
+-W wasSelection.wasselected="/usr/WebSphere61/AppServer"
+
+
+################################################################################
+#
+# User Input Field - field1
+#
+#
+
+
+-W debugPanelWasLocation.field1="$W(wasSelection.wasselected)"
+
+
+################################################################################
+#
+# User Input Field - field2
+#
+#
+
+
+-W debugPanelWasLocation.field2="$W(wasSelection.wasselected2)"
+
+
+################################################################################
+#
+# User Input Field - field3
+#
+#
+
+
+-W debugPanelWasLocation.field3="$P(absoluteInstallLocation)"
+
+
+################################################################################
+#
+# User Input Field - field4
+#
+#
+
+
+-W debugPanelWasLocation.field4="$PATH($W(wasPathAnalyzer.parent), LotusConnections)"
+
+
+################################################################################
+#
+# Lotus Connections Install Location
+#
+# The install location of the product. Specify a valid directory into which the
+# product should be installed. If the directory contains spaces, enclose it in
+# double-quotes. For example, to install the product to C:\Program Files\My
+# Product, use
+# 
+#    -P installLocation="C:\Program Files\My Product"
+#
+
+
+-P installLocation="/usr/WebSphere61/LotusConnections"
+
+
+################################################################################
+#
+# User Input Field - features
+#
+#
+
+
+-W featureSelectionPanel.features="activities,blogs,communities,dogear,profiles"
+
+
+################################################################################
+#
+# User Input Field - homepageSelection
+#
+#
+
+
+-W featureSelectionPanel.homepageSelection="true"
+
+
+################################################################################
+#
+# User Input Field - field1
+#
+#
+
+
+-W debugPanelFeaturesSelected.field1="$J(features.selected)"
+
+
+################################################################################
+#
+# User Input Field - field2
+#
+#
+
+
+-W debugPanelFeaturesSelected.field2="$W(unselectedFeatures.unselectedFeatures)"
+
+
+################################################################################
+#
+# User Input Field - activities
+#
+#
+
+
+-W debugPanelDataDirForEach2.activities="$J(activities.selected)"
+
+
+################################################################################
+#
+# User Input Field - blogs
+#
+#
+
+
+-W debugPanelDataDirForEach2.blogs="$J(blogs.selected)"
+
+
+################################################################################
+#
+# User Input Field - communities
+#
+#
+
+
+-W debugPanelDataDirForEach2.communities="$J(communities.selected)"
+
+
+################################################################################
+#
+# User Input Field - dogear
+#
+#
+
+
+-W debugPanelDataDirForEach2.dogear="$J(dogear.selected)"
+
+
+################################################################################
+#
+# User Input Field - profiles
+#
+#
+
+
+-W debugPanelDataDirForEach2.profiles="$J(profiles.selected)"
+
+
+################################################################################
+#
+# User Input Field - homepage
+#
+#
+
+
+-W debugPanelDataDirForEach2.homepage="$J(homepage.selected)"
+
+
+################################################################################
+#
+# User Input Field - selection
+#
+#
+
+
+-W deploymentTopology.selection="custom"
+
+
+################################################################################
+#
+# User Input Field - mapping
+#
+#
+
+
+-W debugPanelProfileServerMapping.mapping="$W(wasProfileServerDetection.profileServerMapping)"
+
+
+################################################################################
+#
+# User Input Field - profile
+#
+#
+
+
+-W profileServerSelectCompact.profile=""
+
+
+################################################################################
+#
+# User Input Field - server
+#
+#
+
+
+-W profileServerSelectCompact.server=""
+
+
+################################################################################
+#
+# User Input Field - profile
+#
+#
+
+
+-W newServerCompact.profile="item1"
+
+
+################################################################################
+#
+# User Input Field - server
+#
+#
+
+
+-W newServerCompact.server=""
+
+
+################################################################################
+#
+# User Input Field - profile
+#
+#
+
+
+-W profileServerSelectTypical.profile=""
+
+
+################################################################################
+#
+# User Input Field - activitiesServer
+#
+#
+
+
+-W profileServerSelectTypical.activitiesServer=""
+
+
+################################################################################
+#
+# User Input Field - blogsServer
+#
+#
+
+
+-W profileServerSelectTypical.blogsServer=""
+
+
+################################################################################
+#
+# User Input Field - communitiesServer
+#
+#
+
+
+-W profileServerSelectTypical.communitiesServer=""
+
+
+################################################################################
+#
+# User Input Field - dogearServer
+#
+#
+
+
+-W profileServerSelectTypical.dogearServer=""
+
+
+################################################################################
+#
+# User Input Field - profilesServer
+#
+#
+
+
+-W profileServerSelectTypical.profilesServer=""
+
+
+################################################################################
+#
+# User Input Field - homepageServer
+#
+#
+
+
+-W profileServerSelectTypical.homepageServer=""
+
+
+################################################################################
+#
+# User Input Field - profile
+#
+#
+
+
+-W newServerTypical.profile="item1"
+
+
+################################################################################
+#
+# User Input Field - activitiesServer
+#
+#
+
+
+-W newServerTypical.activitiesServer="$J(activities.server)"
+
+
+################################################################################
+#
+# User Input Field - blogsServer
+#
+#
+
+
+-W newServerTypical.blogsServer="$J(blogs.server)"
+
+
+################################################################################
+#
+# User Input Field - communitiesServer
+#
+#
+
+
+-W newServerTypical.communitiesServer="$J(communities.server)"
+
+
+################################################################################
+#
+# User Input Field - dogearServer
+#
+#
+
+
+-W newServerTypical.dogearServer="$J(dogear.server)"
+
+
+################################################################################
+#
+# User Input Field - profilesServer
+#
+#
+
+
+-W newServerTypical.profilesServer="$J(profiles.server)"
+
+
+################################################################################
+#
+# User Input Field - homepageServer
+#
+#
+
+
+-W newServerTypical.homepageServer="$J(homepage.server)"
+
+
+################################################################################
+#
+# User Input Field - activitiesProfile
+#
+#
+
+
+-W profileServerSelectCustom.activitiesProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - activitiesServer
+#
+#
+
+
+-W profileServerSelectCustom.activitiesServer="HOST_connections_activities"
+
+
+################################################################################
+#
+# User Input Field - blogsProfile
+#
+#
+
+
+-W profileServerSelectCustom.blogsProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - blogsServer
+#
+#
+
+
+-W profileServerSelectCustom.blogsServer="HOST_connections_blogs"
+
+
+################################################################################
+#
+# User Input Field - communitiesProfile
+#
+#
+
+
+-W profileServerSelectCustom.communitiesProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - communitiesServer
+#
+#
+
+
+-W profileServerSelectCustom.communitiesServer="HOST_connections_communities"
+
+
+################################################################################
+#
+# User Input Field - dogearProfile
+#
+#
+
+
+-W profileServerSelectCustom.dogearProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - dogearServer
+#
+#
+
+
+-W profileServerSelectCustom.dogearServer="HOST_connections_dogear"
+
+
+################################################################################
+#
+# User Input Field - profilesProfile
+#
+#
+
+
+-W profileServerSelectCustom.profilesProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - profilesServer
+#
+#
+
+
+-W profileServerSelectCustom.profilesServer="HOST_connections_profiles"
+
+
+################################################################################
+#
+# User Input Field - homepageProfile
+#
+#
+
+
+-W profileServerSelectCustom.homepageProfile="HOST"
+
+
+################################################################################
+#
+# User Input Field - homepageServer
+#
+#
+
+
+-W profileServerSelectCustom.homepageServer="HOST_connections_homepage"
+
+
+################################################################################
+#
+# User Input Field - field2
+#
+#
+
+
+-W debugPanelProfileServerSelection.field2="$J(newserver.fields)"
+
+
+################################################################################
+#
+# User Input Field - field1
+#
+#
+
+
+-W debugPanelProfileServerSelection.field1="$W(featuresToDisable.unselectedFeatures)"
+
+
+################################################################################
+#
+# User Input Field - field3
+#
+#
+
+
+-W debugPanelProfileServerSelection.field3="$J(activities.server)"
+
+
+################################################################################
+#
+# User Input Field - field4
+#
+#
+
+
+-W debugPanelProfileServerSelection.field4="$J(blogs.server)"
+
+
+################################################################################
+#
+# User Input Field - field5
+#
+#
+
+
+-W debugPanelProfileServerSelection.field5="$J(communities.server)"
+
+
+################################################################################
+#
+# User Input Field - field6
+#
+#
+
+
+-W debugPanelProfileServerSelection.field6="$J(dogear.server)"
+
+
+################################################################################
+#
+# User Input Field - field7
+#
+#
+
+
+-W debugPanelProfileServerSelection.field7="$J(profiles.server)"
+
+
+################################################################################
+#
+# User Input Field - field8
+#
+#
+
+
+-W debugPanelProfileServerSelection.field8="$J(homepage.server)"
+
+
+################################################################################
+#
+# User Input Field - activitiesProfile
+#
+#
+
+
+-W newServerCustom.activitiesProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - activitiesServer
+#
+#
+
+
+-W newServerCustom.activitiesServer="HOST_connections_activities"
+
+
+################################################################################
+#
+# User Input Field - blogsProfile
+#
+#
+
+
+-W newServerCustom.blogsProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - blogsServer
+#
+#
+
+
+-W newServerCustom.blogsServer="HOST_connections_blogs"
+
+
+################################################################################
+#
+# User Input Field - communitiesProfile
+#
+#
+
+
+-W newServerCustom.communitiesProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - communitiesServer
+#
+#
+
+
+-W newServerCustom.communitiesServer="HOST_connections_communities"
+
+
+################################################################################
+#
+# User Input Field - dogearProfile
+#
+#
+
+
+-W newServerCustom.dogearProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - dogearServer
+#
+#
+
+
+-W newServerCustom.dogearServer="HOST_connections_dogear"
+
+
+################################################################################
+#
+# User Input Field - profilesProfile
+#
+#
+
+
+-W newServerCustom.profilesProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - profilesServer
+#
+#
+
+
+-W newServerCustom.profilesServer="HOST_connections_profiles"
+
+
+################################################################################
+#
+# User Input Field - homepageProfile
+#
+#
+
+
+-W newServerCustom.homepageProfile="item1"
+
+
+################################################################################
+#
+# User Input Field - homepageServer
+#
+#
+
+
+-W newServerCustom.homepageServer="HOST_connections_homepage"
+
+
+################################################################################
+#
+# User Input Field - name
+#
+#
+
+
+-W hostname.name="HOST"
+
+
+################################################################################
+#
+# User Input Field - feature
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.feature="$J(currentfeature)"
+
+
+################################################################################
+#
+# User Input Field - profile
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.profile="$J($J(currentfeature).profile)"
+
+
+################################################################################
+#
+# User Input Field - server
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.server="$J($J(currentfeature).server)"
+
+
+################################################################################
+#
+# User Input Field - newserver
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.newserver="$J($J(currentfeature).newserver)"
+
+
+################################################################################
+#
+# User Input Field - cell
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.cell="$J($J(currentfeature).cell)"
+
+
+################################################################################
+#
+# User Input Field - node
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.node="$J($J(currentfeature).node)"
+
+
+################################################################################
+#
+# User Input Field - profilepath
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.profilepath="$J($J(currentfeature).profilepath)"
+
+
+################################################################################
+#
+# User Input Field - httpport
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.httpport="$J($J(currentfeature).url.http)"
+
+
+################################################################################
+#
+# User Input Field - httpsport
+#
+#
+
+
+-W debugPanelFeatureDeploymentParameters.httpsport="$J($J(currentfeature).url.https)"
+
+
+################################################################################
+#
+# User Input Field - dbType
+#
+#
+
+
+-W dbTypePanel.dbType="db2"
+
+
+################################################################################
+#
+# User Input Field - sameserver
+#
+#
+
+
+-W dbOnSameServerOrNot.sameserver="yes"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcProviderPanel.jdbcHostField="dbENV.ibm"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcProviderPanel.jdbcPortField="62000"
+
+
+################################################################################
+#
+# User Input Field - jdbcLibraryPathField
+#
+#
+
+
+-W jdbcProviderPanel.jdbcLibraryPathField="/opt/IBM/db2/V9.1/java"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_activities.jdbcDatabaseField="$J(activities.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_activities.appUserField="$J(activities.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_activities.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_blogs.jdbcDatabaseField="$J(blogs.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_blogs.appUserField="$J(blogs.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_blogs.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_communities.jdbcDatabaseField="$J(communities.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_communities.appUserField="$J(communities.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_communities.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_dogear.jdbcDatabaseField="$J(dogear.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_dogear.appUserField="$J(dogear.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_dogear.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_profiles.jdbcDatabaseField="$J(profiles.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_profiles.appUserField="$J(profiles.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_profiles.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanel_homepage.jdbcDatabaseField="$J(homepage.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanel_homepage.appUserField="$J(homepage.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanel_homepage.appUserPasswordField="LQYSbQ8eBQU="
+
+
+################################################################################
+#
+# User Input Field - feature
+#
+#
+
+
+-W debugPanelDbConfig.feature="$J(currentfeature)"
+
+
+################################################################################
+#
+# User Input Field - dbtype
+#
+#
+
+
+-W debugPanelDbConfig.dbtype="$J($J(currentfeature).dbtype)"
+
+
+################################################################################
+#
+# User Input Field - dbname
+#
+#
+
+
+-W debugPanelDbConfig.dbname="$J($J(currentfeature).dbname)"
+
+
+################################################################################
+#
+# User Input Field - dbuser
+#
+#
+
+
+-W debugPanelDbConfig.dbuser="$J($J(currentfeature).dbuser)"
+
+
+################################################################################
+#
+# User Input Field - dbpassword
+#
+#
+
+
+-W debugPanelDbConfig.dbpassword="$J($J(currentfeature).dbpassword)"
+
+
+################################################################################
+#
+# User Input Field - dbhost
+#
+#
+
+
+-W debugPanelDbConfig.dbhost="$J($J(currentfeature).dbhost)"
+
+
+################################################################################
+#
+# User Input Field - dbport
+#
+#
+
+
+-W debugPanelDbConfig.dbport="$J($J(currentfeature).dbport)"
+
+
+################################################################################
+#
+# User Input Field - libpath
+#
+#
+
+
+-W debugPanelDbConfig.libpath="$J($J(currentfeature).jdbclibpath)"
+
+
+################################################################################
+#
+# User Input Field - jdbcLibraryPathField
+#
+#
+
+
+-W jdbcProviderPanelSeparate.jdbcLibraryPathField="$J(jdbclibpath.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_activities.jdbcHostField="$J(activities.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_activities.jdbcPortField="$J(activities.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_activities.jdbcDatabaseField="$J(activities.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_activities.appUserField="$J(activities.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_activities.appUserPasswordField="$J(activities.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_blogs.jdbcHostField="$J(blogs.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_blogs.jdbcPortField="$J(blogs.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_blogs.jdbcDatabaseField="$J(blogs.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_blogs.appUserField="$J(blogs.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_blogs.appUserPasswordField="$J(blogs.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_communities.jdbcHostField="$J(communities.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_communities.jdbcPortField="$J(communities.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_communities.jdbcDatabaseField="$J(communities.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_communities.appUserField="$J(communities.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_communities.appUserPasswordField="$J(communities.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_dogear.jdbcHostField="$J(dogear.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_dogear.jdbcPortField="$J(dogear.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_dogear.jdbcDatabaseField="$J(dogear.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_dogear.appUserField="$J(dogear.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_dogear.appUserPasswordField="$J(dogear.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_profiles.jdbcHostField="$J(profiles.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_profiles.jdbcPortField="$J(profiles.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_profiles.jdbcDatabaseField="$J(profiles.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_profiles.appUserField="$J(profiles.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_profiles.appUserPasswordField="$J(profiles.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcHostField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_homepage.jdbcHostField="$J(homepage.dbhost.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcPortField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_homepage.jdbcPortField="$J(homepage.dbport.default)"
+
+
+################################################################################
+#
+# User Input Field - jdbcDatabaseField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_homepage.jdbcDatabaseField="$J(homepage.dbname.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_homepage.appUserField="$J(homepage.dbuser.default)"
+
+
+################################################################################
+#
+# User Input Field - appUserPasswordField
+#
+#
+
+
+-W jdbcDatasourcePanelSeparate_homepage.appUserPasswordField="$J(homepage.dbpassword.default)"
+
+
+################################################################################
+#
+# User Input Field - feature
+#
+#
+
+
+-W debugPanelDbConfigSeparate.feature="$J(currentfeature)"
+
+
+################################################################################
+#
+# User Input Field - dbtype
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbtype="$J($J(currentfeature).dbtype)"
+
+
+################################################################################
+#
+# User Input Field - dbname
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbname="$J($J(currentfeature).dbname)"
+
+
+################################################################################
+#
+# User Input Field - dbuser
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbuser="$J($J(currentfeature).dbuser)"
+
+
+################################################################################
+#
+# User Input Field - dbpassword
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbpassword="$J($J(currentfeature).dbpassword)"
+
+
+################################################################################
+#
+# User Input Field - dbhost
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbhost="$J($J(currentfeature).dbhost)"
+
+
+################################################################################
+#
+# User Input Field - dbport
+#
+#
+
+
+-W debugPanelDbConfigSeparate.dbport="$J($J(currentfeature).dbport)"
+
+
+################################################################################
+#
+# User Input Field - libpath
+#
+#
+
+
+-W debugPanelDbConfigSeparate.libpath="$J($J(currentfeature).jdbclibpath)"
+
+
+################################################################################
+#
+# User Input Field - field2
+#
+#
+
+
+-W bean54.field2="$J(poffering)"
+
+
+################################################################################
+#
+# User Input Field - field3
+#
+#
+
+
+-W bean54.field3="$J($J(poffering).home)"
+
+
+################################################################################
+#
+# User Input Field - field1
+#
+#
+
+
+-W bean54.field1="$W(defaults.platformScriptCommand) $W(defaults.winQuote)$W(defaults.winQuote)$N($J(was.location)/profiles/$J($J(poffering).profile)/bin/wsadmin.$W(defaults.platformScriptExtension))$W(defaults.winQuote) -lang jython -conntype none -f connectionsConfig.py updateConfig $J($J(poffering).cell)  $N($J($J(poffering).home),/) updateConfig.properties $W(defaults.winQuote)"
+
+
+################################################################################
+#
+# User Input Field - selection
+#
+#
+
+
+-W dataDir.selection="specifyparent"
+
+
+################################################################################
+#
+# User Input Field - datadir
+#
+#
+
+
+-W dataDir.datadir="$PATH($P(absoluteInstallLocation), Data)"
+
+
+################################################################################
+#
+# User Input Field - statistic
+#
+#
+
+
+-W activitiesDataDirPanel.statistic="$PATH($P(absoluteInstallLocation), Data/activities/statistic)"
+
+
+################################################################################
+#
+# User Input Field - content
+#
+#
+
+
+-W activitiesDataDirPanel.content="$PATH($P(absoluteInstallLocation), Data/activities/content)"
+
+
+################################################################################
+#
+# User Input Field - index
+#
+#
+
+
+-W blogsDataDirPanel.index="$PATH($P(absoluteInstallLocation), Data/blogs/index)"
+
+
+################################################################################
+#
+# User Input Field - upload
+#
+#
+
+
+-W blogsDataDirPanel.upload="$PATH($P(absoluteInstallLocation), Data/blogs/upload)"
+
+
+################################################################################
+#
+# User Input Field - index
+#
+#
+
+
+-W communitiesDataDirPanel.index="$PATH($P(absoluteInstallLocation), Data/communities/index)"
+
+
+################################################################################
+#
+# User Input Field - statistic
+#
+#
+
+
+-W communitiesDataDirPanel.statistic="$PATH($P(absoluteInstallLocation), Data/communities/statistic)"
+
+
+################################################################################
+#
+# User Input Field - forum
+#
+#
+
+
+-W communitiesDataDirPanel.forum="$PATH($P(absoluteInstallLocation), Data/communities/content)"
+
+
+################################################################################
+#
+# User Input Field - index
+#
+#
+
+
+-W dogearDataDirPanel.index="$PATH($P(absoluteInstallLocation), Data/dogear/index)"
+
+
+################################################################################
+#
+# User Input Field - favorite
+#
+#
+
+
+-W dogearDataDirPanel.favorite="$PATH($P(absoluteInstallLocation), Data/dogear/favorite)"
+
+
+################################################################################
+#
+# User Input Field - index
+#
+#
+
+
+-W profilesDataDirPanel.index="$PATH($P(absoluteInstallLocation), Data/profiles/index)"
+
+
+################################################################################
+#
+# User Input Field - statistic
+#
+#
+
+
+-W profilesDataDirPanel.statistic="$PATH($P(absoluteInstallLocation), Data/profiles/statistic)"
+
+
+################################################################################
+#
+# User Input Field - cache
+#
+#
+
+
+-W profilesDataDirPanel.cache="$PATH($P(absoluteInstallLocation), Data/profiles/cache)"
+
+
+################################################################################
+#
+# User Input Field - index
+#
+#
+
+
+-W homepageDataDirPanel.index="$PATH($P(absoluteInstallLocation), Data/homepage/index)"
+
+
+################################################################################
+#
+# User Input Field - activitiesStatistic
+#
+#
+
+
+-W debugPanelDataDirForEach.activitiesStatistic="$J(activities.statistic)"
+
+
+################################################################################
+#
+# User Input Field - activitiesContent
+#
+#
+
+
+-W debugPanelDataDirForEach.activitiesContent="$J(activities.content)"
+
+
+################################################################################
+#
+# User Input Field - blogsIndex
+#
+#
+
+
+-W debugPanelDataDirForEach.blogsIndex="$J(blogs.index)"
+
+
+################################################################################
+#
+# User Input Field - blogsUpload
+#
+#
+
+
+-W debugPanelDataDirForEach.blogsUpload="$J(blogs.upload)"
+
+
+################################################################################
+#
+# User Input Field - communitesIndex
+#
+#
+
+
+-W debugPanelDataDirForEach.communitesIndex="$J(communities.index)"
+
+
+################################################################################
+#
+# User Input Field - dogearIndex
+#
+#
+
+
+-W debugPanelDataDirForEach.dogearIndex="$J(dogear.index)"
+
+
+################################################################################
+#
+# User Input Field - dogearFavorite
+#
+#
+
+
+-W debugPanelDataDirForEach.dogearFavorite="$J(dogear.favorite)"
+
+
+################################################################################
+#
+# User Input Field - profilesIndex
+#
+#
+
+
+-W debugPanelDataDirForEach.profilesIndex="$J(profiles.index)"
+
+
+################################################################################
+#
+# User Input Field - profilesCache
+#
+#
+
+
+-W debugPanelDataDirForEach.profilesCache="$J(profiles.cache)"
+
+
+################################################################################
+#
+# User Input Field - profilesStatistic
+#
+#
+
+
+-W debugPanelDataDirForEach.profilesStatistic="$J(profiles.statistic)"
+
+
+################################################################################
+#
+# User Input Field - selection
+#
+#
+
+
+-W notificationEnablement.selection="true"
+
+
+################################################################################
+#
+# User Input Field - notificationSolution
+#
+#
+
+
+-W notificationSolution.notificationSolution="javamailsession"
+
+
+################################################################################
+#
+# User Input Field - smtpServerNameField
+#
+#
+
+
+-W notificationConfigJavaMailSession.smtpServerNameField="localhost"
+
+
+################################################################################
+#
+# User Input Field - smtpUserField
+#
+#
+
+
+-W notificationConfigJavaMailSession.smtpUserField=""
+
+
+################################################################################
+#
+# User Input Field - smtpPasswordField
+#
+#
+
+
+-W notificationConfigJavaMailSession.smtpPasswordField=""
+
+
+################################################################################
+#
+# User Input Field - useSSLCheckbox
+#
+#
+
+
+-W notificationConfigJavaMailSession.useSSLCheckbox=""
+
+
+################################################################################
+#
+# User Input Field - smtpPortNumberField
+#
+#
+
+
+-W notificationConfigJavaMailSession.smtpPortNumberField="25"
+
+
+################################################################################
+#
+# User Input Field - smtpDomainField
+#
+#
+
+
+-W notificationConfigLegacy.smtpDomainField=""
+
+
+################################################################################
+#
+# User Input Field - smtpDNSHostField
+#
+#
+
+
+-W notificationConfigLegacy.smtpDNSHostField=""
+
+
+################################################################################
+#
+# User Input Field - smtpDNSPortField
+#
+#
+
+
+-W notificationConfigLegacy.smtpDNSPortField=""
+
+
+################################################################################
+#
+# User Input Field - smtpUserField
+#
+#
+
+
+-W notificationConfigLegacy.smtpUserField=""
+
+
+################################################################################
+#
+# User Input Field - smtpPasswordField
+#
+#
+
+
+-W notificationConfigLegacy.smtpPasswordField=""
+
+
+################################################################################
+#
+# User Input Field - useSSLCheckbox
+#
+#
+
+
+-W notificationConfigLegacy.useSSLCheckbox=""
+
+
+################################################################################
+#
+# User Input Field - smtpPortNumberField
+#
+#
+
+
+-W notificationConfigLegacy.smtpPortNumberField="25"
+
+
+################################################################################
+#
+# User Input Field - useJavaMailProvider
+#
+#
+
+
+-W debugPanelNotificationConfig.useJavaMailProvider="$J(notification.useJavaMailProvider)"
+
+
+################################################################################
+#
+# User Input Field - host
+#
+#
+
+
+-W debugPanelNotificationConfig.host="$J(notification.host)"
+
+
+################################################################################
+#
+# User Input Field - dnshost
+#
+#
+
+
+-W debugPanelNotificationConfig.dnshost="$J(notification.dnshost)"
+
+
+################################################################################
+#
+# User Input Field - dnsport
+#
+#
+
+
+-W debugPanelNotificationConfig.dnsport="$J(notification.dnsport)"
+
+
+################################################################################
+#
+# User Input Field - domain
+#
+#
+
+
+-W debugPanelNotificationConfig.domain="$J(notification.domain)"
+
+
+################################################################################
+#
+# User Input Field - port
+#
+#
+
+
+-W debugPanelNotificationConfig.port="$J(notification.port)"
+
+
+################################################################################
+#
+# User Input Field - username
+#
+#
+
+
+-W debugPanelNotificationConfig.username="$J(notification.user)"
+
+
+################################################################################
+#
+# User Input Field - password
+#
+#
+
+
+-W debugPanelNotificationConfig.password="$J(notification.password )"
+
+
+################################################################################
+#
+# User Input Field - selection
+#
+#
+
+
+-W wpiPanel.selection="true"
+
+
+################################################################################
+#
+# User Input Field - username
+#
+#
+
+
+-W jaasProxUserPanel.username=""
+
+
+################################################################################
+#
+# User Input Field - password
+#
+#
+
+
+-W jaasProxUserPanel.password=""
+
+
+################################################################################
+#
+# User Input Field - passwordConf
+#
+#
+
+
+-W jaasProxUserPanel.passwordConf=""

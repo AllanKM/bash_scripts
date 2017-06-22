@@ -1,0 +1,139 @@
+#!/bin/ksh
+# Author: Thad Hinz
+# Date: 06/28/2013
+#
+# Description: script will graph cpu data using system's srm file and send graphs in report
+#
+# Todos:
+# - need to fix for Linux stats since no pc or ec
+# - incorporate inline images vs attachments
+# - other valuable stats?
+# - need updated version of gnu for more options
+# bug? need to single quote dssh command when using "3 days ago" type options for some reason
+
+usage() {
+  echo "Usage: `basename $0` [-e <email_list>] [-a] [day]"
+  echo "        -e, add'l email or comma separated list of emails to send report to"
+  echo "            report is always sent to runas user" 
+  echo "        -a, attach the srm data file to the report"
+  echo "        -h, this help page"
+  echo '         day: today, yesterday, "two days ago", "one week ago", whatever the gnu date command accepts'
+  echo "              today is used if no day is specified"
+exit 1
+}
+
+while getopts ":e:ah" opt; do
+  case "$opt" in
+    e) emaillist=$OPTARG
+       mailother=1  ;;
+    a) attachsrm=1 ;;
+    h) usage ;;
+    ?) usage ;;
+  esac
+done
+
+shift $(( $OPTIND - 1 ))
+
+whengraph="$1"
+whengraph=${whengraph:=today} 
+gnudate=/opt/freeware/bin/date
+datesuffix=$($gnudate -d "$whengraph" +%Y.%m.%d.%a)
+nicedate=$($gnudate -d "$whengraph" +"%a %b %d %Y")
+host=$(hostname)
+srmhome=/var/adm/perfmgr/daily/${host}
+srmfile=vmstat.${datesuffix}
+datfile=${srmhome}/${srmfile}
+user=$(whoami)
+rand=$$
+outdir=/tmp/${user}/${rand}
+os=$(uname)
+
+if [[ $os != "AIX" ]];then
+    print -u2 -- "Sorry this only works on AIX nodes right now"
+   exit 1
+fi
+
+if [[ $user = "root" ]];then
+   print -u2 -- "Must run script as yourself"
+  exit 1
+fi
+
+mkdir -p $outdir 
+
+if [[ ! -f $datfile ]];then
+  print -u2 -- "SRM file not found: $datfile"
+  exit 1
+fi
+
+/usr/bin/gnuplot << EOF
+reset
+set terminal png color
+set output "${outdir}/${host}.${srmfile}.CPU.png"
+
+set xdata time
+set timefmt "%H:%M:%S"
+set format x "%H:%M:%S"
+set xlabel "Time (GMT)"
+set xtics rotate
+
+set ylabel "Percentage"
+set format y "%.0f"
+
+set title "$host CPU Usage $nicedate ($srmfile)"
+set key reverse Left outside
+set grid
+
+set data style lines
+
+plot "$datfile" using 1:15 title "User", \
+"" using 1:16 title "System", \
+"" using 1:17 title "Idle", \
+"" using 1:18 title "Wait", \
+"" using 1:20 title "Entitlement"
+
+reset
+set terminal png color
+set output "${outdir}/${host}.${srmfile}.phyCPU.png"
+
+set xdata time
+set timefmt "%H:%M:%S"
+set format x "%H:%M:%S"
+set xlabel "Time (GMT)"
+set xtics rotate
+
+set ylabel "Physical CPUs"
+
+set title "$host Physical CPU Usage $nicedate ($srmfile)"
+set key reverse Left outside
+set grid
+
+set data style lines
+
+plot "$datfile" using 1:19 title "Used CPU", \
+"" using 1:34 title "Entitled Capacity", \
+"" using 1:38 title "Max Capacity"
+EOF
+
+cd ${outdir}
+attach=""
+for file in ${host}*.png;do 
+  attach="$attach -a $file"
+done
+
+if [[ $attachsrm -eq 1 ]];then
+  attach="$attach -a ${srmhome}/${srmfile}"
+  msg="Two graphs and srm file should be attached.  Enjoy!"
+else 
+  msg="Two graphs should be attached.  Enjoy!" 
+fi
+
+if [[ $mailother -eq 1 ]];then
+  emails="$user,$emaillist"
+else
+  emails=$user
+fi
+
+(echo $msg;echo; lssys ${host} | grep vmachineinfo | awk '{print $3,$4,$5,$6}') | mutt $attach -s "$host CPU Graphs for $nicedate" $emails
+
+echo "Report sent to $emails"
+rm ${outdir}/*

@@ -1,0 +1,128 @@
+#!/bin/bash 
+
+
+usage() {
+  echo "USAGE: $0 -u <user> -t <type> -p <password> -g <group> -w <host> -P <admin_password> [-d <description>] [-U] [-G] [-D]"
+  echo
+  echo "  -u <user>		: User ID to add/update"
+  echo "  -t <type>		: Type of User - WebUI or Messaging"
+  echo "  -p <password>		: Password for ID"
+  echo "  -g <group>>		: Group to add ID to. Valid for WebUI only. Values: SystemAdministrators, MessagingAdministrators or Users"
+  echo "  -w <host>		: Host to make change to"
+  echo "  -P <password>		: Admin password to use on connection"
+  echo "  -d <description>	: User description value"
+  echo "  -U			: Indicate that this is an update action"
+  echo "  -G			: For update actions, indicate that this is a group delete. Default is add"
+  echo "  -D			: Delete the listed ID"
+  echo $1
+  exit 1
+}
+
+while getopts Uu:g:t:p:w:P:d:GD opt
+do
+  case $opt in
+  u)
+    MSUSER=$OPTARG
+    ;;
+
+  g)
+    MSGROUP=$OPTARG
+    if [[ $MSGROUP != "SystemAdministrators" && $MSGROUP != "MessagingAdministrators" && $MSGROUP != "Users" ]] ; then
+      usage "Invalid Group : $MSGROUP"
+    fi
+    ;;
+
+  t)
+    MSTYPE=$OPTARG
+    if [[ $MSTYPE != "WebUI" && $MSTYPE != "Messaging" ]] ; then
+      usage "Invalid Type : $MSTYPE"
+    fi
+    ;;
+
+  P)
+    MSADMP=$OPTARG
+    ;;
+
+  p)
+    MSPASS=$OPTARG
+    ;;
+
+  w)
+    MSHOST=$OPTARG
+    ;;
+
+  d)
+    MSDESC=$OPTARG
+    ;;
+
+  D)
+    TASK=delete
+    ;;
+
+  U)
+    TASK=update
+    ;;
+
+  G)
+    GROUPTASK=delete
+    ;;
+
+  *)
+    usage
+    ;;
+  esac
+done
+
+[[ -z $MSHOST ]] && usage
+[[ -z $MSADMP || -z $MSUSER || -z $MSTYPE ]] && usage
+
+
+## Build ID command
+if [[ $TASK == "delete" ]] ; then
+  read -p "Are you sure you want to delete user $MSUSER from $MSHOST ?" SURE
+
+  if [[ $SURE != "y" && $SURE != "Y" ]] ; then
+    exit 2
+  fi
+
+  MSCMD="imaserver user delete \"UserID=$MSUSER\" \"Type=$MSTYPE\""
+  MSCMD="$MSCMD ; imaserver user list \"UserID=$MSUSER\" \"Type=$MSTYPE\""
+elif [[ $TASK == "update" ]] ; then
+  MSCMD="imaserver user edit \"UserID=$MSUSER\" \"Type=$MSTYPE\""
+
+  if [[ -n $MSPASS ]] ; then
+    MSCMD="$MSCMD \"Password=$MSPASS\""
+  fi
+
+  if [[ -n $MSGROUP ]] ; then
+    if [[ $GROUPTASK=delete ]] ; then
+      MSCMD="$MSCMD \"RemoveGroupMembership=$MSGROUP\""
+    else
+      MSCMD="$MSCMD \"AddGroupMembership=$MSGROUP\""
+    fi
+  fi
+
+  if [[ -n $MSDESC ]] ; then
+    MSCMD="$MSCMD \"Description=$MSDESC\""
+  fi
+
+  MSCMD="$MSCMD ; imaserver user list \"UserID=$MSUSER\" \"Type=$MSTYPE\""
+else
+  [[ -z $MSPASS ]] && usage
+  
+  [[ $MSTYPE == "WebUI" && -z $MSGROUP ]] && usage "Must specify group when type is WebUI"
+  [[ $MSTYPE != "WebUI" && -n $MSGROUP ]] && usage "Must not specify group when type is not WebUI"
+
+  MSCMD="imaserver user add \"UserID=$MSUSER\" \"Type=$MSTYPE\" \"Password=$MSPASS\" \"GroupMembership=$MSGROUP\""
+
+  if [[ -n $MSDESC ]] ; then
+    MSCMD="$MSCMD \"Description=$MSDESC\""
+  fi
+
+  MSCMD="$MSCMD ; imaserver user list \"UserID=$MSUSER\" \"Type=$MSTYPE\""
+fi
+
+## Send create ID command
+echo $MSADMP | /usr/bin/pwdexp ssh -o PubkeyAuthentication=no $MSHOST -l admin "$MSCMD"
+
+

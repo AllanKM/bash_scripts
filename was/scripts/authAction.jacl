@@ -1,0 +1,234 @@
+#*******************************************************************************************************
+# authAction.jacl
+#   Author: James Walton
+#   Creation Date: 07 Mar 2007
+#*******************************************************************************************************
+
+proc printUsage {} {
+	puts "   wsadmin -f authAction.jacl -action <actionName> -auth <authName> \[-attr <attributes>\]"
+	puts "   wsadmin -f authAction.jacl -action list -auth <authName>"
+	puts "Executes the selected action on authorization table <authName>."
+	puts ""
+	puts "Actions: list | add | remove | modify"
+	puts "Authorizations: admin | naming"
+	puts ""
+	puts "Attributes for adding, removing, or modifying:"
+	puts "  Usage:  -attr Type:UserName:Role"
+	puts "  Auth Types:   user | group | special"
+	puts "  Special Types: AllAuthenticatedUsers | Everyone | Server"
+	puts "  Admin Roles:  admin | op | config | monitor"
+	puts "  Naming Roles: read | write | create | delete | all"
+	puts ""
+	puts "  Example:  -action add -auth admin -attr group:\"HPODS Applications\":admin"
+	puts "  Example:  -action remove -auth naming -attr special:AllAuthenticatedUsers:write"
+}
+
+proc getAuthorizationTables {authFile} {
+	global AdminConfig
+	set authTable [$AdminConfig getid /AuthorizationTableExt:$authFile/]
+	set authz [lindex [lindex [$AdminConfig show $authTable authorizations] 0] 1]
+	return $authz
+}
+
+#**********
+proc printAuthList {aList aLabel roleName} {
+	global AdminConfig
+	foreach i $aList {
+		if {[regexp "Special" $aLabel]} {
+			set iName [lindex [split [lindex [split $i #] 1] _] 0]
+		} else {
+			set iName [lindex [lindex [$AdminConfig show $i name] 0] 1]
+		}
+		puts "$aLabel ($iName): $roleName"
+	}
+}
+
+proc listAuth {authName} {
+	global AdminConfig
+	if {$authName == "admin"} {
+		set authz [getAuthorizationTables "admin-authz.xml"]
+		set uLabel "Admin User"
+		set gLabel "Admin Group"
+		set sLabel "Admin Special"
+	} elseif {$authName == "naming"} {
+		set authz [getAuthorizationTables "naming-authz.xml"]
+		set uLabel "CORBA Naming User"
+		set gLabel "CORBA Naming Group"
+		set sLabel "CORBA Naming Special"
+	}
+	foreach a $authz {
+		set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+		set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+		set aList [lindex [lindex [$AdminConfig show $a users] 0] 1]
+		printAuthList $aList $uLabel $rName
+		set aList [lindex [lindex [$AdminConfig show $a groups] 0] 1]
+		printAuthList $aList $gLabel $rName
+		set aList [lindex [lindex [$AdminConfig show $a specialSubjects] 0] 1]
+		printAuthList $aList $sLabel $rName
+	}
+}
+
+#**********
+proc convertAttrs {authAttrs} {
+	global AdminConfig
+	set atType [lindex [split $authAttrs :] 0]
+	set atName [lindex [split $authAttrs :] 1]
+	set atRole [lindex [split $authAttrs :] 2]
+	
+	switch -regexp -- $atType {
+		user    {set atLabel "User"; set atType "UserExt"; set atAttr "users"}
+		group   {set atLabel "Group"; set atType "GroupExt"; set atAttr "groups"}
+		special {set atLabel "SpecialSubject"; set atType [append atName "Ext"]; set atAttr "specialSubjects"}
+	}
+	
+	if {[lsearch -exact "admin op config monitor" $atRole] >= 0} {
+		switch -regexp -- $atRole {
+			admin   {set atRole "administrator"}
+			op      {set atRole "operator"}
+			config  {set atRole "configurator"}
+			monitor {set atRole "monitor"}
+		}
+	} elseif {[lsearch -exact "read write create delete all" $atRole] >= 0} {
+		switch -regexp -- $atRole {
+			read   {set atRole "CosNamingRead"}
+			write  {set atRole "CosNamingWrite"}
+			create {set atRole "CosNamingCreate"}
+			delete {set atRole "CosNamingDelete"}
+			all    {set atRole "ALL"}
+		}
+	} else { puts "ERROR: Invalid Role specified."; printUsage; exit}
+	return [lindex [list "$atLabel $atAttr $atType $atName $atRole"] 0]
+}
+
+proc addAuth {authName authAttrs} {
+	global AdminConfig
+	if {$authName == "admin"} {
+		set authz [getAuthorizationTables "admin-authz.xml"]
+	} elseif {$authName == "naming"} {
+		set authz [getAuthorizationTables "naming-authz.xml"]
+	}
+	set authAttrs [convertAttrs $authAttrs]
+	set atLabel [lindex $authAttrs 0]
+	set atType [lindex $authAttrs 2]
+	set atName [lindex $authAttrs 3]
+	set atRole [lindex $authAttrs 4]
+	foreach a $authz {
+		set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+		set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+		if {[regexp $atRole $rName] || $atRole == "ALL"} {
+			if {[regexp "SpecialSubject" $atType]} {
+				puts "Adding $atLabel $atName to $authName role $rName..."
+				set result [$AdminConfig create $atType $a {}]
+			} else {
+				puts "Adding $atLabel $atName to $authName role $rName..."
+				set args [list "name \"$atName\""]
+				set result [$AdminConfig create $atType $a $args]
+			}
+		}
+	}
+	if {[regexp "cells/" $result]} {
+		$AdminConfig save
+    	puts "The configuration changes have been saved."
+    	puts "Changes might need to be synchronized, and the appservers will need to be restarted."
+	}
+}
+
+#**********
+proc removeAuth {authName authAttrs} {
+	global AdminConfig
+	if {$authName == "admin"} {
+		set authz [getAuthorizationTables "admin-authz.xml"]
+	} elseif {$authName == "naming"} {
+		set authz [getAuthorizationTables "naming-authz.xml"]
+	}
+	set authAttrs [convertAttrs $authAttrs]
+	set atLabel [lindex $authAttrs 0]
+	set atAttr [lindex $authAttrs 1]
+	set atType [lindex $authAttrs 2]
+	set atName [lindex $authAttrs 3]
+	set atRole [lindex $authAttrs 4]
+	foreach a $authz {
+		set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+		set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+		if {$rName == $atRole} {
+			set iList [lindex [lindex [$AdminConfig show $a $atAttr] 0] 1]
+			foreach i $iList {
+				if {[regexp "special" $atAttr]} {
+					set iName [lindex [split [lindex [split $i #] 1] _] 0]
+				} else {
+					set iName [lindex [lindex [$AdminConfig show $i name] 0] 1]
+				}
+				if {[regexp $atName $iName]} {
+					puts "Removing $atLabel $iName from role: $rName"
+					set result [$AdminConfig remove $i]
+				}
+			}
+		}
+	}
+	if {$result == ""} {
+		$AdminConfig save
+    	puts "The configuration changes have been saved."
+    	puts "Changes might need to be synchronized, and the appservers will need to be restarted."
+	}
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+	set arg [lindex $argv $i]
+	if {$arg == "-action"} {
+		if {[incr i] < $argc} {
+			set actionName [lindex $argv $i]
+		} else {
+			set argerr 2
+		}
+	} elseif {$arg == "-auth"} {
+		if {[incr i] < $argc} {
+			set authName [lindex $argv $i]
+		} else {
+			set argerr 3
+		}
+	} elseif {$arg == "-attr"} {
+		if {[incr i] < $argc} {
+			set authAttrs [lindex $argv $i]
+		} else {
+			set argerr 4
+		}
+	} else {
+		set argerr 5
+	}
+}
+
+if {[info exists actionName] && [info exists authName] && ![info exists authAttrs] && $actionName != "list"} {
+  set argerr 6
+}
+if {[lsearch -exact "list add remove" $actionName] < 0} {
+  set argerr 7
+}
+if {$actionName == "list" && ![info exists authName]} {
+  set argerr 8
+}
+if {[lsearch -exact "add remove" $actionName] < 0 && ![info exists authAttrs] && ![info exists authName]} {
+  set argerr 9
+}
+
+if { $argerr } {
+	puts "Invalid command line invocation (reason code $argerr)."
+	printUsage
+	exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+
+switch -regexp -- $actionName {
+	list   {listAuth $authName}
+	add    {addAuth $authName $authAttrs}
+	remove {removeAuth $authName $authAttrs}
+	default {printUsage; exit}
+}

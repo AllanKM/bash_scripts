@@ -1,0 +1,52 @@
+os=$(uname)
+
+ECHO() {
+case ${os} in
+AIX) /usr/bin/echo "$*" ;;
+Linux) /bin/echo -e "$*" ;;
+*) echo "$*" ;;
+esac
+}
+
+AWK() {
+case ${os} in
+AIX) awk $* ;;
+Linux) awk --posix $* ;;
+*) awk $* ;;
+esac
+}
+
+size() {
+holdsz=${2:-0}
+for i in $1; do
+charcnt=$(echo $i|wc -c)
+[ $charcnt -gt $holdsz ] && holdsz=$charcnt
+#echo str_size: $i,$charcnt,$holdsz >&2
+done
+echo $((holdsz+0))
+}
+
+disp() {
+col1=""; col2=""; col3="";
+for i in $(awk '{print $1}' $1 $2 | sort | uniq); do col1="$col1 $i"; done
+for i in $(awk '{print $2}' "$1"); do col2="$col2 $i"; done
+for i in $(awk '{print $2}' "$2"); do col3="$col3 $i"; done
+#echo col1: ${col1:-x}; echo col2: ${col2:-x}; echo col3: ${col3:-x};
+col1sz=$(size "${col1:-x}" $3); col2sz=$(size "${col2:-x}" $4); col3sz=$(size "${col3:-x}" $5);
+#echo col_size: ${col1sz} ${col2sz} ${col3sz}
+
+list=$(awk '{print $1}' $1 $2 | sort | uniq)
+if [ "$list" ]; then
+  for i in $list; do
+    [ $1 ] && state1=$(fgrep -w "$i" $1 | awk '{print $2}' | tr '\n' '\ ')
+    [ $2 ] && state2=$(fgrep -w "$i" $2 | awk '{print $2}' | tr '\n' '\ ')
+    printf "%-${col1sz}s %-${col2sz}s %-${col3sz}s\n" "${i:-x}" "${state1:-x}" "${state2:-x}"
+  done
+else
+  printf "%-${col1sz}s %-${col2sz}s %-${col3sz}s\n" "x" "x" "x"
+fi
+}
+
+fmting() {
+cat $1 | tr -s '[:space:]' '[\n*]' | pr -3 -t -a
+}

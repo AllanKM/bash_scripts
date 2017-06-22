@@ -1,0 +1,401 @@
+#!/bin/ksh
+#------------------------------------------------------------------------------
+#
+# Script Name:
+#
+#   make_filesystem
+#
+# Description:
+#
+#   Creates File Systems on AIX and Linux
+#   Assumptions: On AIX 5.3, we only want jfs2 filesystems.
+#		 On AIX 5.1 or 5.2, we only want jfs filesystems.
+#		 Only Sles 9 and Sles 10 are supported for Linux
+#		 LV Names will be a subset of the FS name on new filesystems
+#		 If FS already exists expand it if necessary
+#
+# Change history:
+#
+#   Date      Init  Description
+#   10/20/05  RJB   Creation with AIX support.
+#   12/02/05  MTA   Includes Sles 9 and RH 3 Support.
+#   02/20/06  RJB   Fixed a couple of syntax errors and added -t flag to mklv.
+#   08/21/07  MTA   Added a check to not allow lv > 15 characters.
+#   04/17/07  MTA   Add AIX 6.1 support.
+#   05/10/08  MTA   Remove support for SLES 8.
+#   07/29/08  MTA   Add SLES 10 and XFS support for SLES 10.
+#   07/23/09  MTA   Fix SLES logic bug when same LV name exists on different VGs.
+#   07/14/10  RJB   Fixed bug with calculation of maxlps for large filesystems.
+#		    Added support for "M" and "G" to be specified as part of size value.
+#
+#------------------------------------------------------------------------------
+
+Usage()
+{
+  print ""
+  print -u2 "Usage: make_filesystem [-b] filesystem-name size-in-MB [vg-name] [lv-name]"
+  print ""
+  print -u2 "Examples to make a 5GB File System on AIX or Linux:"
+  print -u2 "      make_filesystem /db2_database/sample 5000"
+  print ""
+  print -u2 "Examples to increase a File System by 500MB on AIX or Linux:"
+  print -u2 "      make_filesystem /db2_database/sample +500"
+  print ""
+  print -u2 "Example for an AIX Large File enabled File System of 20GB:"
+  print -u2 "      make_filesystem -b /db2_database/sample 20000 appvg db2dblv"
+  print ""
+  print -u2 "1000 = 1GB, 100 = 100 MB"
+  print ""
+  exit 1
+}
+
+
+aixFS()
+{
+  if [[ "$vg" = "" ]] ; then
+     vg="rootvg"
+  else
+     chk=`lsvg |grep $vg`
+     if [[ "$chk" = "" ]] ; then
+        print -u2 "\nError: $vg doesn't exist...exiting"
+        print "Existing Volume Groups are:"
+        lsvg
+        exit 1
+     fi
+  fi
+
+  chkchars=`basename ${fs} |wc -c |awk '{print $1}'`
+  if [[ "$chkchars" -gt 14 ]] ; then
+     print "Warning: `basename ${fs}` must be less than 13 characters...exiting"
+     exit 1
+  fi
+
+  ver="$(uname -v)$(uname -r)"
+
+  print "Checking to see if $fs filesystem exists..."
+  if [[ "$size" = "+"* ]] ; then
+     sizeBlks="${size}M"
+  else
+     sizeBlks=$(($size*2048))
+  fi
+  fsInfo=$(lsfs -c $fs 2>/dev/null)
+
+  if [[ $? -eq 0 ]] ; then # Then check size
+     actualSize=$(print "$fsInfo" | tail -1 | cut -d: -f6)
+     if [[ $sizeBlks = "+"* || $actualSize -lt $sizeBlks ]] ; then
+        print "Increasing size of $fs filesystem.."
+	lvname=`print "$fsInfo" |tail -1 |cut -d: -f2 |cut -d/ -f3`
+	lvpps=`lslv $lvname |grep "PP SIZE" |awk '{print $6}'`
+	lvmaxlps=`lslv $lvname |grep "PP SIZE" |awk '{print $3}'`
+	cursize=`df -mP $fs | tail -1 | awk '{print $2}' | cut -d. -f1`
+	reqlps=$((($size + $cursize)/$lvpps))
+	if [ $lvmaxlps -lt $reqlps ] ; then
+	   chlv -x $reqlps $lvname
+           chfs -a size=$sizeBlks $fs
+	else
+           chfs -a size=$sizeBlks $fs
+	fi
+     else
+        print "Size of $fs is already equal to or greater than $size\n"
+	exit 0
+     fi
+  else 
+     print "Creating filesystem $fs of size $sizeBlks blocks (at least) in $vg..."
+     case "$ver" in
+        53|61)	fstype="jfs2"; LargeFile=""; ea="-a ea='v2'";;
+	52|51)  fstype="jfs";;
+	*)	print -u2 "\nError: unsupported AIX version: $ver"; Usage; exit 1;;
+     esac
+
+     # Does LV name exists, if not create it
+     if [[ "$lv" = "" ]] ; then
+        lvchk=`basename ${fs}lv`
+     else
+        lvchk="$lv"
+     fi
+
+     lvName=`lsvg -l $vg |grep $lvchk |awk '{print $1}'`
+     if [ "$lvchk" = "$lvName" ] || [ "$lvchk" = "$lv" ] ; then
+        lvName=${lvchk}
+     else
+        lvName=`basename ${fs}lv`
+     fi
+
+     # Make the LV
+     diskCnt=$(lsvg $vg |grep "TOTAL PVs" |awk '{print $3}')
+     chkLPAR=`lssys \`hostname\` |grep LPAR`
+     ppsize=`lsvg $vg |grep "PP SIZE" |awk '{print $6}'`
+     lps=$(($size/$ppsize))
+     if [ $lps -gt 2048 ] ; then
+        maxlps="$lps"
+     elif [ $lps -gt 1024 ] ; then
+        maxlps="2048"
+     elif [ $lps -gt 512 ] ; then
+        maxlps="1024"
+     else 
+        maxlps="512"
+     fi
+
+     if [ $diskCnt -lt 2 ] || [ "$chkLPAR" != "" ] ; then
+        mklv -y${lvName} -t$fstype -x$maxlps $vg $lps
+     else
+        mklv -y${lvName} -c'2' -t $fstype -x $maxlps $vg $lps
+     fi
+     if [[ $? -ne 0 ]] ; then
+        exit 1
+     fi
+
+     # Create the filesystem 
+     crfs -v $fstype -d $lvName $LargeFile -m $fs -A yes $ea
+     if [[ $? -ne 0 ]] ; then
+        /usr/sbin/rmlv -f $lvName
+        exit 1
+     fi
+
+     fsInfo=$(lsfs -c $fs | tail -1 | cut -d: -f6)
+     if [[ $fsInfo -lt $sizeBlks ]] ; then
+        chfs -a size=$sizeBlks $fs
+     elif [[ $fsInfo -gt $sizeBlks ]] ; then
+	print "The Minimum Size per the PP size is $fsInfo, could not set to $size\n"
+     fi
+
+     print "Mounting filesystem..."
+     mount $fs
+     if [[ $? -ne 0 ]] ; then
+        exit 1
+     fi
+  fi
+ 
+  print ""
+  print "Done."
+}
+
+LinuxFS()
+{
+  chklv=`mount |grep $fs |awk -F\- '{print $2}' |awk '{print $1}' |tail -1`
+  if [[ "$chklv" != "" ]] ; then
+     # Check to see if there are two LV's with the same name on different VGs
+     chk=`/sbin/lvscan |grep -c $chklv`
+     if [ $chk -gt 1 ] ; then
+        print "There are two LVs with the same name, use lvscan to verify...exiting"
+        exit 1
+     fi
+
+     lvName="$chklv"
+     vg=`/sbin/lvscan |grep $chklv |awk -F/ '{print $3}'`
+  else
+     if [[ "$lv" = "" ]] ; then
+        lvName="$(basename $fs)lv"
+     else
+        lvName="$lv"
+     fi
+
+     if [[ "$vg" = "" ]] ; then
+        vg="rootvg"
+     else
+        chk=`/sbin/vgdisplay |grep $vg`
+        if [[ "$chk" = "" ]] ; then
+           print ""
+           print "\nError: $vg doesn't exist...exiting"
+           print "Existing Volume Groups are:"
+           /sbin/vgdisplay |grep "VG Name"
+           exit 1
+        fi
+     fi
+  fi
+
+  sizeBlks="$size"
+  
+  if [[ "$chklv" != "" ]] ; then
+     # Make sure the fs is of type xfs
+     fstype=`mount |grep $lvName |awk '{print $5}'`
+     if [[ "$fstype" != "xfs" ]] ; then
+	print "\nError: Filesystem $fs is not a XFS filesystem, cannot expand...exiting"
+	exit 1
+     fi
+
+     fsInfo=`/sbin/lvdisplay -c /dev/$vg/$lvName |awk -F: '{print $7}'`
+     actualSize=$(($fsInfo/2048))
+
+     print "\nFilesystem exists, checking to see if it needs expanding..."
+
+     if [[ $actualSize -lt $sizeBlks || $sizeBlks = "+"* ]] ; then
+       	print "Increasing size of $fs filesystem to at least $size MB..."
+	if [[ "$size" = "+"* ]] ; then
+	   /sbin/lvextend -l $size /dev/$vg/$lvName 1>/dev/null  
+	else
+	   /sbin/lvextend -L ${size}M /dev/$vg/$lvName 1>/dev/null
+	fi
+	sleep 3
+	/usr/sbin/xfs_growfs /dev/$vg/$lvName 1>/dev/null
+     else
+	print "Size of $fs is already equal to or greater than $size\n"
+	exit 0
+     fi
+  else
+     print "Creating filesystem $fs of size $sizeBlks blocks (at least) in $vg..."
+     /sbin/lvcreate -n $lvName -L ${size}M $vg 1>/dev/null
+     verify=`ls /dev/$vg/$lvName`
+     if [[ "$verify" = "/dev/$vg/$lvName" ]] ; then
+        /sbin/mkfs.xfs -q /dev/$vg/$lvName 1>/dev/null
+        /bin/mkdir -p $fs 
+        /bin/chmod 755 $fs
+        mount /dev/$vg/$lvName $fs
+        echo "/dev/$vg/$lvName	$fs		     xfs	defaults	      1 2" >> /etc/fstab
+     fi
+  fi
+
+  touch $fs/test
+  if [[ $? -ne 0 ]] ; then
+     /usr/local/Tivoli/scripts/totec OX01W "A file system was created or expanded and has caused $fs to be locked up"
+  fi
+  rm $fs/test
+
+  print "\n\nDone."
+  df $fs
+}
+
+LinuxFS9()
+{
+  chklv=`mount |grep $fs |grep $vg |awk -F\- '{print $2}' |awk '{print $1}'`
+  if [[ "$chklv" != "" ]] ; then
+     # Check to see if there are two LV's with the same name on different VGs
+     chk=`/sbin/lvscan |grep -c $chklv`
+     if [ $chk -gt 1 ] ; then
+        print "There are two LVs with the same name, use lvscan to verify...exiting"
+        exit 1
+     fi
+
+     lvName="$chklv"
+     vg=`/sbin/lvscan |grep $chklv |awk -F/ '{print $3}'`
+  else
+     if [[ "$lv" = "" ]] ; then
+        lvName="$(basename $fs)lv"
+     else
+        lvName="$lv"
+     fi
+
+     if [[ "$vg" = "" ]] ; then
+        vg="rootvg"
+     else
+        chk=`/sbin/vgdisplay |grep $vg`
+        if [[ "$chk" = "" ]] ; then
+           print ""
+           print "\nError: $vg doesn't exist...exiting"
+           print "Existing Volume Groups are:"
+           /sbin/vgdisplay |grep "VG Name"
+           exit 1
+        fi
+     fi
+  fi
+
+  sizeBlks="$size"
+
+  if [[ "$chklv" != "" ]] ; then
+     # Make sure the fs is of type jfs
+     fstype=`mount |grep $lvName |awk '{print $5}'`
+     if [[ "$fstype" != "jfs" ]] ; then
+	print "\nError: Filesystem $fs is not a JFS filesystem, cannot expand...exiting"
+	exit 1
+     fi
+     fsInfo=`/sbin/lvdisplay -c /dev/$vg/$lvName |awk -F: '{print $7}'`
+     actualSize=$(($fsInfo/2048))
+
+     print "\nFilesystem exists, checking to see if it needs expanding..."
+
+     if [[ $actualSize -lt $sizeBlks || $sizeBlks = "+"* ]] ; then
+       	print "Increasing size of $fs filesystem to at least $size MB..."
+        if [[ "$size" = "+"* ]] ; then
+	   /sbin/lvextend -l $size /dev/$vg/$lvName 1>/dev/null  
+	else
+	   /sbin/lvextend -L ${size}M /dev/$vg/$lvName 1>/dev/null
+	fi
+	sleep 3
+	/bin/mount -o remount,resize $fs
+     else
+	print "Size of $fs is already equal to or greater than $size\n"
+	exit 0
+     fi
+  else
+     print "Creating filesystem $fs of size $sizeBlks blocks (at least) in $vg..."
+     /sbin/lvcreate -n $lvName -L ${size}M $vg 1>/dev/null
+     verify=`ls /dev/$vg/$lvName`
+     if [[ "$verify" = "/dev/$vg/$lvName" ]] ; then
+        /sbin/jfs_mkfs -q /dev/$vg/$lvName 1>/dev/null
+        /bin/mkdir -p $fs 
+        /bin/chmod 755 $fs
+        mount /dev/$vg/$lvName $fs
+        echo "/dev/$vg/$lvName	$fs		     jfs	defaults	      1 2" >> /etc/fstab
+     fi
+  fi
+
+  touch $fs/test
+  if [[ $? -ne 0 ]] ; then
+     /opt/IBM/ITMscripts/ITM_to_TEC IN_000_W "A file system was created or expanded and has caused $fs to be locked up"
+  fi
+  rm $fs/test
+
+  print "\n\nDone."
+  df $fs
+}
+
+############################################################
+# Main
+############################################################
+
+if [[ "$1" = "" || "$2" = "" ]] ; then
+   Usage
+fi
+
+while getopts b OPT
+do
+   case "$OPT" in
+      b)   LargeFile="-a bf=true";;
+   esac
+done
+(( SHIFT = $OPTIND-1 ))
+shift $SHIFT
+
+fs="$1"
+size="$2"
+vg="$3"
+lv="$4"
+
+#
+# Muck with the size value to support M and G nomenclature
+#
+case "$size" in
+  *M|*m)
+	size=${size%[Mm]}
+	;;
+  *G|*g)
+	plus=""
+	if [[ "$size" = "+"* ]]
+	  then
+	    plus="+"
+	    size=${size#+}
+	fi
+	size=${size%[Gg]}
+	size=$((size*1024))
+	size="$plus$size"
+	;;
+esac
+
+
+OS=$(uname)
+if [[ "$OS" = "Linux" ]] ; then
+   release=`rpm -qa |grep release |egrep -v "(united|core|notes|DVD)" |awk -F- '{print $3}'`
+   case $release in 
+	9)	LinuxFS9 $*;;
+	10)	LinuxFS $*;;
+	11*)	LinuxFS $*;;
+        *)	print "\nNot a supported Linux Release";
+		exit 1;;
+   esac
+else
+   case $OS in 
+     AIX)	aixFS $*;;
+     *)		print "\nNot a supported OS: $OS";
+		exit 1;;
+   esac
+fi

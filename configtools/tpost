@@ -1,0 +1,118 @@
+#!/bin/ksh
+if [[ ! -d "/lfs/system/tools" ]]
+then
+   mkdir -p /lfs/system/tools
+   chmod 755 /lfs /lfs/system
+   chmod 775 /lfs/system/tools
+   chgrp eiadm /lfs/system/tools
+fi
+
+if [[ ! -f "/lfs/system/tools/was/conf/rc.was.conf" ]]; then
+   mkdir -p /lfs/system/tools/was/conf > /dev/null
+   touch /lfs/system/tools/was/conf/rc.was.conf
+   chmod 770 /lfs/system/tools/was/conf
+   chmod 770 /lfs/system/tools/was/conf/rc.was.conf
+fi
+
+cd /lfs/system && tar -pxf /tmp/lfs_tools.tar
+
+# TPM repository sync of lfs_tools.tar
+tpmrepo="/repo/EI/lfs_tools"
+if [ -d "$tpmrepo" ] ; then
+  echo "Syncing lfs_tools.tar to $tpmrepo"
+  cp -p /tmp/lfs_tools.tar $tpmrepo/lfs_tools.tar.new
+  if [ $? -eq 0 ] ; then
+    chown tioadmin $tpmrepo/lfs_tools.tar.new
+    chgrp tioadmin $tpmrepo/lfs_tools.tar.new
+    chmod 644 $tpmrepo/lfs_tools.tar.new
+    if [ -f "$tpmrepo/lfs_tools.tar" ] ; then
+      rm -f $tpmrepo/lfs_tools.tar.old
+      mv $tpmrepo/lfs_tools.tar $tpmrepo/lfs_tools.tar.old
+      if [ $? -ne 0 ] ; then
+        echo "Unable to move current lfs_tools.tar out of the way"
+      fi
+    fi
+    if [ ! -f "$tpmrepo/lfs_tools.tar" ] ; then
+      mv $tpmrepo/lfs_tools.tar.new $tpmrepo/lfs_tools.tar
+      if [ $? -eq 0 ] ; then
+        rm -f $tpmrepo/lfs_tools.tar.old
+      else
+        echo "Fatal error replacing $tpmrepo/lfs_tools.tar"
+        if [ -f "$tpmrepo/lfs_tools.tar.old" ] ; then
+          echo "Recovering old lfs_tools.tar"
+          mv $tpmrepo/lfs_tools.tar.old $tpmrepo/lfs_tools.tar
+          if [ $? -ne 0 ] ; then
+            echo "Unable to recover $tpmrepo/lfs_tools.tar.old"
+          fi
+        fi
+      fi
+    fi
+  else
+    echo "Unable to copy new lfs_tools.tar into repository $tpmrepo"
+    rm -f $tpmrepo/lfs_tools.tar.new
+  fi
+fi
+
+ln -sf /lfs/system/tools/configtools/ack /lfs/system/bin/ack >/dev/null 2>&1
+ln -sf /lfs/system/tools/configtools/listacks /lfs/system/bin/listacks >/dev/null 2>&1
+ln -sf /lfs/system/tools/ldap/bin/check_ldap.sh /lfs/system/bin/check_ldap.sh >/dev/null 2>&1
+ln -sf /lfs/system/tools/radius/bin/check_radius.sh /lfs/system/bin/check_radius.sh >/dev/null 2>&1
+ln -sf /lfs/system/tools/radius/bin/rc.radius /lfs/system/bin/rc.radius >/dev/null 2>&1
+
+
+# Remove .rdb and .crl files from was/etc
+rm /lfs/system/tools/*/etc/*.rdb
+rm /lfs/system/tools/*/etc/*.crl
+
+# Reset the permissions on etc directories and files
+find /lfs/system/tools/*/etc -type f -exec chmod 440 {} \;
+find /lfs/system/tools/*/etc -type d -exec chmod 770 {} \;
+
+# set more open permissions for sysmsgmt
+chmod  755 /lfs/system/tools/sysmgmt/etc
+chmod  644 /lfs/system/tools/sysmgmt/etc/*
+
+if [ -e /lfs/system/tools/ldap/etc/check_ldap.conf ]; then
+  chmod 600 /lfs/system/tools/ldap/etc/check_ldap.conf
+fi
+
+funcs=/lfs/system/tools/configtools/lib/check_functions.sh
+[ -r $funcs ] && . $funcs || print -u2 -- "#### Can't read functions file at $fu
+ncs"
+
+if [[ -r $funcs ]]; then
+  # Determine while zone we are in
+  getZone
+
+  # Remove other zone keyrings and create pubtool cert symlinks
+  if [[ $ZONE == b ]]; then
+        rm /lfs/system/tools/was/etc/*gz*
+        rm /lfs/system/tools/was/etc/*yz*
+        rm /lfs/system/tools/bNimble/etc/*gz*
+        rm /lfs/system/tools/bNimble/etc/*yz*
+        ln -sf ei_bz_pubtool_shared.kdb /lfs/system/tools/bNimble/etc/p2.kdb
+        ln -sf ei_bz_pubtool_shared.sth /lfs/system/tools/bNimble/etc/p2.sth
+  fi
+
+  if [[ $ZONE == g ]]; then
+        rm /lfs/system/tools/was/etc/*bz*
+        rm /lfs/system/tools/was/etc/*yz*
+        rm /lfs/system/tools/bNimble/etc/*bz*
+        rm /lfs/system/tools/bNimble/etc/*yz*
+        ln -sf ei_gz_pubtool_shared.kdb /lfs/system/tools/bNimble/etc/p2.kdb
+        ln -sf ei_gz_pubtool_shared.sth /lfs/system/tools/bNimble/etc/p2.sth
+  fi
+
+  if [[ $ZONE == y ]]; then
+        rm /lfs/system/tools/was/etc/*gz*
+        rm /lfs/system/tools/was/etc/*bz*
+        rm /lfs/system/tools/bNimble/etc/*gz*
+        rm /lfs/system/tools/bNimble/etc/*bz*
+        ln -sf ei_yz_pubtool_shared.kdb /lfs/system/tools/bNimble/etc/p2.kdb
+        ln -sf ei_yz_pubtool_shared.sth /lfs/system/tools/bNimble/etc/p2.sth
+  fi
+  find /lfs/system/tools/bNimble/etc/ -type l -exec chgrp -h eiadm {} \;
+fi
+
+# Clean up
+rm -f /tmp/tpost /tmp/lfs_tools_nodes /tmp/push_lfs_tools.sh /tmp/lfs_tools.tar /tmp/get_lfs_tools.sh

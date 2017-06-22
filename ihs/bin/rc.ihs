@@ -1,0 +1,432 @@
+#!/bin/ksh
+if [[ $0 != "/"* ]]; then
+	mypath=`pwd`
+else
+	mypath=`dirname $0`
+fi
+
+# Verify script is called via sudo or ran as root
+if [[ $SUDO_USER == "" && $USER != "root" ]]; then
+   echo ""
+   echo "/////////////////////////////////////////////////////////////////"
+   echo "*******              Script rc.ihs needs                  *******"
+   echo "*******              to be ran with sudo                  *******"
+   echo "*******                   or as root                      *******"
+   echo "/////////////////////////////////////////////////////////////////"
+   echo ""
+   exit 1
+fi
+#-----------------------------------------------------------------
+# Declare variables
+#-----------------------------------------------------------------
+debug=0
+details="false"
+exclusion=""
+instance="NULL"
+instance_selection=""
+site_selection=""
+selected_instance=""
+selected_site=""
+ignore_itm=""
+ignore_ver=""
+ignore_IP=""
+site_match_string="NULL"
+lib_home="/lfs/system/tools"
+typeset -l action
+invalid_option=0
+
+#-----------------------------------------------------------------
+# Load function from external file
+#-----------------------------------------------------------------
+funcs=${lib_home}/ihs/lib/rc_ihs_functions.sh
+[ -r $funcs ] && . $funcs || print -u2 -- "#### Can't read functions file at $funcs"
+
+#------------------------------------------------------------------
+# Define external scripts that can perform further checks on
+# config and log files.
+# Returning a non-zero return code will cause the script to not 
+# perform the action of the selected sites.
+#------------------------------------------------------------------
+
+validate_httpd="${lib_home}/ihs/bin/validate_httpd.sh"
+validate_plugin="${lib_home}/ihs/bin/validate_plugin.sh"
+itm_agent="/etc/rc.itm"
+
+#-----------------------------------------------------------------
+# Define Local Functions
+#-----------------------------------------------------------------
+
+# Usage Statement
+usage ()
+{
+  echo >&2 \
+  "usage: ${0:##*/} [-v] [-x itm] [-x conf] [-x aliases]\n" \
+  "     [-i ((<ihs baselevel[_instance number]>)|all)] \n" \
+  "     start|stop|graceful-stop|restart|graceful-restart|configtest|status|fullstatus|list\n" \
+  "     [HTTPServer|<sitetag>|all]\n" \
+  "-----------------------------------------------------------------------\n" \
+  "     Options:\n" \
+  "        v:  Show details\n" \
+  "        x:  Exclude functions\n" \
+  "                itm -- Do not stop / start ht agent\n" \
+  "               conf -- Do not run advanced verification\n" \
+  "                         functions on ihs / plugin configs\n" \
+  "            aliases -- Do not run rc.IP_aliases\n" \
+  "        i:  Indicates the version and optional instance\n" \
+  "              number of a ihs install\n" \
+  "     Notes:\n" \
+  "        1) Action graceful-stop and graceful-restart are only available in\n" \
+  "             IHS70 and above\n" \
+  "        2) sitetag can be a partial name -- rc.ihs will determine\n" \
+  "             matching list\n"
+  exit 1
+}
+  
+# Check exclusion option arguments
+check_exclusions ()
+{
+  typeset item exclusions=$1 
+
+  for item in $exclusions; do
+    if [[ $item = "itm" ]]; then
+      ignore_itm=1
+    elif [[ $item = "conf" ]]; then
+      ignore_ver=1
+    elif [[ $item = "aliases" ]]; then
+      ignore_IP=1
+    else
+      echo "The exclusion option takes arguments itm, conf, and aliases only"
+      echo "  Argument \"$1\" not supported"
+      usage
+    fi
+  done
+}
+
+#-----------------------------------------------------------------
+# Process Commandline Arguments
+#-----------------------------------------------------------------
+while getopts hdvx:i: opt; do
+   case "$opt" in
+      d) debug=1;;
+      v) details="true";;
+      x) exclusions="$exclusions $OPTARG";;
+      i) instance=$OPTARG;;
+      h) invalid_option=1;;
+      *) invalid_option=1;;    # unknown flag
+    esac
+done
+shift `expr $OPTIND - 1`
+
+if [[ $invalid_option -gt 0 ]]; then
+  usage
+fi
+
+if [[ $exclusions != "" ]]; then
+  check_exclusions "$exclusions"
+fi
+
+#-----------------------------------------------------------------
+#  At this point the next command line argument should be action
+#-----------------------------------------------------------------
+if [[ $1 != "" ]]; then
+  action=$1
+  if [[ $action = "start" || $action = "stop" || $action = "restart" || $action = "graceful-restart" || $action = "graceful-stop"  || $action = "configtest" || $action = "status" || $action = "fullstatus" || $action = "list" ]]; then
+    shift
+  else
+    echo "Action $action not supported"
+    usage
+  fi
+else
+  echo "An action must be specified"
+  usage
+fi
+
+#-----------------------------------------------------------------
+#  At this point the only argument that should be left is
+#    an optional sitetag or partial sitetag to match to
+#-----------------------------------------------------------------
+if [[ $1 != "" ]]; then
+  site_match_string=$1
+  shift
+fi
+
+if [[ $1 != "" ]]; then
+  echo "Too many script arguments"
+  usage
+fi
+
+check_instance $instance $site_match_string
+if [[ ${#ihs_installs[@]} -gt 1 && $instance != [Aa][lL][lL] && $site_match_string = [aA][lL][lL] ]]; then
+  if [[ ${#ihs_installs[@]} -gt 9 ]]; then
+    spacer="      "
+  else
+    spacer="     "
+  fi
+  print ''
+  print 'A request has been made for "All" sites but there is more then one'
+  print '  IHS Instance on this node, each with at least one configured site.'
+  print '  Choose from the listed IHS instances the instance(s) '
+  print '  you want to take action on.'
+  print ''
+  ${lib_home}/ihs/bin/highlight.pl "${spacer} IHS Instance" BOLD; echo
+  ${lib_home}/ihs/bin/highlight.pl "${spacer}--------------" BOLD; echo
+  i=1
+  for listed_instance in "${ihs_installs[@]}"; do
+    ${lib_home}/ihs/bin/highlight.pl "  ${i})" BOLD
+    if [[ ${#ihs_installs[@]} -gt 9 ]]; then
+      let y=3-${#i}
+      while [[ $y -gt 0 ]]; do
+        print ' \c'
+        let y=$y-1
+      done
+    else
+      print ' \c'
+    fi
+    print "$listed_instance"
+    let i=$i+1
+  done
+  print ''
+  print 'Type the number corresponding with each ihs instance you want '
+  print '  the action taken on => \c'
+  read -r instance_selection   
+  continue_read=1
+  while [[ $continue_read -eq 1 ]]; do
+    if [[ $instance_selection = "" ]]; then
+      tput ed
+      echo
+      echo "No selection was made -- aborting"
+      exit 3
+    fi
+    if [[ $instance_selection = +(+([0-9])*( )) ]]; then
+      for n in $instance_selection; do
+        if [[ $n -lt 1 || $n -gt ${#ihs_installs[@]} ]]; then
+          print ''
+          ${lib_home}/ihs/bin/highlight.pl "Input Error" REVERSE; echo
+          ${lib_home}/ihs/bin/highlight.pl "  There are only ${#ihs_installs[@]} choices," REVERSE; echo
+          ${lib_home}/ihs/bin/highlight.pl "    select numbers between 1 and ${#ihs_installs[@]}" REVERSE; echo
+          tput civis
+          tput cuu1; tput cuu1; tput cuu1; tput cuu1; tput cuu1;
+          tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1;
+          tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1;
+          tput cuf1
+          tput el
+          tput cvvis
+          read -r instance_selection
+          tput ed
+        else
+          continue_read=0
+        fi
+      done
+    else
+      print ''
+      ${lib_home}/ihs/bin/highlight.pl "Input Error" REVERSE; echo
+      ${lib_home}/ihs/bin/highlight.pl "  Type only numbers separated by spaces" REVERSE; echo
+      tput civis
+      tput cuu1; tput cuu1; tput cuu1; tput cuu1;
+      tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1;
+      tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1; tput cuf1;
+      tput cuf1
+      tput el
+      tput cvvis
+      read -r instance_selection
+      tput ed
+    fi
+  done
+else
+  i=1
+  instance_selection=$i
+  items=${#ihs_installs[@]}
+  while [[ "$i" -lt "$items" ]]; do
+    let i=$i+1
+    instance_selection="$instance_selection $i"
+  done
+fi
+
+if [[ ${debug} -eq 1 ]]; then
+  if [[ ${ihs_installs[@]} != "" ]];
+  then
+    echo "The following instances were selected"
+    for number in $instance_selection; do
+      echo "${ihs_installs[number-1]}"
+    done
+    echo
+  else
+    echo "No instance was selected"
+    echo
+  fi 
+fi
+ 
+check_sitetag_match $site_match_string "`for x in $instance_selection; do echo ${ihs_installs[x-1]}; done`"
+if [[ $site_match_string = [aA][lL][lL] && $action != "list" ]]; then
+  i=1
+  site_selection=$i
+  items=${#inst_sites[@]}
+  if [[ $items -gt 1 && $details = "true" ]]; then
+    echo
+    ${lib_home}/ihs/bin/highlight.pl "Command Option Error" ERROR; echo
+    ${lib_home}/ihs/bin/highlight.pl "  When the verbose parameter is selected, site selection" ERROR; echo
+    ${lib_home}/ihs/bin/highlight.pl "    is limited to one site.  The commandline option of \"All\" for" ERROR; echo
+    ${lib_home}/ihs/bin/highlight.pl "    for site tag match results in more then one site selected" ERROR; echo
+    ${lib_home}/ihs/bin/highlight.pl "    Command Aborted" ERROR; echo
+    echo
+    exit 2
+  fi
+  while [[ "$i" -lt "$items" ]]; do
+    let i=$i+1
+    site_selection="$site_selection $i"
+  done
+else
+  if [[ ${#inst_sites[*]} -gt 1  || $action = "list" ]]; then
+    if [[ ${#inst_sites[*]} -gt 9 ]]; then
+      spacer="      "
+    else
+      spacer="     "
+    fi
+    if [[ $action != "list" ]]; then
+      print ''
+      print 'More then one site matches the search criteria.'
+      print '  Select from the following list:'
+      print ''
+    else
+      echo
+    fi
+    ${lib_home}/ihs/bin/highlight.pl "${spacer}       Site Tag             State      IHS Instance" BOLD; echo
+    ${lib_home}/ihs/bin/highlight.pl "${spacer}-----------------------   ---------   --------------" BOLD; echo
+    i=1
+    for site in "${inst_sites[@]}"; do
+      ${lib_home}/ihs/bin/highlight.pl "  ${i})" BOLD
+      if [[ ${#inst_sites[*]} -gt 9 ]]; then
+        let y=3-${#i}
+        while [[ $y -gt 0 ]]; do
+          print ' \c'
+          let y=$y-1
+        done
+      else
+        print ' \c'
+      fi
+      print "$site"
+      let i=$i+1
+    done
+    if [[ $action = "list" ]]; then
+      echo
+      exit
+    fi
+    print ''
+    print 'Type the number corresponding with each site you want to take action on'
+    print '  in the exact order you want the action performed => \c'
+    tput civis
+    echo;echo;echo;echo;echo;echo;echo;echo;echo;echo
+    tput cuu 10
+    tput cuf 55
+    tput cvvis
+    tput sc
+    read -r site_selection
+    continue_read=1
+    while [[ $continue_read -eq 1 ]]; do
+      if [[ $site_selection = "" ]]; then
+        tput ed
+        echo
+        echo "No selection was made -- aborting"
+        exit 3
+      fi
+      if [[ $site_selection = +(+([0-9])*( )) ]]; then
+        selection_count=0
+        for n in $site_selection; do
+          selection_count=$((selection_count + 1))
+          if [[ $n -lt 1 || $n -gt ${#inst_sites[@]} ]]; then
+            continue_read=1
+            tput civis
+            tput rc
+            tput ed
+            print ''
+            tput cud 6
+            ${lib_home}/ihs/bin/highlight.pl "Input Error" REVERSE; echo
+            ${lib_home}/ihs/bin/highlight.pl "  There are only ${#inst_sites[@]} choices," REVERSE; echo
+            ${lib_home}/ihs/bin/highlight.pl "    select numbers between 1 and ${#inst_sites[@]}" REVERSE; echo
+            tput rc
+            tput cvvis
+            read -r site_selection
+            tput ed
+            break
+          else
+            continue_read=0
+          fi
+        done
+        if [[ $continue_read -eq 0 && $details = "true"  && $selection_count -gt 1 ]]; then
+          continue_read=1
+          tput civis
+          tput rc
+          tput ed
+          print ''
+          tput cud 6
+          ${lib_home}/ihs/bin/highlight.pl "Input Error" REVERSE; echo
+          ${lib_home}/ihs/bin/highlight.pl "  When the verbose parameter is selected, site selection" REVERSE; echo
+          ${lib_home}/ihs/bin/highlight.pl "    is limited to one site.  Select a single site" REVERSE; echo
+          tput rc
+          tput cvvis
+          read -r site_selection
+          tput ed
+        fi
+      else
+        tput civis
+        tput rc
+        tput ed
+        print ''
+        tput cud 7
+        ${lib_home}/ihs/bin/highlight.pl "Input Error" REVERSE; echo
+        ${lib_home}/ihs/bin/highlight.pl "  Type only numbers separated by spaces" REVERSE; echo
+        tput rc
+        tput cvvis
+        read -r site_selection
+        tput ed
+      fi
+    done
+  elif [[ ${#inst_sites[*]} = 1 ]]; then
+    site_selection=1
+  fi
+fi
+
+if [[ ${debug} -eq 1 ]]; then
+  if [[ $site_selection != "" ]];
+  then
+    echo "The following sites were selected"
+    for number in $site_selection; do
+      echo "${inst_sites[number-1]}"
+    done
+    echo
+  else
+    echo "No site was selected"
+    echo
+  fi 
+fi
+
+
+case $action in
+  start )
+    startihs $details
+    ;;
+  stop)
+    stopihs
+    ;;
+  graceful-stop)
+    gracefulstopihs 
+    ;; 
+  restart)
+    restartihs $details
+    ;;
+  graceful-restart) 
+    gracefulrestartihs $details
+    ;;
+  configtest) 
+    configtestihs $details
+    ;;
+  status) 
+    statusihs $details
+    ;;
+  fullstatus) 
+    fullstatusihs $details
+    ;;
+  *)
+    usage 
+    ;;
+esac

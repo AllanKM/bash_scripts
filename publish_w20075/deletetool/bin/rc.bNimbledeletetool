@@ -1,0 +1,75 @@
+#!/bin/sh 
+#-----------------------------------------------------
+# rc.bNimble.deletetool
+# description: Control script for bNimble Daemon used for deletetool
+# modeled after hpear3@us.ibm.com - Wed Mar 21 10:04:57 UTC 2001
+# original rc.bNimble script by Don Block
+# 9/13/01
+#-----------------------------------------------------
+# Local Variables defined here
+
+BNIMBLE=/fs/system/tools/publish/deletetool/bin/bNimbledeletetool	# the binary
+CONFIG=/fs/system/tools/publish/deletetool/config #config dir
+CONFIGFILE="$CONFIG/deletetool.conf"
+JAVA=/usr/java14/bin/java
+
+case "$1" in
+#####START bNimble#####
+start)
+     # Check to make sure the logfile exists
+     echo "Starting bNimble.deletetool:"
+
+	home=`grep -E "( |    )*home" $CONFIGFILE|awk '{print $3;}'`
+
+	echo "Logging to $home/deletetool.output.log"
+
+	sudo -u webinst $BNIMBLE $CONFIGFILE >> $home/deletetool.output.log&
+	sleep 1	
+
+     $0 status 
+     echo "" ;;
+
+#####STOP bNimble####
+stop)
+     echo ""
+     echo "Shutting down bNimble.deletetool:"
+     
+     pid=`ps -ef | grep deletetool | grep -v grep | grep -v checkf | grep $CONFIGFILE | awk '{print $2;}'`
+	echo $pid
+	kill -9 $pid
+     
+     echo "Sleeping for 5 seconds to ensure that bNimble for deletetool is stopped"
+     sleep 5 
+     $0 status 
+     echo "" ;;
+
+
+
+status)
+     echo "========== bNimble Status =========="
+     ps -ef | grep $CONFIGFILE | grep bNimble1400.jar | grep -v grep 
+     ;;
+
+restart)
+        $0 stop 
+        $0 start
+        ;;
+
+
+  *)
+ 
+     echo ""
+     echo "  USAGE:  rc.bNimble.deletetool [command] "
+     echo ""
+     echo "  COMMANDS:"
+     echo "         start      Starts bNimble"
+     echo "         stop       Stops bNimble"
+     echo "         restart    Stops and Starts bNimble"
+     echo "         status     Shows the process (ps -ef)"
+     echo "         help       Displays this list of options."
+     echo ""
+     exit 1 ;;
+
+esac
+exit 0
+

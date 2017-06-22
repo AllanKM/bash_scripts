@@ -1,0 +1,3 @@
+#/usr/bin/ksh
+ln -sf /projects /www
+/fs/allisone/bin/mkdirs.ksh

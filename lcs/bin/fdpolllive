@@ -1,0 +1,125 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use vars qw($opt_a $opt_g $opt_m $opt_r $opt_s $opt_t $opt_v $opt_z);
+use Getopt::Long;
+
+my($myprog,$mypath,$host);
+
+# Get caller information
+($myprog = $0) =~ s@.*/@@;
+($mypath = $0) =~ s/$myprog$//;
+$mypath = './' if ($mypath eq '');
+
+my $rc = &main::GetOptions(
+  'a|arp',
+  'g|gslb',
+  'm|mac',
+  'r|running-config',
+  's|server',
+  't|tcp',
+  'v|version',
+  'z|zone',
+);
+if (! $rc) {
+  print STDERR "Invalid command line options\n";
+  &usage();
+  exit 1;
+}
+
+# Exit out if none of -a, -g, -m, -r, -s or -v specified
+if (! $opt_a && ! $opt_g && ! $opt_m && ! $opt_r &&
+    ! $opt_s && ! $opt_t && ! $opt_v && ! $opt_z) {
+  exit 0;
+}
+
+# Obtain host
+$host = $ARGV[0];
+if (! $host) {
+  print "Host? ";
+  chomp($host = <STDIN>);
+}
+
+# Execute commands
+my $commands = "";
+my $prefix = "";
+if ($opt_a) {
+  $commands .= ";" if ($commands);
+  $commands .= "show arp";
+}
+if ($opt_g) {
+  $commands .= ";" if ($commands);
+  $commands .= "show gslb dns detail";
+}
+if ($opt_m) {
+  $commands .= ";" if ($commands);
+  $commands .= "show mac";
+}
+if ($opt_r) {
+  $commands .= ";" if ($commands);
+  $commands .= "show run";
+}
+if ($opt_s) {
+  $commands .= ";" if ($commands);
+  $commands .= "show server real";
+}
+if ($opt_t) {
+  $commands .= ";" if ($commands);
+  $commands .= "show ip tcp conn";
+}
+if ($opt_v) {
+  $commands .= ";" if ($commands);
+  $commands .= "show ver";
+}
+if ($opt_z) {
+  $commands .= ";" if ($commands);
+  $commands .= "show gslb dns zone";
+}
+
+my @lines = ();
+my $flogin = "$mypath/flogin";
+open(FLOGIN,"$flogin -c \'$commands\' $host|");
+chomp(@lines = <FLOGIN>);
+close(FLOGIN);
+
+foreach (@lines) {
+  s/^\n*//;
+  s/\s*$//;
+  $prefix = "$host/a" if (/show arp/);
+  $prefix = "$host/g" if (/show gslb dns detail/);
+  $prefix = "$host/m" if (/show mac/);
+  $prefix = "$host/r" if (/show run/);
+  $prefix = "$host/s" if (/show server real/);
+  $prefix = "$host/t" if (/show ip tcp conn/);
+  $prefix = "$host/v" if (/show ver/);
+  $prefix = "$host/z" if (/show gslb dns zone/);
+  print "$prefix:$_\n" if ($prefix);
+}
+
+exit 0;
+
+print "$main::running_under_some_shell\n";
+
+sub usage {
+  print STDERR "usage: $0 [-a] [-g] [-m] [-r] [-s] [-t] [-v] [-z] host\n",
+               "  where: host - list of hosts to flogin to\n",
+               "         -a   - use \'show arp\' command\n",
+               "                prepends \'host/a:\' to each line of output\n",
+               "         -g   - use \'show gslb dns detail\' command\n",
+               "                prepends \'host/g:\' to each line of output\n",
+               "         -m   - use \'show mac\' command\n",
+               "                prepends \'host/m:\' to each line of output\n",
+               "         -r   - use \'show run\' command\n",
+               "                prepends \'host/r:\' to each line of output\n",
+               "         -s   - use \'show server real\' command\n",
+               "                prepends \'host/s:\' to each line of output\n",
+               "         -t   - use \'show ip tcp conn\' command\n",
+               "                prepends \'host/t:\' to each line of output\n",
+               "         -v   - use \'show ver\' command\n",
+               "                prepends \'host/v:\' to each line of output\n",
+               "         -z   - use \'show gslb dns zone\' command\n",
+               "                prepends \'host/z:\' to each line of output\n";
+}

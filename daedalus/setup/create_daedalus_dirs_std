@@ -1,0 +1,99 @@
+#!/bin/ksh
+
+##########################################################
+#
+# This script is use to read a daedalus config, determine
+# what directories need to be create, and create them.  
+# It needs one arguement, the pub config.  This script is
+# only ran after the initialize and sync scripts.
+#
+##########################################################
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 1 ]; then
+  PUBCONFIG=$1
+elif [ $# -eq 2 -a $1 -a $1 == "LDist" ]; then
+  LOCAL_DIST=$1
+  SITE_PUBCONFIG=$2
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."
+  echo "   Format is <pub_config>"
+  echo "                      OR"
+  echo "   Format is <local_distributor> <pub_config>"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   Script parameters were not added to configuration"
+  echo "   script for this event."
+  echo "   Format is <pub_config>"
+  echo "                      OR"
+  echo "   Format is <local_distributor> <pub_config>"
+  echo ""
+  exit 1
+fi
+
+if [ $LOCAL_DIST ]; then
+  if [ `hostname -s | cut -c 1` == "a" ]; then
+    SITE=p1
+  elif [ `hostname -s | cut -c 1` == "d" ]; then
+    SITE=p2
+  elif [ `hostname -s | cut -c 1` == "g" ]; then
+    SITE=p3
+  elif [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  else
+    SITE=""
+  fi
+  CONFIGFILEPATH=`echo $SITE_PUBCONFIG | awk -F / {'print "/" $2 "/" $3 "/" $4 "/"'}`
+  CONFIGFILE=`echo $SITE_PUBCONFIG | awk -F / {'print $NF'} | cut -c 3-`
+  PUBCONFIG=${CONFIGFILEPATH}${SITE}${CONFIGFILE}
+fi
+
+echo "Checking if daedalus code and customer files exist"
+if [ -d /projects/$CUSTOMER_TAG ]; then
+  if [ ! -f $PUBCONFIG ]; then
+    echo "   Customer files have been installed, but"
+    echo "    requested config file is not present, aborting"
+    exit 2
+  fi
+else
+  echo "   Customer files have not been installed, aborting"
+  exit 2
+fi
+
+if [ ! -e /etc/rc.daedalus -o ! -d /opt/IBM/daedalus_dikran ]; then
+  echo "   Base daedalus code not installed, aborting"
+  exit 2
+fi
+
+echo "Checking config for new daedalus directories"
+if [ ! -d /logs/daedalus_dikran ]; then
+   echo "   Creating /logs/daedalus_dikran"
+   mkdir -p /logs/daedalus_dikran
+   if [ $? -eq 1 ]; then
+      echo "      $0: Unable to create /logs/daedalus_dikran"
+    fi
+fi
+
+/etc/rc.daedalus print ${PUBCONFIG} | grep -E 'root|altroot' | grep -v 'root.*root' | grep -v 'root.*/savefile$' | awk '{print $3}' | sort | uniq > /tmp/init.$$
+
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+  if [ ! -d $DIRECTORY ]; then 
+    echo "   Creating $DIRECTORY"
+    mkdir -p $DIRECTORY
+    if [ $? -eq 1 ]; then
+      echo "      $0: Unable to create $DIRECTORY"
+    fi
+  fi
+done
+
+rm -f /tmp/init.$$

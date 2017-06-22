@@ -1,0 +1,586 @@
+#!/usr/bin/perl
+#String with names inside square brackets
+use Sys::Hostname;
+use Term::ANSIColor;
+use Term::ANSIColor qw(:constants);
+$Term::ANSIColor::AUTORESET = 1;
+use strict;
+use Data::Dumper;
+my $debug = $ENV{'debug'};
+my @apps  = @ARGV;
+my $ver   = $ENV{'was_ver'} || $ENV{'ver'} || "*";
+my $resources;
+my @was_root = glob "/usr/WebSphere${ver}*/App*/profiles/*/config";
+
+foreach my $was_root (@was_root) {
+   showapps($was_root);
+}
+exit;
+
+sub showapps {
+   my $was_root = shift;
+
+   my $waspath = (glob "$was_root/cells/*/security.xml")[0];
+
+   my $cell = (split '/',$waspath )[-2];
+   my $dmgr = `host ${cell}Manager`;
+   my ($dmgrip) = $dmgr =~ /\sis\s(\S+?)(?:,|\s)/;
+   $dmgr = `host $dmgrip`;
+   ($dmgr) = $dmgr =~ /(\S+?)(?:e0|\.)/;
+   $waspath =~s/\/security.xml//;
+   
+   my $version = (split '/',$was_root)[2];
+  
+   printf "%s - Dmgr: %s [%s]  Cell: %s\n",colored($version,'bold cyan'), colored($dmgr,'bold yellow'),colored($dmgrip,'yellow'),colored($cell,'bold yellow');
+   printf "config dir: %s\n",$waspath;
+   #----------------------------------------
+   # see if core dump env vars a specified in setupCmdLine.sh
+   #----------------------------------------
+   my $wassetup = readfile("/usr/WebSphere${ver}*/App*/bin/setupCmdLine.sh");
+
+   #my $wassetup=readfile(glob "~stevef/setupCmdLine.sh");
+   ($wassetup) = $wassetup =~ /AIX\)(.*?)\;\;/gis;
+
+   #IBM_JAVACOREDIR  IBM_HEAPDUMPDIR IBM_COREDIR
+   my ($default_heap) = $was_root =~ /(.*)\/config/;
+   my ($gjcore)       = $wassetup =~ m/\n\s+(?:export\s+)?IBM_JAVACOREDIR=(\S+)/gis;
+   my ($gheap)        = $wassetup =~ m/\n\s+(?:export\s+)?IBM_HEAPDUMPDIR=(\S+)/gis;
+   my ($gcore)        = $wassetup =~ m/\n\s+(?:export\s+)?IBM_COREDIR=(\S+)/gis;
+   if ( !$gheap )  { ($gheap)  = $default_heap; }
+   if ( !$gjcore ) { ($gjcore) = $default_heap; }
+   if ( !$gcore )  { ($gcore)  = $default_heap; }
+   my ($profile) = $was_root =~ /profiles\/(.+?)\/config/;
+   my $virtualhosts = readfile("$waspath/virtualhosts.xml");
+   my $security     = readfile("$waspath/security.xml");
+   my $resources    = readfile("$waspath/resources.xml");
+   my @serverindex  = glob "$waspath/nodes/*/serverindex.xml";
+
+   #---------------------------------------------------------------
+   # find servers
+   #---------------------------------------------------------------
+   foreach my $index (@serverindex) {
+      print color('red') . "index: $index\n" . color('reset') if $debug;
+      my ($cell) = $index =~ /cells\/(.+?)\/nodes/;
+      my ($node) = $index =~ /nodes\/(.+?)\/serverindex.xml/;
+      print STDERR "profile: $profile   cell: $cell     node: $node\n" if $debug;
+      if ( $profile !~ /$cell/ & $profile ne $node ) {
+         next;
+      }
+      my $serverindex = readfile($index);
+      pos($serverindex) = 0;
+      while ( $serverindex =~ m/\<serverentries.+?serverName=\"(.+?)\".*?>(.+?)<\/serverentries>/gis ) {
+         my $appserver = $1;
+         my $entry     = $2;
+         my ( $port, $active, $port_vhosts, $defaultvhost, $clustername, $coregroup, $session, $connect, $iotimeout );
+         my ( $runasuser, $runasgroup, $m2m, $tuning );
+         my ( $initheap, $maxheap, $heap, $jcore, $core );
+         if ( !@apps || wanted($appserver) ) {
+
+            #-----------------------------------------
+            # get port for wc_default(_secure)
+            #-----------------------------------------
+            if ( $entry =~ m/<specialendpoints.+?WC_defaulthost.+?>.+?port=\"(.+?)\".+?<\/specialendpoints>/gis ) {
+               $port = $1;
+
+               #-----------------------------------------
+               # get vhost appserver has defined
+               #-----------------------------------------
+               print color('red') . "server: $waspath/nodes/$node/servers/$appserver/server.xml\n" . color('reset')
+                 if $debug;
+               my $server           = readfile("$waspath/nodes/$node/servers/$appserver/server.xml");
+               my $node_resources   = readfile("$waspath/nodes/$node/resources.xml");
+               my $server_resources = readfile("$waspath/nodes/$node/servers/$appserver/resources.xml.xml");
+               if ( $server =~ /defaultVirtualhostname=\"(.+?)\"/is ) {
+                  $defaultvhost = $1;
+               }
+
+               #-----------------------------------------
+               # get cluster appserver is part of
+               #-----------------------------------------
+               if ( $server =~ /clusterName=\"(.+?)\"/ ) {
+                  $clustername = $1;
+               }
+               my $cluster_resources = readfile("$waspath/clusters$clustername/resources.xml.xml");
+
+               #-----------------------------------------
+               # get session cookie appserver uses
+               #-----------------------------------------
+               if ( $server =~ /<defaultCookieSettings.+?name=\"(.+?)\"/i ) {
+                  $session = $1;
+               }
+
+               #-----------------------------------------
+               # get plugin settings
+               #-----------------------------------------
+               if ( $server =~ /<webserverPluginSettings.+?ConnectTimeout="(.+?)\".+?ServerIOTimeout=\"(.+?)\"/i ) {
+                  $connect   = $1;
+                  $iotimeout = $2;
+               }
+
+               #-----------------------------------------
+               # get coredump env vars from server setup
+               #-----------------------------------------
+               if ( $server =~ /<tuningParams.+?name=\"IBM_HEAPDUMPDIR\"\s+?value=\"(.+?)\"/i ) {
+                  $heap = $1;
+               }
+               else {
+                  $heap = $gheap;
+               }
+               if ( $server =~ /<tuningParams.+?name=\"IBM_JAVACOREDIR\"\s+?value=\"(.+?)\"/i ) {
+                  $jcore = $1;
+               }
+               else {
+                  $jcore = $gjcore;
+               }
+               if ( $server =~ /<tuningParams.+?name=\"IBM_COREDIR\"\s+?value=\"(.+?)\"/i ) {
+                  $core = $1;
+               }
+               else {
+                  $core = $gcore;
+               }
+               if ( $heap eq $default_heap ) {
+                  $heap = color('yellow bold') . $heap . color('reset');
+               }
+               if ( $core eq $default_heap ) {
+                  $core = color('yellow bold') . $core . color('reset');
+               }
+               if ( $jcore eq $default_heap ) {
+                  $jcore = color('yellow bold') . $jcore . color('reset');
+               }
+
+               #-----------------------------------------
+               # get m2m custom tuning parms
+               #-----------------------------------------
+               if (
+                  $server =~ /<tuningParams
+               .+?
+               usingMultiRowSchema="(.+?)\"
+               .+?
+               maxInMemorySessionCount=\"(.+?)\"
+                              .+?
+               allowOverflow=\"(.+?)\"
+               .+?
+               scheduleInvalidation=\"(.+?)\"
+               .+?
+               writeFrequency=\"(.+?)\"
+               .+?
+               writeInterval=\"(.+?)\"
+               .+?
+               writeContents=\"(.+?)\"
+               /ix
+                 )
+               {
+                  if ( $5 eq "END_OF_SERVLET_SERVICE" && $7 eq "ONLY_UPDATED_ATTRIBUTES" && $4 eq "false" ) {
+                     $tuning = "medium";
+                  }
+                  elsif ( $5 eq "END_OF_SERVLET_SERVICE" && $7 eq "ALL_SESSION_ATTRIBUTES" && $4 eq "false" ) {
+                     $tuning = "low";
+                  }
+                  elsif ( $6 eq "300" && $7 eq "ALL_SESSION_ATTRIBUTES" && $4 eq "false" ) {
+                     $tuning = "high";
+                  }
+                  elsif ( $6 eq "300" && $7 eq "ONLY_UPDATED_ATTRIBUTES" && $4 eq "true" ) {
+                     $tuning = "very high";
+                  }
+                  elsif ( $6 eq "10" && $7 eq "ONLY_UPDATED_ATTRIBUTES" && $4 eq "false" ) {
+                     $tuning = "custom";
+                  }
+                  else {
+                     $tuning = "cant determine";
+                  }
+               }
+               else {
+                  $server =~ /<tuningParams(.*)<\/tuni/i;
+                  print "$1";
+               }
+
+               #-----------------------------------------
+               # get Run As details
+               #-----------------------------------------
+               if ( $server =~ /<execution.+?runasuser="(.+?)\".+?runasgroup=\"(.+?)\"/i ) {
+                  $runasuser  = $1;
+                  $runasgroup = $2;
+                  if ( $runasuser !~ /webinst/ ) {
+                     $runasuser = color('bold yellow') . $runasuser . color('reset');
+                  }
+                  else {
+                     $runasuser = color('bold cyan') . $runasuser . color('reset');
+                  }
+                  if ( $runasgroup !~ /mqm/ ) {
+                     $runasgroup = color('bold yellow') . $runasgroup . color('reset');
+                  }
+                  else {
+                     $runasgroup = color('bold cyan') . $runasgroup . color('reset');
+                  }
+               }
+
+               #-----------------------------------------
+               # get JVM size
+               #-----------------------------------------
+               if ( $server =~ /<jvmEntries.+?initialHeapSize="(.+?)\".+?maximumHeapSize=\"(.+?)\"/i ) {
+                  $initheap = $1;
+                  $maxheap  = $2;
+               }
+
+               #-----------------------------------------
+               # get m2m
+               #-----------------------------------------
+               if ( $server =~ /<sessionDRSPersistence.+?messageBrokerDomainName="(.+?)\"/i ) {
+                  $m2m = $1;
+               }
+
+               #-----------------------------------------
+               # get coregroup appserver is part of
+               #-----------------------------------------
+               print STDERR "COREGROUP\n" if $debug;
+               my $hamgr = readfile("$waspath/nodes/$node/servers/$appserver/hamanagerservice.xml");
+               if ( $hamgr =~ /coreGroupName=\"(.+?)\"/ ) {
+                  $coregroup = $1;
+               }
+
+               #----------------------------------------------
+               # Find if port is active
+               #----------------------------------------------
+               if ( my @rows = `netstat -na | grep ".$port.*LISTEN"` ) {
+                  $active = "(A)";
+               }
+
+               #-----------------------------------------
+               # list vhosts port defined to
+               #-----------------------------------------
+               pos($virtualhosts) = 0;
+               my @vhost;
+               while ( $virtualhosts =~ m/<host\:VirtualHost.+?name=\"(.+?)\">(.+?)<\/host\:VirtualHost>/gis ) {
+                  my $vhost = $1;
+                  if ( $2 =~ /port=\"$port\"/ ) {
+                     push @vhost, $vhost;
+                  }
+               }
+
+               #-----------------------------------------
+               # if port not active turn it red
+               #-----------------------------------------
+               if ( !$active ) {
+                  $port = color('bold red') . "$port" . color('reset');
+               }
+               else {
+                  $port = color('bold cyan') . "$port" . color('reset');
+               }
+
+               #-----------------------------------------
+               # make comma seperated list of vhosts
+               #-----------------------------------------
+               if ( scalar @vhost > 1 ) {
+                  $port_vhosts = color('bold yellow') . join( ",", @vhost ) . color('reset');
+               }
+               else {
+                  $port_vhosts = color('bold cyan') . $vhost[0] . color('reset');
+               }
+
+               #------------------------------------------
+               # if default vhost not in the list of vhosts
+               # the port is defined to turn it red
+               #------------------------------------------
+               if ( !grep $defaultvhost, @vhost ) {
+                  $defaultvhost = color('bold red') . "$defaultvhost" . color('reset');
+               }
+               else {
+                  $defaultvhost = color('bold cyan') . "$defaultvhost" . color('reset');
+               }
+
+               #-------------------------------------------------------
+               # Show server info
+               #-------------------------------------------------------
+               printf "%s:\n  %-30s [ svr-vhost: %s ]\n",     $clustername, $appserver, $defaultvhost;
+               printf "     port: %s%3s\t\tport-vhost: %s\n", $port,        $active,    $port_vhosts;
+               printf "     coregroup: %s\n", color('bold cyan') . $coregroup . color('reset');
+               if ($m2m) {
+                  printf "     m2m: %s\ttuning: %s\n", color('bold cyan') . $m2m . color('reset'), $tuning;
+               }
+               else {
+                  print "     m2m: Not defined\n";
+               }
+               printf "     RunAsUser: %s\t\tRunAsGroup: %s\n", $runasuser, $runasgroup;
+               printf "     InitHeap: %s\t\tMaxHeap: %s\n",     $initheap,  $maxheap;
+               printf "     heapdumps: %s\n",                   $heap;
+               if ( $heap ne $jcore ) {
+                  printf "     javacores: %s\n", $jcore;
+               }
+               if ( $heap ne $core ) {
+                  printf "     coredumps: %s\n", $core;
+               }
+               if ($session) {
+                  printf "     Session Cookie: %s\n", $session;
+               }
+               else {
+                  printf "     Session Cookie: %s\n", " Not defined";
+               }
+
+               #-----------------------------------------
+               # list classpaths
+               #-----------------------------------------
+               print STDERR "CLASSPATHS\n" if $debug;
+               pos($server) = 0;
+               while ( $server =~ m/<jvmentries.+?>(.+?)<\/jvmentries>/gis ) {
+                  my $jvmentry = $1;
+                  my $cp;
+                  while ( $jvmentry =~ m/<classpath>(.+?)<\/classpath>/gis ) {
+                     printf "     classpath:%s\n", color('bold cyan') . $1 . color('reset');
+                     $cp = 1;
+                  }
+                  if ( !$cp ) {
+                     printf "     classpath: %s\n", color('bold yellow') . "Not defined" . color('reset');
+                  }
+               }
+               printf "     Plugin: Connect Timeout=%d  Read/Write Timeout=%d\n", $connect, $iotimeout;
+
+               #-----------------------------------------
+               # list installed applications
+               #-----------------------------------------
+               print STDERR "INSTALLED APPS\n" if $debug;
+               pos($entry) = 0;
+               while ( $entry =~ m/<deployedApplications>(.+?)<\/deployedApplications>/gis ) {
+                  my ( $display_name, $app_vhost, $context_root );
+                  my $app = $1;
+                  next if $app =~ /ibmasyncrsp/i;
+                  print STDERR color('red bold') . "Doing $app\n" . color('reset') if $debug;
+                  print STDERR "read deployment.xml\n" if $debug;
+                  my $deploy_file = "$waspath/applications/$app/deployment.xml";
+                  $deploy_file =~ s/ /\\ /g;
+                  my ($deployment) = glob "$deploy_file";
+                  print STDERR color('green bold') . "$deployment" . color('reset') . "\n" if $debug;
+                  my ($ear) = $deployment =~ /applications\/(.+?)\//;
+                  $deployment = readfile($deployment);
+                  print STDERR "read web.xml\n" if $debug;
+                  my $web_inf = readfile("$waspath/applications/$app/*/WEB-INF/web.xml");
+                  print STDERR "read application.xml\n" if $debug;
+                  my $application = readfile("$waspath/applications/$app/META-INF/application.xml");
+
+                  #-----------------------------------------
+                  # get App name
+                  #-----------------------------------------
+                  print STDERR "APP NAME\n" if $debug;
+                  if ( $application =~ /<display-name>(.+?)<\/display-name>/gsi ) {
+                     $display_name = $1;
+                     $display_name =~ s/^\s+|\s+$//g;
+                  }
+
+                  #-----------------------------------------
+                  # get App context root
+                  #-----------------------------------------
+                  print STDERR "Context root\n" if $debug;
+                  if ( $application =~ /<context-root>(.+?)<\/context-root/ ) {
+                     $context_root = $1;
+                  }
+
+                  #-----------------------------------------
+                  # get App vhost
+                  #-----------------------------------------
+                  print STDERR "APP VHOST\n" if $debug;
+                  while ( $deployment =~ /<modules.+?uri=\"(.+?)\"/gsi ) {
+                     my $module = $1;
+                     print STDERR "read ibm-web-bnd.xmi\n" if $debug;
+                     my $web_bnd = readfile("$waspath/applications/$app/$module/WEB-INF/ibm-web-bnd.xmi");
+                     if ( $web_bnd =~ /virtualhostname=\"(.+?)\"/si ) {
+                        debug("valid vhosts @vhost");
+                        if ( !grep /$1/, @vhost ) {
+                           debug("invalid vhost");
+                           $app_vhost = color('bold red') . "$1" . color('reset');
+                        }
+                        else {
+                           debug("valid vhost $1");
+                           $app_vhost = color('bold cyan') . "$1" . color('reset');
+                        }
+                     }
+                  }
+                  my ($app_dir) = $app =~ /(.+?)\//;
+                  my $app_name = $app;
+                  $app_name =~ s/.*\///;
+
+                  #-----------------------------------------
+                  # Display app info
+                  #-----------------------------------------
+                  print STDERR "APP VHOST $node\n" if $debug;
+                  printf "\tApp: %-30s app-vhost:%-10s\n", color('bold cyan') . $app_name . color('reset'), $app_vhost;
+                  printf "\t\tEAR: %s\n",                  color('bold cyan') . $ear . color('reset');
+                  printf "\t\tDisplay name: %s\n",         $display_name;
+                  if ($context_root) {
+                     printf "\t\tcontext-root:%s\n", color('bold cyan') . $context_root . color('reset');
+                  }
+                  $port =~ /(\d{3,4})/;    # remove color codes
+
+                  #------------------------------------------
+                  # resources in web.xml
+                  #------------------------------------------
+                  print STDERR "web-inf resources\n" if $debug;
+                  while ( $web_inf =~ m/<resource-ref.*?<res-ref-name>(.+?)<\/res-ref-name>.*?<\/resource-ref/gis ) {
+                     my $resource = $1;
+                     print_resource( $resource, $node_resources, $server_resources, $cluster_resources );
+
+                     # printf "\t\tresource: %s\n",color('cyan bold').$resource.color('reset');
+                  }
+
+                  #------------------------------------------
+                  # resources from Spring parms pointed to in web.xml
+                  #------------------------------------------
+                  pos($web_inf) = 0;
+                  print STDERR "web-inf spring resources\n" if $debug;
+                  while ( $web_inf =~
+                          m/<param-name>contextConfigLocation<\/param-name>.+?<param-value>(.+?)<\/param-value>/gis )
+                  {
+                     print STDERR "$1\n" if $debug;
+                     my $spring_xml = readfile("$waspath/applications/$app/*$1");
+                     my $spring_vars;
+                     print STDERR "external props\n" if $debug;
+                     while ( $spring_xml =~ m/<property name="location">.+?<value>(.+?)<\/value>/gis ) {
+                        print STDERR "Found $1\n" if $debug;
+                        $spring_vars = $spring_vars . readfile("$waspath/applications/$app/*$1");
+                     }
+                     pos($spring_xml) = 0;
+                     while ( $spring_xml =~ m/<property name="jndiName".+?value="(.+?)"/gis ) {
+                        my $resource = $1;
+                        if ( $resource =~ /^\$/ ) {
+                           print STDERR "Lookup resource var in \n$spring_vars" if $debug;
+                           $resource =~ s/[\$\{\}]//g;
+                           print STDERR "Lookup resource $resource var \n" if $debug;
+                           ($resource) = $spring_vars =~ /${resource}=(.+?)\s/i;
+                           print STDERR "got $resource\n" if $debug;
+                        }
+                        print_resource( $resource, $node_resources, $server_resources, $cluster_resources );
+
+                        #    printf "\t\tresource: %s\n",color('cyan bold').$resource.color('reset');
+                     }
+                  }
+
+                  #------------------------------------------
+                  # jar bnd file resources
+                  #------------------------------------------
+                  my $jar_bnd_file = "$waspath/applications/$app_dir/deployments/*/*/META-INF/ibm-ejb-jar-bnd.xmi";
+                  $jar_bnd_file =~ s/ /\\ /g;
+                  my @jar_bnd_xmi = glob "$jar_bnd_file";
+                  print STDERR "jar resources\n" if $debug;
+                  foreach my $jar_bnd_xmi (@jar_bnd_xmi) {
+                     print STDERR "read ibm-ejb-jar-bnd.xmi\n" if $debug;
+                     my $jar_bnd = readfile($jar_bnd_xmi);
+                     while ( $jar_bnd =~ m/(<defaultCMPConnectionFactory|<resRefBindings).*?jndiname=\"(.+?)\"/gis ) {
+                        my $resource = $2;
+                        print_resource( $resource, $node_resources, $server_resources, $cluster_resources );
+
+                        #     printf "\t\tresource: %s\n",color('cyan bold').$resource.color('reset');
+                     }
+                  }
+                  my ($hc) = `grep -E \"${1}.*${context_root}\" \/lfs\/system\/bin\/check_was.sh`;
+                  my $url = ( split( /\s+/, $hc ) )[3];
+                  printf "\t\tHealth check: %s\n", $url if $url;
+               }
+            }
+            print "\n";
+         }
+      }
+   }
+}
+
+sub readfile {
+   my ($file) = @_;
+   my (
+        $package,  $filename,   $line,  $subroutine, $hasargs, $wantarray,
+        $evaltext, $is_require, $hints, $bitmask,    $hinthash
+   ) = caller(0);
+   print STDERR color("yellow bold") . "$line " if $debug;
+   print STDERR color('green') . "READFILE:init $file" . color('reset') . "\n" if $debug;
+   $file =~ s/ /\\ /g;
+   ($file) = glob "$file";
+   print STDERR color('green') . "READFILE:glob $file" . color('reset') . "\n" if $debug;
+   my $data;
+
+   if ( -e $file ) {
+      open "XML", "<", "$file" or die "Cant read $file $!\n";
+      {
+         local $/ = undef;
+         $data = <XML>;
+      }
+      close XML;
+      print STDERR "file read\n" if $debug;
+   }
+   else {
+      print STDERR "$file does not exist\n" if $debug;
+   }
+   return $data;
+}
+
+sub wanted {
+   my ($appserver) = @_;
+   foreach my $app (@apps) {
+      if ( $appserver =~ /$app/i ) {
+         return 1;
+      }
+   }
+   return 0;
+}
+
+sub print_resource {
+   my ( $resource, $node_resources, $server_resources, $cluster_resources ) = @_;
+   my $xml;
+   chomp $resource;
+   print "\t\tResource: " . color('cyan bold') . $resource . color('reset');
+   $resource =~ s/\//\\\//g;
+   debug("Lookup up resource $resource");
+   if ( $server_resources =~ /$resource/s ) {
+      print STDERR "Found in appserver\n" if $debug;
+      $xml = $server_resources;
+   }
+   elsif ( $cluster_resources =~ /$resource/s ) {
+      print STDERR "found in cluster\n" if $debug;
+      $xml = $cluster_resources;
+   }
+   elsif ( $node_resources =~ /$resource/s ) {
+      print STDERR "found in node\n" if $debug;
+      $xml = $node_resources;
+   }
+   elsif ( $resources =~ /$resource/s ) {
+      debug("$resource found in cell\n");
+      $xml = $resources;
+   }
+   else {
+      print " no info";
+      debug("$resource not found !!");
+   }
+   my $jndi;
+   while ( $xml =~ /(<factories.+?>(?(?<=\/>)|.+?<\/factories>))/gis ) {
+      $jndi = $1;
+      if ( $jndi =~ /name=\"$resource\"/is ) {
+         last;
+      }
+      $jndi = "";
+   }
+   if ( $jndi =~ /name=\"databasename\"/is ) {
+      debug("Database jndi");
+      if ( my ($server) = $jndi =~ /<resourceProperties.+?name=\"servername\".+?value=\"(.+?)\"/is ) {
+         print "\t-> $server:";
+      }
+      if ( my ($port) = $jndi =~ /<resourceProperties.+?name=\"portnumber\".+?value=\"(.+?)\"/is ) {
+         print "$port";
+      }
+      if ( my ($dbname) = $jndi =~ /<resourceProperties.+?name=\"databasename\".+?value=\"(.+?)\"/is ) {
+         print " - $dbname";
+      }
+   }
+   print "\n";
+}
+
+#--------------------------------------------------------
+# Print debugging information
+#--------------------------------------------------------
+sub debug {
+   my ($msg) = @_;
+   if ($debug) {
+      my $line     = ( caller(0) )[2];
+      my $calledby = "Main";
+      if ( ( defined( scalar caller(1) ) ) ) {
+         $calledby = ( caller(1) )[3];
+         $calledby =~ s/^.+?:://;
+      }
+      print STDERR YELLOW "$line:$calledby: ";
+      print STDERR CYAN "$msg\n";
+   }
+}

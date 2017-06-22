@@ -1,0 +1,232 @@
+#!/bin/bash
+export LANG=en_US.UTF-8
+version="1.5.1"
+NODEINFO=`lssys -qx csv -l role,nodestatus,hostenv $(hostname)`
+# Run from search.events.index only
+echo "${NODEINFO}" | grep -q -i SEARCH.EVENTS.INDEX
+if [ $? -ne 0 ]; then
+      echo "Should only be exectuted from a SEARCH.EVENTS.INDEX node"
+      exit 1
+fi
+
+if [ $# -eq 0 ]
+  then
+    echo "No event specified, exiting."
+    echo
+    exit 1
+fi
+usage()
+{
+cat <<EOF
+usage: $0 -e <event> [-v <nutch version>] [-t] [-d ve|wlp] [-h]
+
+OPTIONS:
+ -e <event> (e.g. cmrolg-odd)
+ -v <nutch version> (Default setting: $version)
+ -d ve | wlp (ve == push to VE WAS nodes, wlp == push to WLP nodes)
+ -s p1|p3|p5
+ -t Test only (do not propagate to WAS nodes)
+ -h Help (this dialog)
+EOF
+}
+
+solrDest="ve"
+while getopts "v:e:d:s:th" opt; do
+  case $opt in
+  e) event=$OPTARG ;;
+  v) version=$OPTARG ;;
+  t) testmode="yes" ;;
+  d) solrDest=$OPTARG ;;
+  s) solrSite=$OPTARG ;;
+  ?) usage
+     exit 1 ;;
+  esac
+done
+
+export NUTCH_CONF_DIR=/projects/events/search/nutch-${version}/${event}/conf/
+export JAVA_HOME=/usr
+export NUTCH_LOG_DIR=/logs/nutch/
+export NUTCH_LOGFILE="${event}_${solrDest}.log"
+export NUTCH_HOME=/projects/events/search/nutch-${version}
+
+if [ ! -d $NUTCH_CONF_DIR ]; then
+  echo "Invalid event \"$event\" or \"$event\" not configured."
+  usage
+  exit 1
+fi
+
+umask 027
+test=IBM        # A test search term to verify index integrity before publishing
+
+
+# Check if nutch is already running, if so, exit
+SCRIPTNAME=`basename $0`
+PIDFILE=${NUTCH_LOG_DIR}/${SCRIPTNAME}_${event}.pid
+if [[ -f $PIDFILE ]]; then
+   OLDPID=`cat $PIDFILE`
+   if [[ $OLDPID == "" ]]; then
+      echo "A previous version of the script left a corrupted PID file"
+      echo "Correct and restart script"
+      exit 1
+   fi
+   RESULT=`ps -ef| grep ${OLDPID} | grep "nutch-1.5.1/crawl.${event}"`
+   if [[ -n "${RESULT}" ]]; then
+      echo "A previous version of ${SCRIPTNAME} is already running"
+      echo "  on this node (${OLDPID}).  Try again later"
+   else
+      echo $$ > $PIDFILE
+   fi
+else
+   echo $$ > $PIDFILE
+fi
+ENV=`echo ${NODEINFO} | awk -F"," '{print$NF}'`
+source /lfs/system/tools/was/etc/was_passwd
+case ${ENV} in
+        PRE)
+            KEYSTORE=/projects/events/etc/ei_gz_was_stage.jks
+            KEYSTOREPASS="$(echo ${nutch_ssl_gzstage_keystore} | openssl enc -base64 -d)"
+            ;;
+        PRD)
+            KEYSTORE=/projects/events/etc/ei_gz_was.jks
+            KEYSTOREPASS="$(echo ${nutch_ssl_gz_keystore} | openssl enc -base64 -d)"
+            KEYSTORE_SL=/projects/events/etc/ei_yz_was.jks
+            KEYSTOREPASS_SL="$(echo ${nutch_ssl_yz_keystore} | openssl enc -base64 -d)"
+            ;;
+        *)
+            echo "Keystore ERROR....Exiting!"
+            exit 1
+            ;;
+esac
+
+SSL_PARAMS="-Djavax.net.ssl.trustStore=${KEYSTORE} -Djavax.net.ssl.trustStorePassword=${KEYSTOREPASS} -Djavax.net.ssl.keyStore=${KEYSTORE} -Djavax.net.ssl.keyStorePassword=${KEYSTOREPASS}"
+SSL_PARAMS_SL="-Djavax.net.ssl.trustStore=${KEYSTORE_SL} -Djavax.net.ssl.trustStorePassword=${KEYSTOREPASS_SL} -Djavax.net.ssl.keyStore=${KEYSTORE_SL} -Djavax.net.ssl.keyStorePassword=${KEYSTOREPASS_SL}"
+export NUTCH_OPTS="$SSL_PARAMS"
+depth=3  # Intentionally insanely overshooting
+threads=10 # Configured to max out in nutch-site.xml
+
+cd $NUTCH_HOME/$event
+# Clear the crawldb, otherwise new keywords and such don't get picked up properly for some reason.
+rm -rf crawldb
+
+$NUTCH_HOME/bin/nutch inject crawldb urls
+for((i=0; i < $depth; i++))
+do
+  $NUTCH_HOME/bin/nutch generate crawldb crawldb/segments
+  returnCode=$?
+  if [ $returnCode -ne 0 ]; then
+    echo "Stopping at depth $depth. No more URLs to fetch."
+    break
+  fi
+
+  segment=`ls -trd crawldb/segments/* | tail -1`
+
+  $NUTCH_HOME/bin/nutch fetch $segment -threads $threads -noParsing
+  $NUTCH_HOME/bin/nutch parse $segment
+  #if [ $? -ne 0 ]; then
+  #  rm $RMARGS $segment
+  #  continue
+  #fi
+
+  $NUTCH_HOME/bin/nutch updatedb crawldb $segment
+done
+
+echo "   *** Finished with generate/fetch/parse/updatedb cycle."
+
+$NUTCH_HOME/bin/nutch invertlinks crawldb/linkdb -dir crawldb/segments
+
+case $solrDest in
+	ve) preROLE="WAS.VE.PRE"
+	    p1prePORTS="9058"
+	    p3prePORTS="9047"
+	    prdROLE="WAS.VE.PRD"
+	    prdPORTS="9047" ;;
+	wlp) preROLE="WLP.WWSM.PRE"
+	     prePORTS="9045"
+             prdROLE="WLP.WWSM.PRD.*"
+	     prdPORTS="9045" ;;
+	*) usage
+	   exit 1 ;;
+esac
+
+case `hostname` in
+	w[1235]*)
+		if [[ $solrDest == "ve" ]]; then
+			NODELIST=`lssys -qe role==${preROLE} realm==g.ci.${solrSite}`
+			echo $NODELIST
+			case $solrSite in
+				p1) PORTLIST=$p1prePORTS ;;
+				*) PORTLIST=$p3prePORTS ;;
+			esac
+		else
+			NODELIST=`lssys -qe role==${preROLE}`
+			echo $NODELIST
+                	PORTLIST=$prePORTS
+		fi ;;
+	[sv][1235]*)
+            for ROLE in ${prdROLE}; do
+		NODELIST=`echo ${NODELIST}; lssys -qe role==${ROLE} realm!=*.p2 `
+            done
+		echo $NODELIST
+		PORTLIST=$prdPORTS ;;
+esac
+INDEXPORT=`echo $PORTLIST|awk '{print $1}'`
+
+if [ -z $testmode ]; then
+echo "   *** Begin solrindex and reload cycles."
+# Cycle through and force reload the other nodes
+for node in $NODELIST; do
+  (
+    # Seed $RANDOM with a randomly large number (for "better" randomization)
+    #RANDOM=$(((RANDOM % 32767)*42))
+    #drift=$((RANDOM %= 60))
+    # Supply 0-60s of drift, so that the solrindex calls are not all launched simultaneously (it can crush the server)
+    #sleep $drift
+    echo "Requesting solrindex of $event crawldb and linkdb at ${node}:${INDEXPORT}"
+    # Re-seed RANDOM for unique hadoop tmpdir
+    RANDOM=$(((RANDOM % 32767)*42))
+    hadooptmp="$NUTCH_HOME/$event/hadoop-solrindex_`date +"%Y%m%d.%H%M%S"`.$RANDOM"
+    case $node in
+      s[35]*)
+    	export NUTCH_OPTS="$SSL_PARAMS_SL -Dhadoop.tmp.dir=${hadooptmp}";;
+      *)
+    	export NUTCH_OPTS="$SSL_PARAMS -Dhadoop.tmp.dir=${hadooptmp}";;
+    esac
+    $NUTCH_HOME/bin/nutch solrindex https://${node}.event.ibm.com:${INDEXPORT}/slsearch/$event crawldb -linkdb crawldb/linkdb crawldb/segments/*
+    RC=$?
+    echo "  solrindex of $event at ${node}:${port} RC=$RC"
+  ) &
+  PIDs="$PIDs $!"
+  wait $PIDs
+  unset PIDs
+done
+#wait $PIDS
+#unset PIDs
+else
+  echo "Test option set, skipping solrindex and reload cycles"
+fi
+# Delete temp dirs or $NUTCH_HOME will fill up
+rm -rf $NUTCH_HOME/$event/hadoop-solrindex_`date +"%Y%m%d"`*
+echo "   *** Finished with solr core indexing."
+
+if [ -z $testmode ]; then
+# Cycle through any potential vertical instances and reload
+for node in $NODELIST; do
+  for port in $PORTLIST; do
+    if [ "${node}:${port}" != "${node}:${INDEXPORT}" ]; then
+      echo "Requesting RELOAD of $event solr core at ${node}:${port}"
+      echo "RELOAD: curl -s -k https://${node}.event.ibm.com:${port}/slsearch/admin/cores?core=${event}&action=RELOAD"
+      dcpass="$(echo ${clientauth_yz} | openssl enc -base64 -d)"
+      curl -s -k --cert /lfs/system/tools/was/etc/ei.yz.was.client.pem --pass ${dcpass} "https://${node}.event.ibm.com:${port}/slsearch/admin/cores?core=${event}&action=RELOAD"
+      RC=$?
+      echo "  solr RELOAD of $event at ${node}:${port} RC=$RC"
+    fi
+  done
+done
+echo "   *** Finished with solr core reloading."
+else
+  echo "Test option set, skipping solr core reloading"
+fi
+# Remove PID file
+if [[ -f $PIDFILE ]]; then
+   rm $PIDFILE
+fi

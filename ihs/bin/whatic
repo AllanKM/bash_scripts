@@ -1,0 +1,215 @@
+#!/bin/ksh
+# vmstat-like script to check response time of, status of, and optionally a pattern in, specified url
+# Script requires cURL binary, ideally compiled with SSL
+# Potential enhancements:
+# - maybe add a negative pattern match to look for FAILED messages in healthcheck output for notification
+# - add logging, when log enabled set r=0 for unlimited 
+# - add monitoring, measure reponse time and/or failures, send notify after response threshold or x failures in a row
+#   or x failures out of last y
+#
+# Author : Thad Hinz
+# Date   : 06/11/2008
+#
+# Modified: 05/24/2010 - added option to specify hostname to send in host header
+#           07/28/2011 - added useragent option since mobile redirects becoming popular
+
+CHECKCAP=1    # default try count
+SLEEPTIME=15  # default sleep time between next retry
+DEBUG=0       # enabled outputs curl tracefile to PWD and curl error to STDOUT
+
+usage() {
+  echo
+  echo "Usage: `basename $0` [-h <hostname>] [-a <agentstring>] [-p <pattern>] [-i <time>] [-r <count>] [-e] <url>"
+  echo 
+  echo "              -p, optional pattern to check for in html output"
+  echo "              -i, optional interval between retries, default is $SLEEPTIME, 0=no sleep between reqs"
+  echo "              -r, optional number of tries made to url, default is $CHECKCAP, 0=infinite retries"
+  echo "              -e, optional display of extented stats - nslookup time and connect time"
+  echo "              -h, optional hostname to send in request's host header"
+  echo "              -a, optional user-agent header to send in request.  Use quotes for strings with spaces"
+  echo "             url, required url to check" 
+  echo 
+  echo "    Examples:"
+  echo "              `basename $0` http://www.ibm.com" 
+  echo "              `basename $0` -p \"<title>302 Found</title>\" -r 10 -i 5 http://www.ibm.com"
+  echo "              `basename $0` -p \"<title>302 Found</title>\" -r 0 -i 5 http://www.ibm.com"
+  echo "              `basename $0` -p \"<title>302 Found</title>\" -r 0 -i 2 -e http://www.ibm.com"
+  echo "              `basename $0` -p \"<title>302 Found</title>\" -r 0 -i 2 -e -h www.ibm.com http://p1.www.ibm.com"
+  echo
+  echo "    Note: some URLs may need to be quoted if they contain special characters"
+  echo
+  exit
+}
+
+errorMsg() {
+  # common cURL return codes
+  rc=$1
+  case $rc in
+    1)  ERRORMSG="Unsupported protocol. This build of curl has no support for this protocol." ;;
+    2)  ERRORMSG="Failed to initialize." ;;
+    3)  ERRORMSG="URL malformat. The syntax was not correct." ;;
+    4)  ERRORMSG="URL user malformatted. The user-part of the URL syntax was not correct." ;;
+    5)  ERRORMSG="Couldn't resolve proxy. The given proxy host could not be resolved." ;;
+    6)  ERRORMSG="Couldn't resolve host. The given remote host was not resolved." ;;
+    7)  ERRORMSG="Failed to connect to host." ;;
+   28)  ERRORMSG="Operation timeout. The specified time-out period was reached according to the conditions." ;;
+    *)  ERRORMSG="Undefined cURL Error. Lookup return code in cURL man page." ;;
+  esac 
+  echo "$ERRORMSG"
+}
+
+curlIt() {
+  # remove tmp files if script terminated prematurely
+  trap 'rm -f $STATSOUT $HTMLOUT; echo "Script exiting"; exit' INT TERM
+  PATT="$1"
+  URL="$2"
+  RAND=$$
+  HOST=`hostname`
+  # set the curl timeouts for connection and entire request
+  TIMEOUTS='--connect-timeout 30 --max-time 60'
+  if [ $DEBUG == 1 ];then
+    SHOWERROR='-S --trace curl_trace.out'
+  else
+    SHOWERROR=''
+  fi
+  # create a semi-random output file in case of simultaneous runs
+  STATSOUT=/tmp/whatic.statsout.$RAND
+  HTMLOUT=/tmp/whatic.htmlout.$RAND
+  TIMED='%{http_code} %{time_total} %{time_connect} %{time_namelookup}'
+  # timestamp beginning of request
+  DATE=`date`
+  curl -H "${SENDHOST}" -A "${AGENT}" -s ${SHOWERROR} -o ${HTMLOUT} -w "${TIMED}\n" ${TIMEOUTS} ${URL} > ${STATSOUT}; RC=$?
+  if [ $RC -eq 0 ];then
+    STATCODE=`cat $STATSOUT | awk '{print $1}'`
+    RESPTIME=`cat $STATSOUT | awk '{print $2}'`
+    CONNTIME=`cat $STATSOUT | awk '{print $3}'`
+    NSTIME=`cat $STATSOUT | awk '{print $4}'`
+    if [[ $opt_p == "1" ]]; then
+      grep -q "$PATT" $HTMLOUT > /dev/null 2>&1; GREPRC=$?
+      if [ $GREPRC -eq 0 ];then
+        PATTCNT=`grep -c "$PATT" $HTMLOUT`
+        PATTCHECK="SUCCESS - pattern found in output on $PATTCNT lines"
+      else
+        PATTCHECK="FAILED - pattern not found in html output" 
+      fi
+    fi
+    echo "FromHost         : $HOST"
+    echo "TimeStamp        : $DATE"
+    echo "URL              : $URL"
+    echo "User-Agent       : $AGENT"
+    if [[ $opt_h == "1" ]]; then
+      echo "Host Sent        : $HHEADER"
+    fi
+    echo "HTTP Status Code : $STATCODE"
+    if [[ $opt_e == "1" ]]; then
+      echo "Name Lookup Time : $NSTIME secs"
+      echo "Connect Time     : $CONNTIME secs"
+    fi
+    echo "Total Time       : $RESPTIME secs"
+    if [[ $opt_p == "1" ]]; then
+      echo "Pattern          : $PATT"
+      echo "Pattern Check    : $PATTCHECK"
+    fi
+  else
+    echo "FromHost      : $HOST"
+    echo "TimeStamp     : $DATE"
+    echo "URL           : $URL"
+    echo "User-Agent    : $AGENT"
+    if [[ $opt_h == "1" ]]; then
+      echo "Host Sent     : $HHEADER"
+    fi
+    ERROR=`errorMsg $RC`
+    echo "## ERROR ## Request failed with error code: $RC ($ERROR)"
+  fi
+  rm -f $HTMLOUT $STATSOUT
+}
+
+#----MAIN---
+
+while getopts ":p:i:r:h:ea:" opt; do
+  case "$opt" in
+    p ) PATTERN="$OPTARG"; opt_p=1 ;;
+    i ) INTERVAL="$OPTARG"; opt_i=1 ;;
+    h ) HHEADER="$OPTARG"; opt_h=1;;
+    a ) AGENT="$OPTARG"; opt_a=1;;
+    r ) RETRY="$OPTARG"; opt_r=1 ;;
+    e ) opt_e=1 ;;
+    ? ) usage ;;
+  esac
+done
+
+shift $(( $OPTIND - 1 ))
+
+# need to at least specify a URL
+if [ $# -lt 1 ]; then
+  echo "ERROR: you need to specify a URL."
+  usage
+  exit
+fi
+
+# parse thru opts
+if [[ $opt_p == "1" ]]; then
+  if [[ -z $PATTERN ]];then
+    echo "ERROR: specified pattern cannot be blank."
+    usage
+  else 
+    GREPPAT=$PATTERN
+  fi
+fi
+# send host in http header different than one in requested url
+if [[ $opt_h == "1" ]]; then
+  SENDHOST="Host: $HHEADER"
+else
+  # blank space is a hack cuz I'm too lazy to parse out hostname from url, this *shouldn't* have any effect on the request to server
+  SENDHOST=" "
+fi
+if [[ $opt_i == "1" ]]; then
+  # must be a digit
+  if [[ $INTERVAL != +([0-9]) ]];then
+     echo "ERROR: specified interval must be a number."
+     usage
+  else
+    SLEEPTIME=$INTERVAL
+  fi
+fi
+if [[ $opt_r == "1" ]]; then
+  if [[ $RETRY != +([0-9]) ]];then
+     echo "ERROR: specified retry must be a number."
+     usage
+  fi
+  if [[ $RETRY == "0" ]];then
+    UNLIMITED=1
+    # when default CHECKCAP=1 the sleep is skipped so we need to ensure CHECKCAP > 1
+    CHECKCAP=2
+  else
+    CHECKCAP=$RETRY
+  fi
+fi
+# set agent name if none specified
+if [[ $opt_a != "1" ]];then
+  AGENT="Mozilla/5.0 (WhatIC curl script)"
+fi
+
+URL="$1"
+
+CHECKCNT=1
+while [ $CHECKCNT -le $CHECKCAP ];do
+  echo
+  curlIt "$GREPPAT" "$URL"
+  echo
+  # don't sleep on last iteration
+  if [ $CHECKCNT -ne $CHECKCAP ];then
+    SLEEPCNT=1
+    print "==> Waiting $SLEEPTIME seconds \c"
+    while [ $SLEEPCNT -le $SLEEPTIME ];do
+      print " * \c"
+      sleep 1
+      SLEEPCNT=$((SLEEPCNT+1))
+    done
+  echo
+  fi
+  # don't increment counter if unlimited choosen
+  if [[ $UNLIMITED != "1" ]];then
+    CHECKCNT=$((CHECKCNT+1))
+  fi
+done

@@ -1,0 +1,9 @@
+#########################################################################
+#
+#  This file contains a list of configured bNimble keystores
+#  and their associated storepass.  Entries should be of the
+#  form:
+#
+#       keystore XXXXXXXXXXXXXXXXX storepass XXXXXXXXXXXXXX
+#
+#########################################################################

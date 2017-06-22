@@ -1,0 +1,1457 @@
+#!/usr/local/bin/perl
+#
+# Runs per site, checks every 3 minutes
+#  foreach site in LiveSites do the following script as separate background
+#   processes per site:
+#  If missing.<node>.ts exists and resolved-found.<node>.ts doesn't exist -
+#   must generate resolved-skip.<node>.ts
+#  Conditions we're trying to catch are no log and lcs_client is up or node
+#   is down
+#    if missing exists and no resolved-found exists then
+#    lcs_check client
+#     if lcs_check does not respond affirmatively then notify human
+#     if log exists do nothing
+#     if no log exists, create resolved-skip and check httpd
+#      if check httpd fails, notify human
+
+
+eval 'exec /usr/local/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+# Determine if we can use the Directory Store module
+my $dirstore;
+BEGIN {
+  $dirstore = 0;
+  eval { require EI::DirStore };
+  unless ($@) {
+    EI::DirStore->import();
+    $dirstore = 1;
+  }
+}
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+use LWP::UserAgent;
+use HTTP::Request;
+use MIME::Base64;
+use Net::SSLeay qw(get_https post_https sslcat make_headers make_form);
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mypath = $mylname;
+$mypath =~ s%$mysname$%%;
+$mypath = './' if ($mypath eq '');
+$mypath =~ s%/$%%g;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+my %zipinfo = (
+  "Z" => {
+    "multiple" => 0,                    # concatenate compressed files
+    "ccmd" => "compress",               # compress command
+    "cargs" => "",                      # arguments to compress file
+    "ucmd" => "uncompress",             # uncompress command
+    "uargs" => "-c",                    # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "gz" => {
+    "multiple" => 1,                    # concatenate compressed files
+    "ccmd" => "gzip",                   # gzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "gzip",                   # gzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "bz2" => {
+    "multiple" => 1,                    # concatenate compressed files
+    "ccmd" => "bzip2",                  # bzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "bzip2",                  # bzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+);
+my $zregex = '(\.'.join("|\.",sort keys %zipinfo).')?';
+
+my $lcs_ctl = "lcs_ctl";                # Control configurations
+my $cfgdir = "/opt/HPODS/LCS/conf";     # Daemon configuration dir
+my $cfgbase = "$cfgdir/";               # Configuration base filespec
+my $cfgext = ".conf";                   # Configuration filespec extension
+my $dfltpoll = 180;                     # How often the script runs in seconds
+
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'bysite' => sub { $clargs{$_[0]} = 1 },
+  'debug' => sub { $clargs{$_[0]} = 1 },
+  'noalert' => sub { $clargs{$_[0]} = 1 },
+  'poll:i' => sub { $clargs{$_[0]} = $_[1] },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $bysite = $clargs{bysite} || 0;
+my $debug = $clargs{debug} || 0;
+my $noalert = $clargs{noalert} || 0;
+my $poll = $clargs{poll} || $dfltpoll;
+
+# Set up cache file for DirStore data
+my $cachedir="/var/cache";
+if (! -d $cachedir) {
+  # Make FHS compliant cachedir if we can
+  mkdir($cachedir,0755);
+  chown(0,0,$cachedir);
+  $cachedir="/tmp" if (! -d $cachedir || ! -w $cachedir);
+}
+
+my $tmp = "/tmp";                        # Temporary write directory
+my $fnodes = "nodes";                    # Filename for nodes files
+my $mytime = time();                     # Wall clock time
+my $ts = "196912312359";                 # Bogus timestamp YYYYmmddHHMM
+my $mvinterval = 6*60;                   # Seconds to move .$fnodes to $fnodes
+my $dscache="$cachedir/LCS_DirStore";    # DirStore cache file
+my $dsmaxage = 900;                      # DirStore cache file max age
+
+# Bad hardcodes
+#  interval is used if site configuration file does not have a loginterval
+my $interval = 6*60;                     # Six minute timestamp
+
+### MAIN ###
+
+my %NODES = ();
+my %DSNODES = ();
+my %allinst = ();
+my %cfgs = ();
+my @cfglst = ();
+if (opendir(DIR,$cfgdir)) {
+  @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+  closedir(DIR);
+  if (@cfglst) {
+    foreach my $cfg (sort @cfglst) {
+      my $i = $cfg;
+      $i =~ s/$cfgext$//;
+      #logit($mysname,1,"Loading $lcs_ctl $cfg $i") if ($clargs{verbose});
+      loadfile(\%cfgs,"$cfgbase$cfg",$i,1);
+      foreach my $key (keys %cfgs) {
+        if (! defined $allinst{$key}) {
+          $allinst{$key} = $i;
+        }
+      }
+    }
+  }
+}
+
+# Build valid sites list based on control files
+my %loaded = ();
+my %sitehsh = ();
+my ($site,$inst,$node,$line,$key,$value);
+foreach $site (sort keys %cfgs) {
+  logit($mysname,1,"Control file parse for $site") if ($debug);
+  if (defined $cfgs{$site}{generatenodelist}) {
+    if (defined $cfgs{$site}{aggregate}) {
+      if (grep($host eq $_ || $host =~ /$_/, @{$cfgs{$site}{aggregate}})) {
+        my ($year,$mon,$mday,$hour,$min,$sec);
+        logit($mysname,1,"Control file valid site $site") if ($debug);
+        if (defined $cfgs{$site}{dateend}) {
+          ($year,$mon,$mday,$hour,$min,$sec) =
+            unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{dateend}})[$[]);
+          if ($year eq "" || $mon eq "" || $mday eq "") {
+            logit($mysname,1,"Invalid DateEnd value; must be ".
+                  "YYYYMMDD[hh[mm[ss]]]");
+            next;
+          }
+          $hour = 0 if ($hour eq "");
+          $min = 0 if ($min eq "");
+          $sec = 0 if ($sec eq "");
+          my $stopts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+          if ($mytime > $stopts) {
+            logit($mysname,1,"Current time is beyond stop time (".
+                  (@{$cfgs{$site}{dateend}})[$[].")") if ($debug);
+            next;
+          }
+        }
+        if (defined $cfgs{$site}{datebegin}) {
+          ($year,$mon,$mday,$hour,$min,$sec) =
+            unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{datebegin}})[$[]);
+          if ($year eq "" || $mon eq "" || $mday eq "") {
+            logit($mysname,1,"Invalid DateBegin value; must be ".
+                  "YYYYMMDD[hh[mm[ss]]]");
+            next;
+          }
+          $hour = 0 if ($hour eq "");
+          $min = 0 if ($min eq "");
+          $sec = 0 if ($sec eq "");
+          my $startts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+          if ($mytime < $startts) {
+            logit($mysname,1,"Current time is before start time (".
+                  (@{$cfgs{$site}{datebegin}})[$[].")") if ($debug);
+            next;
+          }
+        }
+        push(@{$sitehsh{$site}},$site);
+        if (defined $cfgs{$site}{alias}) {
+          push(@{$sitehsh{$site}},@{$cfgs{$site}{alias}});
+          logit($mysname,1,"Control file with aliases: ".
+                join(" ",@{$sitehsh{$site}})) if ($debug);
+        }
+        $inst = $allinst{$site};
+        if (defined $cfgs{$inst}{lcscurrent}) {
+          my $lcscurrent = (@{$cfgs{$inst}{lcscurrent}})[$[];
+          if (! defined $loaded{$lcscurrent} && -r $lcscurrent) {
+            if (open(LCSC,"<$lcscurrent")) {
+              chomp(@{$loaded{$lcscurrent}{lst}} = <LCSC>);
+              close(LCSC);
+            }
+          }
+          foreach $line (@{$loaded{$lcscurrent}{lst}}) {
+            my ($c,$s,$t) = (split(/[,]/,$line))[$[+1,$[+2,$[+3];
+            $loaded{$lcscurrent}{data}{$c}{$s} = $t;
+          }
+        }
+        if (defined $cfgs{$inst}{lbcurrent}) {
+          my $lbcurrent = (@{$cfgs{$inst}{lbcurrent}})[$[];
+          if (! defined $loaded{$lbcurrent} && -r $lbcurrent) {
+            if (open(LBC,"<$lbcurrent")) {
+              chomp(@{$loaded{$lbcurrent}{lst}} = <LBC>);
+              close(LBC);
+            }
+          }
+          foreach $line (@{$loaded{$lbcurrent}{lst}}) {
+            my ($c,$p,$w,$s) = (split(/[=,]/,$line))[$[+1,$[+3,$[+4,$[+6];
+            $loaded{$lbcurrent}{data}{$c}{$p}{$w}{$s}++;
+          }
+        } elsif (defined $cfgs{$inst}{dirstore}) {
+          %DSNODES = ();
+          if (-r $dscache && (time() - (stat($dscache))[$[+9]) < $dsmaxage) {
+            # Use the cache file
+            eval { require $dscache; };
+            if (! $@) {
+              %{$loaded{dirstore}{hsh}} = %DSNODES;
+            } else {
+              logit($mysname,2,"Unable to read cache $dscache: $@");
+            }
+          }
+          if (! %DSNODES) {
+            if ($dirstore) {
+              my %results = ();
+              if (dsSearch(%results,'SYSTEM',
+                           expList => [ "systemtype!=NETWORK.*" ],
+                           attrs => [ "sitesserved", "nodestatus" ])) {
+                foreach my $name (sort keys %results) {
+                  my $hshref = $results{$name};
+                  @{$DSNODES{$name}} = [ @{$hshref->{sitesserved}},
+                                         @{$hshref->{nodestatus}} ]
+                    if ((@{$hshref->{nodestatus}})[$[] eq "LIVE");
+                }
+              } else {
+                logit($mysname,2,"DirStore search failed");
+                next;
+              }
+              %{$loaded{dirstore}{hsh}} = %DSNODES;
+              # Do NOT maintain DirStore cache file here
+            } else {
+              logit($mysname,2,"DirStore unavailable");
+              next;
+            }
+          }
+          # Loop on %DSNODES
+          while(($key,$value) = each %DSNODES) {
+            if (grep($_ eq "LIVE",@{$value})) {
+              foreach my $name (grep($_ =~ /[a-z]/,@{$value})) {
+                my ($c,$p) = split(/[:]/,$name);
+                $p = "80" if ($p eq "");
+                $loaded{dirstore}{data}{$c}{$p}{10}{$key}++;
+              }
+            }
+          }
+        } elsif (defined $cfgs{$inst}{allnodes}) {
+          my $allnodes = (@{$cfgs{$inst}{allnodes}})[$[];
+          %NODES = ();
+          eval { require $allnodes; };
+          if ($@) {
+            logit($mysname,2,"Unable to read allnodes $allnodes: $@");
+            next;
+          }
+          # Loop on %NODES
+          while(($key,$value) = each %NODES) {
+            if (grep($_ eq "LIVE",@{$value})) {
+              foreach my $name (grep($_ =~ /[a-z]/,@{$value})) {
+                my ($c,$p) = split(/[:]/,$name);
+                $p = "80" if ($p eq "");
+                $loaded{$allnodes}{data}{$c}{$p}{10}{$key}++;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+# Create a working site list
+my $dir;
+my @tlst = ();
+my @sitelst = ();
+if (grep("\U$_" eq "ALL", @ARGV)) {
+  @tlst = keys %sitehsh;
+} else {
+  @tlst = @ARGV;
+}
+foreach $site (sort @tlst) {
+  $dir = "";
+  if (defined $sitehsh{$site}) {
+    if (defined $cfgs{$site}{archivedirectory}) {
+      $dir = (@{$cfgs{$site}{archivedirectory}})[$[];
+    }
+    if ($dir ne "" && -d $dir) {
+      push(@sitelst,$site);
+    } else {
+      logit($mysname,1,"$site archive directory not found");
+    }
+  } else {
+    logit($mysname,1,"$site is not a known site");
+  }
+}
+if (! @sitelst) {
+  usage($mysname);
+  exit 0;
+}
+
+# Set pidfile pid for "lock"
+my $pidfile = "$tmp/$mysname.pid";
+
+# Already running, verify, then just bail out, otherwise create pidfile "lock"
+if (-f $pidfile) {
+  my ($pid,$p);
+  my $found = 0;
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    logit($mysname,1,"Program already running; delete $pidfile\?");
+    exit 0;
+  } else {
+    logit($mysname,1,"Cleaning up $pidfile and continuing");
+    unlink($pidfile);
+  }
+}
+system( "echo $$ >$pidfile" );
+
+# Loop on all the sites to find the unique set of collectors to poll
+my ($sslexternalport,$externalport,$browserusername,$browserpassword);
+my %collectors = ();
+foreach $site (@sitelst) {
+  next if (! defined $allinst{$site});
+  $inst = $allinst{$site};
+
+  if (defined $cfgs{$site}{sslexternalport}) {
+    $sslexternalport = (@{$cfgs{$site}{sslexternalport}})[$[];
+  } elsif (defined $cfgs{$inst}{sslexternalport}) {
+    $sslexternalport = (@{$cfgs{$inst}{sslexternalport}})[$[];
+  }
+  if (defined $cfgs{$site}{externalport}) {
+    $externalport = (@{$cfgs{$site}{externalport}})[$[];
+  } elsif (defined $cfgs{$inst}{externalport}) {
+    $externalport = (@{$cfgs{$inst}{externalport}})[$[];
+  }
+  if (defined $cfgs{$site}{browserusername}) {
+    $browserusername = (@{$cfgs{$site}{browserusername}})[$[];
+  } elsif (defined $cfgs{$inst}{browserusername}) {
+    $browserusername = (@{$cfgs{$inst}{browserusername}})[$[];
+  }
+  if (defined $cfgs{$site}{browserpassword}) {
+    $browserpassword = (@{$cfgs{$site}{browserpassword}})[$[];
+  } elsif (defined $cfgs{$inst}{browserpassword}) {
+    $browserpassword = (@{$cfgs{$inst}{browserpassword}})[$[];
+  }
+
+  if (defined $cfgs{$site}{collector}) {
+    my ($coll,$name,$aliases,$addrtype,$length,@addrs,$ip,$i);
+    foreach $coll (@{$cfgs{$site}{collector}}) {
+      if ($coll =~ /^\d+\.\d+\.\d+\.\d+$/) {
+        #logit($mysname,1,"Collector: $coll") if ($debug);
+      } else {
+        ($name,$aliases,$addrtype,$length,@addrs) = gethostbyname($coll);
+        foreach $ip (@addrs) {
+          $i = join('.',(unpack('C4',$ip)));
+          #logit($mysname,1,"Collector IP for $coll: $i") if ($debug);
+          if ($sslexternalport) {
+            $collectors{$coll}{$i}{sslexternalport} = $sslexternalport;
+          } else {
+            $collectors{$coll}{$i}{externalport} = $externalport;
+          }
+          $collectors{$coll}{$i}{browserusername} = $browserusername;
+          $collectors{$coll}{$i}{browserpassword} = $browserpassword;
+        }
+      }
+    }
+  }
+}
+
+if ($debug) {
+  foreach my $c (sort keys %collectors) {
+    foreach my $i (sort keys %{$collectors{$c}}) {
+      foreach my $k (sort keys %{$collectors{$c}{$i}}) {
+        my $v = $collectors{$c}{$i}{$k};
+        print "$c $i $k $v\n";
+      }
+    }
+  }
+}
+
+
+# Generate the following hashes:
+#   %cdown{cluster}{server}
+#   %czero{cluster}{server}
+#   %cok{cluster}{server}
+#   %sdown{server}{cluster}
+#   %szero{server}{cluster}
+#   %sok{server}{cluster}
+#   %clusters{cluster}
+#   %servers{server}
+# @{$NODESITE{$site}} is generated from %cok{cluster}
+my (%NODESITE,%clusters,%servers,%cdown,%sdown,%czero,%szero,%cok,%sok);
+foreach $site (sort keys %sitehsh) {
+  $inst = $allinst{$site};
+  if (defined $cfgs{$site}{node}) {
+    push(@{$NODESITE{$site}},@{$cfgs{$site}{node}});
+  } else {
+    if (defined $cfgs{$inst}{lbcurrent}) {
+      $key = (@{$cfgs{$inst}{lbcurrent}})[$[];
+    } elsif (defined $cfgs{$inst}{dirstore}) {
+      $key = "dirstore";
+    } elsif (defined $cfgs{$inst}{allnodes}) {
+      $key = (@{$cfgs{$inst}{allnodes}})[$[];
+    } else {
+      logit($mysname,2,"Unable to determine current list of nodes");
+    }
+    logit($mysname,1,"Key = $key") if ($debug);
+    if (defined $loaded{$key}) {
+      my ($c,$p,$w,$s);
+      foreach my $entry (@{$sitehsh{$site}}) {
+        ($c,$p) = split(/[:]/,$entry);
+        $p = "80" unless ($p);
+      
+        if (defined $loaded{$key}{data}{$c}{$p}) {
+          $clusters{$site}++;             # Track list of clusters
+          foreach $w (keys %{$loaded{$key}{data}{$c}{$p}}) {
+            foreach $s (keys %{$loaded{$key}{data}{$c}{$p}{$w}}) {
+              # Skip unknown names and caches (no logs there)
+              # Should have XX####X# and XX#XX###X# machines only
+              # (eg. se0101e1, px1si001e1, px1x345ae1, at0101ae1,
+              # at0101a, v10001e0 and v10001)
+              next if ($s !~ /^\w\w\d\d\d\d\w\d$|^\w\w\d\w\w\d\d\d\w\d$|^\w\w\d\w\d\d\d\w\w\d$|^\w\w\d\d\d\d\w\w\d$|^\w\w\d\d\d\d\w$|^\w\d\d\d\d\d\w\d$|^\w\d\d\d\d\d$/);
+              # Let's use the e0 interface
+              # or strip the e0 if necessary (eg. px1si001e0, px1x345ae0,
+              # at0101ae0 and v10001e0)
+              $s =~ s/e[0-9]$/e0/;
+              $s =~ s/e0$// if ($s =~ /^\w\w\d\w\w\d\d\d\w\d$|^\w\w\d\w\d\d\d\w\w\d$|^\w\w\d\d\d\d\w\w\d$|^\w\d\d\d\d\d\w\d$/);
+              $servers{$s}++;             # Track list of servers
+              # Generate lists of servers in clusters and the other way too
+              if ($w < 0) {
+                $cdown{$site}{$s}++;
+                $sdown{$s}{$site}++;
+              } elsif ($w == 0) {
+                $czero{$site}{$s}++;
+                $szero{$s}{$site}++;
+              } else {
+                $cok{$site}{$s}++;
+                $sok{$s}{$site}++;
+              }
+              logit($mysname,1,"Track $c, $p, $w, $s as $site")
+                if ($debug);
+            }
+          }
+        }
+      }
+      @{$NODESITE{$site}} = sort keys %{$cok{$site}};
+    }
+  }
+}
+
+# Supplement $lcscurrent nodes for the sites if requested
+my %lcsadd = ();
+foreach $site (sort keys %sitehsh) {
+  $inst = $allinst{$site};
+  if (defined $cfgs{$inst}{lcscurrent}) {
+    $key = (@{$cfgs{$inst}{lcscurrent}})[$[];
+    if (defined $loaded{$key}) {
+      my %thsh = ();
+      grep($thsh{$site}{$_}++, @{$NODESITE{$site}});
+      if (defined $cfgs{$site}{addlcsnodelist} &&
+          defined $loaded{$key}{data}{$site}) {
+        foreach my $node (keys %{$loaded{$key}{data}{$site}}) {
+          if (! (defined $thsh{$site}{$node} ||
+                 (defined $czero{$site} && defined $czero{$site}{$node}) ||
+                 (defined $cdown{$site} && defined $cdown{$site}{$node}))) {
+            my $loginterval = $interval;
+            $loginterval = (@{$cfgs{$site}{loginterval}})[$[]
+              if (defined $cfgs{$site}{loginterval});
+            my $inttime = $mytime - ($mytime % $loginterval);
+            if ($loaded{$key}{data}{$site}{$node} >= $inttime) {
+              $lcsadd{$site}{$node}++;
+              $thsh{$site}{$node}++;
+            } else {
+              my $diff = $inttime - $loaded{$key}{data}{$site}{$node};
+              logit($mysname,1,
+                    "Skipping LCS add of $node for $site ($diff seconds old)")
+                if ($debug);
+            }
+          }
+        }
+        if (defined $lcsadd{$site}) {
+          @{$NODESITE{$site}} = sort keys %{$thsh{$site}};
+        }
+      }
+    }
+  }
+}
+
+# WARNING: Debug output information here will be very large
+if ($debug) {
+  my($c,$s);
+  foreach $site (sort keys %sitehsh) {
+    my $out = "$site:\n".
+              "\tOK:\n".
+              "\t\t".join(',',sort keys %{$cok{$site}})."\n".
+              "\tZERO:\n".
+              "\t\t".join(',',sort keys %{$czero{$site}})."\n".
+              "\tDOWN:\n".
+              "\t\t".join(',',sort keys %{$cdown{$site}})."\n";
+    $out .=   "\tLCSADD:\n".
+              "\t\t".join(',',sort keys %{$lcsadd{$site}})."\n"
+      if (defined $lcsadd{$site});
+    logit($mysname,1,$out);
+  }
+  logit($mysname,1,"\nServer information:");
+  foreach $s (sort keys %servers) {
+    logit($mysname,1,"$s: OK:".join(',',sort keys %{$sok{$s}}).
+          " ZERO:".join(',',sort keys %{$szero{$s}}).
+          " DOWN:".join(',',sort keys %{$sdown{$s}}))
+      if (keys %{$szero{$s}} || keys %{$sdown{$s}});
+  }
+  logit($mysname,1,"\nCluster information:");
+  foreach $c (sort keys %clusters) {
+    logit($mysname,1,"$c: OK:".join(',',sort keys %{$cok{$c}}).
+          " ZERO:".join(',',sort keys %{$czero{$c}}).
+          " DOWN:".join(',',sort keys %{$cdown{$c}}))
+      if (keys %{$czero{$c}} || keys %{$cdown{$c}});
+  }
+}
+
+my $collectorspolled;
+my %data = ();
+my %lcserr = ();
+foreach $site (@sitelst) {
+  my (@dirlist,@fbdirlist,@rsdirlist,@filelst);
+  my ($fbdir,$rsdir,$uid,$gid);
+  my ($miss,$nts,$file,$plex,$ignore,$i);
+  $inst = $allinst{$site};
+
+  $dir = (@{$cfgs{$site}{archivedirectory}})[$[];
+  $fbdir = "$dir/feedback";
+  $rsdir = "$dir/results";
+
+  my $pext = "";
+  my $pregex = "";
+  if (defined $cfgs{$site}{partialextension}) {
+    $pext = (@{$cfgs{$site}{partialextension}})[$[];
+  } elsif (defined $cfgs{$inst}{partialextension}) {
+    $pext = (@{$cfgs{$inst}{partialextension}})[$[];
+  }
+  if ($pext) {
+    my ($g,$e) = pdate2globnexpr($pext);
+    $pregex = '(\.'.$e.')';
+  }
+
+  ($uid,$gid) = (stat($dir))[$[+4,$[+5];
+  opendir(DIR, $dir);
+  @dirlist = readdir(DIR);
+  closedir(DIR);
+  if (! -d $fbdir) {
+    mkdir($fbdir,0775);
+    chown($uid,$gid,$fbdir);
+  }
+  opendir(DIR, $fbdir);
+  @fbdirlist = readdir(DIR);
+  closedir(DIR);
+  if (! -d $rsdir) {
+    mkdir($rsdir,0775);
+    chown($uid,$gid,$rsdir);
+  }
+  opendir(DIR, $rsdir);
+  @rsdirlist = readdir(DIR);
+  closedir(DIR);
+
+  foreach $miss (grep ($_ =~ /^missing\./ || $_ =~ /^lcs-miss\./, @fbdirlist)) {
+    # Strip off the missing or lcs-miss
+    ($nts = $miss) =~ s/^(.*?)\.//;
+    ($node, $file, $ts) = ($nts =~ m@(.*?)\.(.*)\.(.*?)$@);
+
+    $plex = $node;
+    $plex = substr($node,$[,1) if ($plex =~ /^[adg]/);
+    $plex = substr($node,$[,2) if ($plex =~ /^[vwz]/);
+    logit($mysname,1,"Looking for plex=$plex, node=$node, file=$file, ts=$ts")
+      if ($debug);
+    $ignore = 0;
+    if (defined $cfgs{$inst}{ignore}) {
+      foreach $i (@{$cfgs{$inst}{ignore}}) {
+        if ($node eq $i || $node =~ /^$i/) {
+          $ignore = 1;
+          last;
+        }
+      }
+    }
+    if (grep ($_ =~ /^resolved-found\.$nts$/ || $_ =~ /^resolved-skip\.$nts$/ ||
+              $_ =~ /^lcs-found\.$nts$/ || $_ =~ /^lcs-skip\.$nts$/ ||
+              $_ =~ /^lcs-skip\.$node$/ || $ignore != 0 ||
+              $_ =~ /^lcs-skip\.$plex$/, @rsdirlist)) {
+      if (grep ($_ =~ /^resolved-found\.$nts$/ ||
+          $_ =~ /^lcs-found\.$nts$/, @rsdirlist)) {
+        $lcserr{bysite}{$site}{$node}{lcsfound}++;
+        $lcserr{bynode}{$node}{$site}{lcsfound}++;
+        $lcserr{count}{lcsfound}++;
+      }
+      if (grep ($_ =~ /^resolved-skip\.$nts$/ || $_ =~ /^lcs-skip\.$nts$/ ||
+                $_ =~ /^lcs-skip\.$node$/ || $ignore != 0 ||
+                $_ =~ /^lcs-skip\.$plex$/, @rsdirlist)) {
+        $lcserr{bysite}{$site}{$node}{lcsskip}++;
+        $lcserr{bynode}{$node}{$site}{lcsskip}++;
+        $lcserr{count}{lcsskip}++;
+      }
+      next;
+    }  else {
+      if (! $collectorspolled) {
+        logit($mysname,1,"==== Polling collectors for nodes lists ====");
+
+        # Loop on collectors gathering current clients
+        my %rethsh = ();
+        foreach my $cname (sort keys %collectors) {
+          foreach my $cip (sort keys %{$collectors{$cname}}) {
+            my ($browserusername,$browserpassword,$port) = ("","",0);
+            $rc = 0;
+            %rethsh = ();
+            if (defined $collectors{$cname}{$cip}{browserusername}) {
+              $browserusername = $collectors{$cname}{$cip}{browserusername};
+            }
+            if (defined $collectors{$cname}{$cip}{browserpassword}) {
+              $browserpassword = $collectors{$cname}{$cip}{browserpassword};
+            }
+            next if ($browserusername eq "" || $browserpassword eq "");
+            if (defined $collectors{$cname}{$cip}{sslexternalport}) {
+              $port = $collectors{$cname}{$cip}{sslexternalport};
+              $rc = get_sites_and_nodes_ssl($mysname,$cip,$browserusername,
+                                            $browserpassword,$port,$debug,
+                                            \%rethsh);
+            } elsif (defined $collectors{$cname}{$cip}{externalport}) {
+              $port = $collectors{$cname}{$cip}{externalport};
+              $rc = get_sites_and_nodes($mysname,$cip,$browserusername,
+                                        $browserpassword,$port,$debug,
+                                        \%rethsh);
+            }
+            if ($rc) {
+              logit($mysname,1,"Collector $cname=$cip ($rc)") if ($debug);
+              %{$data{BYCOLL}{$cname}} = %rethsh;
+              foreach my $s (keys %rethsh) {
+                foreach my $n (keys %{$rethsh{$s}}) {
+                  $data{BYSITE}{$s}{$n}{$cname}++;
+                }
+              }
+            } else {
+              logit($mysname,1,"Collector $cname ($cip) data unavailable");
+            }
+          }
+        }
+
+        if ($debug) {
+          foreach my $s (sort keys %{$data{BYSITE}}) {
+            foreach my $n (sort keys %{$data{BYSITE}{$s}}) {
+              print "SITE $s,$n,".
+                    join(';', (sort keys %{$data{BYSITE}{$s}{$n}})).
+                    ",$mytime\n";
+            }
+          }
+        }
+
+        if ($debug) {
+          foreach my $c (sort keys %{$data{BYCOLL}}) {
+            foreach my $s (sort keys %{$data{BYCOLL}{$c}}) {
+              print "COLL $c,$s,".
+                    join(';',(sort keys %{$data{BYCOLL}{$c}{$s}})).
+                    ",$mytime\n";
+            }
+          }
+        }
+        $collectorspolled=1;
+      }
+
+      if (! defined $data{BYSITE}{$site} ||
+          ! defined $data{BYSITE}{$site}{$node}) {
+        logit($mysname,1,"Communication error $site:$node:$nts")
+          if ($debug);
+        $lcserr{bysite}{$site}{$node}{lcscomm}++;
+        $lcserr{bynode}{$node}{$site}{lcscomm}++;
+        $lcserr{count}{lcscomm}++;
+        next;
+      } else {
+        # Do lcs_check
+        my $collector = (sort keys %{$data{BYSITE}{$site}{$node}})[$[];
+        @filelst = ();
+        if ($browserusername ne "" && $browserpassword ne "") {
+          # NOTE: No support for multiple IPs behind collector name
+          if ($sslexternalport ne "") {
+            @filelst = get_file_list_ssl($mysname,$collector,
+                                         $browserusername,$browserpassword,
+                                         $sslexternalport,$site,$node,$debug);
+          } elsif ($externalport ne "") {
+            @filelst = get_file_list($mysname,$collector,
+                                     $browserusername,$browserpassword,
+                                     $externalport,$site,$node,$debug);
+          }
+        }
+        if ( $filelst[0] eq "LCS-FAILED-HTTP-REQUEST" ) {
+          # Unable to contact client - no files list obtained - page human
+          logit($mysname,1,"File list failed $site:$node($collector)")
+            if ($debug);
+          $lcserr{bysite}{$site}{$node}{lcsnodir}++;
+          $lcserr{bynode}{$node}{$site}{lcsnodir}++;
+          $lcserr{count}{lcsnodir}++;
+          next;
+        } elsif (grep(("$node.$_" =~ /^$nts$zregex$/ ||
+                       ($pregex ne "" &&
+                        "$node.$_" =~ /^$nts$pregex$zregex$/)),
+                      @filelst)) {
+          # File found on client, just not transferred yet - do nothing
+          logit($mysname,1,"File $nts waiting on client, not yet transferred")
+            if ($debug);
+          $lcserr{bysite}{$site}{$node}{lcsnoxfer}++;
+          $lcserr{bynode}{$node}{$site}{lcsnoxfer}++;
+          $lcserr{count}{lcsnoxfer}++;
+          next;
+        } else {
+          opendir(DIR, $dir);
+          @dirlist = readdir(DIR);
+          closedir(DIR);
+          if (grep(($_ =~ /^$nts$zregex$/ ||
+                    ($pregex ne "" && $_ =~ /^$nts$pregex$zregex$/)),
+                   @dirlist)) {
+            # File exists on collector
+            logit($mysname,1,
+                  "File $nts waiting on server, not yet resolved-found")
+              if ($debug);
+            $lcserr{bysite}{$site}{$node}{lcsonsvr}++;
+            $lcserr{bynode}{$node}{$site}{lcsonsvr}++;
+            $lcserr{count}{lcsonsvr}++;
+            next;
+          } else {
+            # File does not exist on server, create resolved-skip
+            logit($mysname,1,
+                  "File $nts not found on LCS client, creating resolved-skip")
+              if ($debug);
+            if ($miss =~ /^lcs-miss\./) {
+              open(SKIP,">$rsdir/lcs-skip.$nts");
+              close(SKIP);
+              chown($uid,$gid,"$rsdir/lcs-skip.$nts");
+              chmod(0644,"$rsdir/lcs-skip.$nts");
+              logit($mysname,1,"Created lcs-skip.$nts");
+            } else {
+              open(SKIP,">$rsdir/resolved-skip.$nts");
+              close(SKIP);
+              chown($uid,$gid,"$rsdir/resolved-skip.$nts");
+              chmod(0644,"$rsdir/resolved-skip.$nts");
+              logit($mysname,1,"Created resolved-skip.$nts");
+            }
+            # Assuming node was responding, because either load balancer
+            #  generated the node list, or allnodes/dirstore says it should be
+            logit($mysname,1,"Not creating logs for $site:$collector");
+            $lcserr{bysite}{$site}{$node}{httprun}++;
+            $lcserr{bynode}{$node}{$site}{httprun}++;
+            $lcserr{count}{httprun}++;
+          }
+          next;
+        }
+      }
+    }
+  }
+}
+
+if (! $noalert && keys %lcserr &&
+    ((defined $lcserr{count}{lcscomm} && $lcserr{count}{lcscomm} > 0) ||
+     (defined $lcserr{count}{lcsnodir} && $lcserr{count}{lcsnodir} > 0) ||
+     (defined $lcserr{count}{lcsnoxfer} && $lcserr{count}{lcsnoxfer} > 0) ||
+     (defined $lcserr{count}{httprun} && $lcserr{count}{httprun} > 0))) {
+  my ($alertnodes,$sitelst,$alert,$allnodelst,$options);
+  my @alertlst = sort ('lcscomm','lcsnodir','lcsnoxfer','httprun');
+  my %ndata = ();
+
+  if ($bysite) {
+    foreach $site (sort keys %{$lcserr{bysite}}) {
+      my $cmd = "";
+      $options = "";
+      $inst = $allinst{$site};
+      if (defined $cfgs{$site}{notifycommand}) {
+        # Separate notification for this site
+        $cmd = (@{$cfgs{$site}{notifycommand}})[$[];
+        if (defined $cfgs{$site}{notifymailopt} &&
+            defined $cfgs{$site}{notifymailto}) {
+          $cmd .= " ".(@{$cfgs{$site}{notifymailopt}})[$[].
+                  " ".(@{$cfgs{$site}{notifymailto}})[$[];
+        }
+        if (defined $cfgs{$site}{notifypageopt} &&
+            defined $cfgs{$site}{notifypageto}) {
+          $cmd .= " ".(@{$cfgs{$site}{notifypageopt}})[$[].
+                  " ".(@{$cfgs{$site}{notifypageto}})[$[];
+        }
+        if (defined $cfgs{$site}{notifyeventopt} &&
+            defined $cfgs{$site}{notifyeventid}) {
+          $cmd .= " ".(@{$cfgs{$site}{notifyeventopt}})[$[].
+                  " ".(@{$cfgs{$site}{notifyeventid}})[$[];
+        }
+        my %nodehsh = ();
+        my %allnodehsh = ();
+        $alertnodes = $allnodelst = "";
+        foreach $alert (@alertlst) {
+          foreach $node (keys %{$lcserr{bysite}{$site}}) {
+            if (defined $lcserr{bysite}{$site}{$node}{$alert} &&
+                $lcserr{bysite}{$site}{$node}{$alert} > 0) {
+              $nodehsh{$node}++;
+              $allnodehsh{$node}++;
+            }
+          }
+          if (keys %nodehsh) {
+            $alertnodes .= ";" if ($alertnodes ne "");
+            $alertnodes .= "$alert=".join(",",sort keys %nodehsh);
+            %nodehsh = ();
+          }
+        }
+        if ($alertnodes ne "") {
+          $allnodelst = join(",", sort keys %allnodehsh);
+          $options = " -options '-p $poll -g \"$mysname\"".
+                     " -k \"$site:$allnodelst\"'";
+          $cmd .= "$options 'PAGE-0471 -".
+                  " $mysname errors on $host for $site ($alertnodes)'";
+          system($cmd);
+        }
+      } elsif (defined $cfgs{$inst}{notifycommand}) {
+        # Consolidated notification for this site
+        $cmd = (@{$cfgs{$inst}{notifycommand}})[$[];
+        if (defined $cfgs{$inst}{notifymailopt} &&
+            defined $cfgs{$inst}{notifymailto}) {
+          $cmd .= " ".(@{$cfgs{$inst}{notifymailopt}})[$[].
+                  " ".(@{$cfgs{$inst}{notifymailto}})[$[];
+        }
+        if (defined $cfgs{$inst}{notifypageopt} &&
+            defined $cfgs{$inst}{notifypageto}) {
+          $cmd .= " ".(@{$cfgs{$inst}{notifypageopt}})[$[].
+                  " ".(@{$cfgs{$inst}{notifypageto}})[$[];
+        }
+        if (defined $cfgs{$inst}{notifyeventopt} &&
+            defined $cfgs{$inst}{notifyeventid}) {
+          $cmd .= " ".(@{$cfgs{$inst}{notifyeventopt}})[$[].
+                  " ".(@{$cfgs{$inst}{notifyeventid}})[$[];
+        }
+        foreach $node (keys %{$lcserr{bysite}{$site}}) {
+          foreach $alert (@alertlst) {
+            if (defined $lcserr{bysite}{$site}{$node}{$alert} &&
+                $lcserr{bysite}{$site}{$node}{$alert} > 0) {
+              $ndata{$inst}{alertnodes}{$alert}{$node}++;
+            }
+          }
+        }
+        $ndata{$inst}{cmd} = $cmd unless (defined $ndata{$inst}{cmd});
+        $ndata{$inst}{sites}{$site}++;
+      }
+    }
+    # Loop on all the grouped, instance-based commands to run (if needed)
+    if (keys %ndata) {
+      foreach $inst (sort keys %ndata) {
+        my $cmd = $ndata{$inst}{cmd};
+        my %nodehsh = ();
+        my %allnodehsh = ();
+        $alertnodes = $allnodelst = "";
+        foreach $alert (@alertlst) {
+          if (defined $ndata{$inst}{alertnodes}{$alert}) {
+            foreach $node (keys %{$ndata{$inst}{alertnodes}{$alert}}) {
+              $nodehsh{$node}++;
+              $allnodehsh{$node}++;
+            }
+          }
+          if (keys %nodehsh) {
+            $alertnodes .= ";" if ($alertnodes ne "");
+            $alertnodes .= "$alert=".join(",",sort keys %nodehsh);
+            %nodehsh = ();
+          }
+        }
+        if ($alertnodes ne "") {
+          $sitelst = join(",",sort keys %{$ndata{$inst}{sites}});
+          $allnodelst = join(",", sort keys %allnodehsh);
+          $options = " -options '-p $poll -g \"$mysname\"".
+                     " -k \"$sitelst:$allnodelst\"'";
+          $cmd .= "$options 'PAGE-0471 -".
+                  " $mysname errors on $host for $sitelst ($alertnodes)'";
+          system($cmd);
+        }
+      }
+    }
+  } else {
+    foreach $node (sort keys %{$lcserr{bynode}}) {
+      my $cmd = "";
+      my $options = "";
+      foreach $site (sort keys %{$lcserr{bynode}{$node}}) {
+        $inst = $allinst{$site};
+        if (defined $cfgs{$site}{notifycommand}) {
+          # Separate notification for this site
+          $cmd = (@{$cfgs{$site}{notifycommand}})[$[];
+          if (defined $cfgs{$site}{notifymailopt} &&
+              defined $cfgs{$site}{notifymailto}) {
+            $cmd .= " ".(@{$cfgs{$site}{notifymailopt}})[$[].
+                    " ".(@{$cfgs{$site}{notifymailto}})[$[];
+          }
+          if (defined $cfgs{$site}{notifypageopt} &&
+              defined $cfgs{$site}{notifypageto}) {
+            $cmd .= " ".(@{$cfgs{$site}{notifypageopt}})[$[].
+                    " ".(@{$cfgs{$site}{notifypageto}})[$[];
+          }
+          if (defined $cfgs{$site}{notifyeventopt} &&
+              defined $cfgs{$site}{notifyeventid}) {
+            $cmd .= " ".(@{$cfgs{$site}{notifyeventopt}})[$[].
+                    " ".(@{$cfgs{$site}{notifyeventid}})[$[];
+          }
+          $alertnodes = "";
+          foreach $alert (@alertlst) {
+            if (defined $lcserr{bynode}{$node}{$site}{$alert} &&
+                $lcserr{bynode}{$node}{$site}{$alert} > 0) {
+              $alertnodes .= ";" if ($alertnodes ne "");
+              $alertnodes .= $alert;
+            }
+          }
+          if ($alertnodes ne "") {
+            $options = " -host $node -options '-h $node -p $poll".
+                       " -g \"$mysname\" -k \"$site:$node\"'";
+            $cmd .= "$options 'PAGE-0471 -".
+                    " $mysname errors on $host for $site ($alertnodes)'";
+            system($cmd);
+          }
+        } elsif (defined $cfgs{$inst}{notifycommand}) {
+          # Consolidated notification for this node
+          $cmd = (@{$cfgs{$inst}{notifycommand}})[$[];
+          if (defined $cfgs{$inst}{notifymailopt} &&
+              defined $cfgs{$inst}{notifymailto}) {
+            $cmd .= " ".(@{$cfgs{$inst}{notifymailopt}})[$[].
+                    " ".(@{$cfgs{$inst}{notifymailto}})[$[];
+          }
+          if (defined $cfgs{$inst}{notifypageopt} &&
+              defined $cfgs{$inst}{notifypageto}) {
+            $cmd .= " ".(@{$cfgs{$inst}{notifypageopt}})[$[].
+                    " ".(@{$cfgs{$inst}{notifypageto}})[$[];
+          }
+          if (defined $cfgs{$inst}{notifyeventopt} &&
+              defined $cfgs{$inst}{notifyeventid}) {
+            $cmd .= " ".(@{$cfgs{$inst}{notifyeventopt}})[$[].
+                    " ".(@{$cfgs{$inst}{notifyeventid}})[$[];
+          }
+          $ndata{$inst}{$node}{cmd} = $cmd
+            unless (defined $ndata{$inst}{$node}{cmd});
+          foreach $alert (@alertlst) {
+            if (defined $lcserr{bynode}{$node}{$site}{$alert} &&
+                $lcserr{bynode}{$node}{$site}{$alert} > 0) {
+              $ndata{$inst}{$node}{alertnodes}{$alert}++;
+              $ndata{$inst}{$node}{sites}{$site}++;
+            }
+          }
+        }
+      }
+    }
+    # Loop on all the grouped, instance-based commands to run (if needed)
+    if (keys %ndata) {
+      foreach $inst (sort keys %ndata) {
+        foreach $node (sort keys %{$ndata{$inst}}) {
+          my $cmd = $ndata{$inst}{$node}{cmd};
+          $alertnodes = "";
+          foreach $alert (@alertlst) {
+            if (defined $ndata{$inst}{$node}{alertnodes} &&
+                defined $ndata{$inst}{$node}{alertnodes}{$alert}) {
+              $alertnodes .= ";" if ($alertnodes ne "");
+              $alertnodes .= $alert;
+            }
+          }
+          if ($alertnodes ne "") {
+            $sitelst = join(",",sort keys %{$ndata{$inst}{$node}{sites}});
+            $options = " -host $node -options '-h $node -p $poll".
+                       " -g \"$mysname\" -k \"$sitelst:$node\"'";
+            $cmd .= "$options 'PAGE-0471 -".
+                    " $mysname errors on $host for $sitelst ($alertnodes)'";
+            system($cmd);
+          }
+        }
+      }
+    }
+  }
+}
+
+# Clean up PID "lock" file
+unlink($pidfile);
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-bysite] [-debug] [-noalert] [-poll poll] {ALL | <site>}\n".
+        "  where: poll       - how often this script runs in seconds\n".
+        "                      (default: $dfltpoll)\n".
+        "         -bysite    - alert by site, default is by node\n".
+        "         -debug     - debug mode\n".
+        "         -noalert   - do not issue notifies\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+sub mkdirs {
+  my($dir,$uid,$gid,$perms) = @_;
+  my($d,$subdir);
+
+  return if ($dir !~ /^\//);
+
+  $dir =~ s%//%/%g;
+  $dir =~ s%^/%%g;
+  $subdir = "";
+  foreach $d (split('/',$dir)) {
+    $subdir .= "/$d";
+    next if (-d $subdir);
+    mkdir($subdir,$perms);
+    chown($uid,$gid,$subdir);
+  }
+}
+
+# Input: pattern
+# Output: (globpattern,regexpattern)
+sub pdate2globnexpr {
+  my($i) = @_;
+  my ($tglob,$texpr,$tg,$te,$match);
+  my %pdatehsh = (
+    # %a - abbreviated weekday name
+    '%a' => [ '???', '(Sun|Mon|Tue|Wed|Thu|Fri|Sat)' ],
+    # %A - full weekday name
+    '%A' => [ '*', '(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)' ],
+    # %b - abbreviated month name
+    '%b' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %B - full month name
+    '%B' => [ '*', '(January|February|March|April|May|June|July|August|September|October|November|December)' ],
+    # %C - first two digits of the four-digit year as a decimal number (00-99)
+    '%C' => [ '??', '\d\d' ],
+    # %d - day of the month as a decimal number (01-31)
+    '%d' => [ '??', '\d\d' ],
+    # %D - date in the format equivalent to %m/%d/%y
+    '%D' => [ '??/??/??', '\d\d/\d\d/\d\d' ],
+    # %e - day of the month as a decimal number (1-31) - space filled
+    '%e' => [ '??', '(\s\d|\d\d)' ],
+    # %h - abbreviated month name (like %b)
+    '%h' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %H - hour (24-hour clock) as a decimal number (00-23)
+    '%H' => [ '??', '\d\d' ],
+    # %j - day of year as a decimal number (001-366)
+    '%j' => [ '???', '\d\d\d' ],
+    # %k - 24-hour-clock hour clock (0 to 23) - space filled
+    '%k' => [ '??', '(\s\d|\d\d)' ],
+    # %m - month of year as a decimal number (01-12)
+    '%m' => [ '??', '\d\d' ],
+    # %M - minutes as a decimal number (00- 59)
+    '%M' => [ '??', '\d\d' ],
+    # %p - either AM or PM
+    '%p' => [ '??', '\w\w' ],
+    # %r - 12-hour clock time (01-12)
+    '%r' => [ '??', '\d\d' ],
+    # %S - seconds as a decimal number (00- 59)
+    '%S' => [ '??', '\d\d' ],
+    # %s - seconds since epoch
+    '%s' => [ '*', '\d+' ],
+    # %T - 24-hour clock (00-23) in the format equivalent to HH:MM:SS
+    '%T' => [ '??:??:??', '\d\d:\d\d:\d\d' ],
+    # %u - weekday as a decimal number from 1-7 (Sunday = 7)
+    '%u' => [ '?', '[0-7]' ],
+    # %U - week of the year as a decimal number[00 - 53]
+    '%U' => [ '??', '\d\d' ],
+    # %w - weekday as a decimal number from 0-6 (Sunday = 0)
+    '%w' => [ '?', '[0-6]' ],
+    # %W - week number of the year as a decimal number (00-53)
+    '%W' => [ '??', '\d\d' ],
+    # %y - last two numbers of the year
+    '%y' => [ '??', '\d\d' ],
+    # %Y - four-digit year as a decimal number
+    '%Y' => [ '????', '\d\d\d\d' ],
+  );
+
+  $tglob = $texpr = $i;
+  $tglob =~ s!\%\%!\001!g;
+  $texpr =~ s!\%\%!\001!g;
+  foreach $match (sort keys %pdatehsh) {
+    $tg = (@{$pdatehsh{$match}})[$[];
+    $te = (@{$pdatehsh{$match}})[$[+1];
+    $tglob =~ s!$match!$tg!g;
+    $texpr =~ s!$match!$te!g;
+  }
+  $tglob =~ s!\001!%!g;
+  $texpr =~ s!\001!%!g;
+
+  ($tglob,$texpr);
+}
+
+sub get_node_list {
+  my ($me,$lcs,$user,$passwd,$port,$site,$debug) = @_;
+  my @nodes = ();
+
+  my $url = sprintf("http://%s:%d/",$lcs,$port);
+
+  logit($me,1,"get_node_list($me,$lcs,$user,$passwd,$port,$site,$debug)")
+    if ($debug);
+
+  # Create a user agent object
+  my $ua = new LWP::UserAgent;
+  $ua->agent("LCS Flush/0.1 ".$ua->agent);
+
+  # Make the request
+  my $req = HTTP::Request->new(GET => $url);
+  $req->authorization_basic($user,$passwd);
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+    logit($me,1,"Success") if ($debug);
+    @nodes = ($res->content =~ m@HREF="/directory/$site/(.+?)"@g);
+    logit($me,1,"Nodes = ".join(' ',@nodes)) if ($debug);
+  } else {
+    logit($me,1,"Failed: ".$res->message) if ($debug);
+    return undef;
+  }
+  return @nodes;
+}
+
+sub get_node_list_ssl {
+  my ($me,$lcs,$user,$passwd,$port,$site,$debug) = @_;
+  my ($page,$result,%headers);
+  my ($timeout);
+  my @nodes = ();
+
+  logit($me,1,"get_node_list_ssl($me,$lcs,$user,$passwd,$port,$site,$debug)")
+    if ($debug);
+
+  $timeout = 10;
+  eval {
+    local $SIG{__WARN__};
+    local $SIG{'__DIE__'} = "DEFAULT";
+    local $SIG{'ALRM'} = sub { die "Timeout Alarm" };
+    alarm($timeout);
+    ($page, $result, %headers) =
+      get_https($lcs, $port, '/',
+        make_headers('User-Agent' => 'LCS Flush/0.1',
+                     'Authorization' =>
+                       'Basic ' . MIME::Base64::encode("$user:$passwd",''))
+               );
+  };
+  alarm(0); # Cancel the alarm
+
+  if ($@) {
+    return;
+  }
+
+  # Check the outcome of the response
+  if ($result !~ /ERROR/i) {
+    logit($me,1,"Success") if ($debug);
+    @nodes = ($page =~ m@HREF="/directory/$site/(.+?)"@g);
+    logit($me,1,"Nodes = ".join(' ',@nodes)) if ($debug);
+  } else {
+    logit($me,1,"Failed: ".$result) if ($debug);
+    return undef;
+  }
+  return @nodes;
+}
+
+# Populate hsh{site}{node}
+sub get_sites_and_nodes {
+  my ($me,$lcs,$user,$passwd,$port,$debug,$hshref) = @_;
+  my $tot = 0;
+
+  my $url = sprintf("http://%s:%d/",$lcs,$port);
+
+  logit($me,1,"get_sites_and_nodes($me,$lcs,$user,$passwd,$port,$debug,.)")
+    if ($debug);
+
+  # Create a user agent object
+  my $ua = new LWP::UserAgent;
+  $ua->agent("LCS Flush/0.1 ".$ua->agent);
+
+  # Make the request
+  my $req = HTTP::Request->new(GET => $url);
+  $req->authorization_basic($user,$passwd);
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+    logit($me,1,"Success") if ($debug);
+    while ($res->content =~ m@HREF="/directory/(.+?)/(.+?)"@g) {
+      $hshref->{$1}{$2}++;
+      $tot++;
+    }
+  } else {
+    logit($me,1,"Failed: ".$res->message) if ($debug);
+    return undef;
+  }
+  return $tot;
+}
+
+# Populate hsh{site}{node}
+sub get_sites_and_nodes_ssl {
+  my ($me,$lcs,$user,$passwd,$port,$debug,$hshref) = @_;
+  my $tot = 0;
+  my ($page,$result,%headers);
+  my ($timeout);
+
+  logit($me,1,"get_sites_and_nodes_ssl($me,$lcs,$user,$passwd,$port,$debug,.)")
+    if ($debug);
+
+  $timeout = 10;
+  eval {
+    local $SIG{__WARN__};
+    local $SIG{'__DIE__'} = "DEFAULT";
+    local $SIG{'ALRM'} = sub { die "Timeout Alarm" };
+    alarm($timeout);
+    ($page, $result, %headers) =
+      get_https($lcs, $port, '/',
+        make_headers('User-Agent' => 'LCS Flush/0.1',
+                     'Authorization' =>
+                       'Basic ' . MIME::Base64::encode("$user:$passwd",''))
+               );
+  };
+  alarm(0); # Cancel the alarm
+
+  if ($@) {
+    return;
+  }
+
+  # Check the outcome of the response
+  if ($result !~ /ERROR/i) {
+    logit($me,1,"Success") if ($debug);
+    while ($page =~ m@HREF="/directory/(.+?)/(.+?)"@g) {
+      $hshref->{$1}{$2}++;
+      $tot++;
+    }
+  } else {
+    logit($me,1,"Failed: ".$result) if ($debug);
+    return undef;
+  }
+  return $tot;
+}
+
+sub get_file_list {
+  my ($me,$lcs,$user,$passwd,$port,$site,$node,$debug) = @_;
+  my @files = ();
+
+  my $url = sprintf("http://%s:%d/directory/%s/%s",$lcs,$port,$site,$node);
+
+  logit($me,1,"get_file_list($me,$lcs,$user,$passwd,$port,$site,$node,$debug)")
+    if ($debug);
+
+  # Create a user agent object
+  my $ua = new LWP::UserAgent;
+  $ua->agent("LCS Flush/0.1 " . $ua->agent);
+
+  # Make the request
+  my $req = HTTP::Request->new(GET => $url);
+  $req->authorization_basic($user, $passwd);
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+    logit($me,1,"Success") if ($debug);
+    @files = ($res->content =~ m@HREF="/file/(.+?)/$site/$node"@g);
+    logit($me,1,"Files = ".join(' ',@files)) if ($debug);
+  } else {
+    logit($me,1,"Failed: ".$res->message) if ($debug);
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+  return @files;
+}
+
+sub get_file_list_ssl {
+  my ($me,$lcs,$user,$passwd,$port,$site,$node,$debug) = @_;
+  my ($page,$result,%headers);
+  my ($timeout);
+  my @files = ();
+
+  my $url = sprintf( "http://%s:%d/directory/%s/%s", $lcs, $port, $site, $node );
+
+  logit($me,1,
+        "get_file_list_ssl($me,$lcs,$user,$passwd,$port,$site,$node,$debug)")
+    if ($debug);
+
+  $timeout = 10;
+  eval {
+    local $SIG{__WARN__};
+    local $SIG{'__DIE__'} = "DEFAULT";
+    local $SIG{'ALRM'} = sub { die "Timeout Alarm" };
+    alarm($timeout);
+    ($page, $result, %headers) =
+      get_https($lcs, $port, "/directory/$site/$node",
+        make_headers('User-Agent' => 'LCS Flush/0.1',
+                     'Authorization' =>
+                       'Basic ' . MIME::Base64::encode("$user:$passwd",''))
+               );
+  };
+  alarm(0); # Cancel the alarm
+
+  if ($@) {
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+
+  # Check the outcome of the response
+  if ($result !~ /ERROR/i) {
+    logit($me,1,"Success") if ($debug);
+    @files = ($page =~ m@HREF="/file/(.+?)/$site/$node"@g);
+    logit($me,1,"Files = ".join(' ',@files)) if ($debug);
+  } else {
+    logit($me,1,"Failed: ".$result) if ($debug);
+    return "LCS-FAILED-HTTP-REQUEST";
+  }
+  return @files;
+}
+
+print "$main::running_under_some_shell\n";

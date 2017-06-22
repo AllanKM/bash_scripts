@@ -1,0 +1,25 @@
+#!/bin/ksh
+
+echo "Checking pubsinst user ID"
+id pubinst || /fs/system/tools/auth/bin/mkeiuser -f -r local pubinst apps
+
+echo "Changing ownership of content files to be owned by pubinst"
+chown -R pubinst.eiadm /www/system/tools/publish/ /logs/bNimble 
+#find /www -type d -name "htdocs" -exec chown -R pubinst.apps {} \;
+#find /www -type d -name "*cgi-bin" -exec chown -R pubinst.apps {} \;
+find /projects -type d -name "content" -exec chown -R pubinst.apps {} \;
+find /projects -type d -name "htdocs"  -exec chown -R pubinst.apps {} \;
+find /projects -type d -name "*cgi-bin" -exec chown -R pubinst.apps {} \;
+
+chmod -R 750 /www/system/tools/publish/ /logs/bNimble 
+chmod g+s /www/system/tools/publish/ /logs/bNimble 
+
+chown -R root.eiadm /www/system/tools/publish/bin/rc.bNimble2 
+chmod -R 740 /www/system/tools/publish/bin/rc.bNimble2 
+
+#find /www -type d -name "htdocs" -exec chmod -R 755 {} \;
+#find /www -type d -name "*cgi-bin" -exec chmod -R 755  {} \;
+find /projects -type d -name "content"  -exec chmod -R 755 {} \;
+find /projects -type d -name "htdocs"  -exec chmod -R 755 {} \;
+find /projects -type d -name "*cgi-bin" -exec chmod -R 755 {} \;
+

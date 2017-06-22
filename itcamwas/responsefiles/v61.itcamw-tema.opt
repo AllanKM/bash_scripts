@@ -1,0 +1,60 @@
+#############################################################################
+#
+# IBM Confidential
+# OCO Source Materials
+# 5724-C04
+#
+# Copyright IBM Corp. 2005
+# The source code for this program is not published or otherwise
+# divested of its trade secrets, irrespective of what has
+# been deposited with the U.S. Copyright Office.
+#
+#############################################################################
+
+# To install using this silent response file:
+#   1) copy this file to another location and modify the necessary parameters
+#   2) run "install.sh -q -h <candlehome> -p <silent_response_file>"
+#      - give an absolute path for the silent_response_file
+
+# Syntax rules:
+# - Comment lines begin with "#"
+# - Blank lines are ignored
+# - Parameter lines are PARAMETER=value (do not put space before the PARAMETER)
+# - Space before or after an equal sign is OK
+# - Parameter values should NOT contain the following characters $, =, or |
+
+# After installation most products will need to be configured before
+# use.  You can configure them using:
+#   1) the Manage Tivoli Enterprise Monitoring Services user interface
+#   2) the CandleConfig command line utility
+#   3) the CandleConfig silent config option
+# For information on using the silent config option look in the samples
+# directory under the install location
+
+# Data encryption key used for encrypting data sent between systems.
+# This key must be the same for all installations in an ITM environment.
+# The key is required and must be exactly 32 characters long.
+# Do not use the following characters in the key: $, =, or |
+#                      ....+....1....+....2....+....3..
+INSTALL_ENCRYPTION_KEY=f92*YRcn&*WuXVv9!yuwcHjmidDHD6jY
+
+# The platform for which products should be installed.
+# Refer to the install documentation for a full list of available platform codes.
+# If left commented out, the install will use the platform of the machine
+# on which the install is performed.
+INSTALL_FOR_PLATFORM=aix516
+
+# The product codes of the products to be installed.
+# This parameter can be given once for each product to install or
+# specifying 'all' will install all products for the given platform.
+# NOTE: Some products are not supported on some platforms.  Use the
+#       command line installer to determine what products are available
+#       on the platform.
+# IBM Tivoli Composite Application Manager for WebSphere Monitoring Agent
+INSTALL_PRODUCT=yn
+# Install all products
+#INSTALL_PRODUCT=all
+
+
+
+

@@ -1,0 +1,261 @@
+#!/bin/bash 
+
+usage() {
+  echo "USAGE: ${0##*/} -s <subscriber> -p <publisher> [-c <count>] [-T <topic{:topic}>] [-S <j|m>] [-P <j|m>]"
+  echo
+  echo "OPTIONS:"
+  echo "  -s <subscriber>     :  IP or hostname of the subscription target"
+  echo "  -p <publisher>      :  IP or hostname of the publishing target"
+  echo "  -c <count>          :  number of messages to publish/receive"
+  echo "  -T <topic{:topic}>  :  colon separated list of topics to publish messages to"
+  echo "  -P                  :  set publishing method to either (j)ms or (m)qtt [default JMS]"
+  echo "  -S                  :  set subscription method to either (j)ms or (m)qtt [default MQTT]"
+  echo "  -L                  :  calculate latency"
+  echo
+  exit 1
+}
+
+APP_PATH=${0%/*}
+PUB_METHOD=JMS
+SUB_METHOD=MQTT
+
+
+while getopts Ls:p:vc:T:P:S: opt; do
+  case $opt in
+  s)
+    SUB=$OPTARG
+    ;;
+
+  p)
+    PUB=$OPTARG
+    ;;
+
+  v)
+    DEBUG="y"
+    ;;
+
+  c)
+    case $OPTARG in
+    ''|*[!0-9]*) 
+      echo "Invalid number argument to -c : $OPTARG"
+      exit 1
+      ;;
+    *) 
+      COUNT=$OPTARG
+      ;;
+    esac
+    ;;
+
+  T)
+    TOPICS=$(echo $OPTARG | tr ":" " ")
+    ;;
+
+  P)
+    case $OPTARG in
+    [jJ])
+      PUB_METHOD=JMS
+      ;;
+
+    [mM])
+      PUB_METHOD=MQTT
+      ;;
+
+    *)
+      usage
+      exit 1
+      ;;
+    esac
+    ;;
+
+  S)
+    case $OPTARG in
+    [jJ])
+      SUB_METHOD=JMS
+      ;;
+
+    [mM])
+      SUB_METHOD=MQTT
+      ;;
+
+    *)
+      usage
+      exit 1
+      ;;
+    esac
+    ;;
+
+  L)
+    LATENCY=1
+    OPT_ARGS="$OPT_ARGS -L "
+    TOPICS="events/hpods/latency/$(hostname)"
+    ;;
+
+  *)
+    usage
+    ;;
+  esac
+done
+
+[[ -z $TOPICS ]] && TOPICS="events/hpods/test/MSe2eprobe"
+[[ -z $COUNT ]] && COUNT=1
+[[ -z $PUB ]] && usage
+[[ -z $SUB ]] && usage
+
+
+IMAPATH=$APP_PATH/ImaClient/jms
+MQTTPATH=$APP_PATH/MQTTClient/
+JMS_CLASSPATH=$IMAPATH/lib/imaclientjms.jar:$IMAPATH/lib/jms.jar:$IMAPATH/lib/jmssamples.jar:$IMAPATH
+MQTT_CLASSPATH=$MQTTPATH/com.ibm.micro.client.mqttv3.jar:$MQTTPATH/org.eclipse.paho.client.mqttv3.jar:$MQTTPATH
+
+OS=`uname`
+
+case "$OS" in
+  AIX)
+    JAVA="/usr/java7/jre/bin/java" 
+    ;;
+
+  Linux)
+    JAVA="/usr/bin/java"
+    ;;
+
+  *)
+    echo "Unknown OS type $OS. Exiting."
+    exit 1
+    ;;
+esac
+
+TIMEOUT=10
+DATE=$(date +"%Y_%m_%d")
+PROBE_MESSAGE="Probe test : $DATE : $$"
+FAILCOUNT=0
+
+test_publishing() {
+  PAUSE=5
+  pub=$1
+  sub=$2
+
+  LOGSTUB="/tmp/${0##*/}"
+  PUBLOG="$LOGSTUB.pub.$$.$pub.$sub"
+  SUBLOG="$LOGSTUB.sub.$$.$pub.$sub"
+ 
+  [[ -f $PUBLOG ]] && rm -f $PUBLOG 
+  [[ -f $SUBLOG ]] && rm -f $SUBLOG 
+
+  printf "\n\n===========================================================\n"
+  printf "TESTING:\n Publisher:\t\t$pub\n Subscriber:\t\t$sub\n Topics:\t\t$TOPICS\n Number of Messages:\t$COUNT\n"
+  printf " Publishing Method:\t$PUB_METHOD\n Subscription Method:\t$SUB_METHOD\n"
+  printf "\n===========================================================\n"
+
+  for topic in $TOPICS
+  do
+    if [[ $SUB_METHOD == "MQTT" ]] ; then 
+      SUBCMD="$JAVA -classpath $MQTT_CLASSPATH EIMQTTClient $OPT_ARGS -a subscribe -t $topic -s 0 -b $sub -p 8000 -u scoreboard -P PA16h9lD3J7F1d2 -c $COUNT"
+    elif [[ $SUB_METHOD == "JMS" ]] ; then 
+      SUBCMD="$JAVA -classpath $JMS_CLASSPATH com.ibm.ima.samples.jms.JMSSample -v -s tcp://$sub:8000 -a subscribe -t $topic -u scoreboard -p PA16h9lD3J7F1d2 -n $COUNT -x $TIMEOUT"
+    fi
+
+    if [[ -n $DEBUG ]] ; then printf "\nDEBUG:: $SUBCMD\n\n"; fi
+
+    $SUBCMD |tee -a $SUBLOG &
+
+    echo "****** Subscriber started on $sub to topic $topic"
+
+  done
+    
+  printf "\n\n===========================================================\n"
+  echo "All subscribers started. Pausing for $PAUSE seconds"
+  printf "===========================================================\n"
+
+  sleep $PAUSE
+
+  printf "\n\n===========================================================\n"
+  echo "Publishers starting."
+  printf "===========================================================\n"
+
+  counter=0
+
+  while (( counter < COUNT ))
+  do
+    for topic in $TOPICS
+    do
+      if [[ $PUB_METHOD == "MQTT" ]] ; then 
+        PUBCMD="$JAVA -classpath $MQTT_CLASSPATH EIMQTTClient -a publish -t $topic -s 0 -b $pub -p 1500 -u r00t$ -P BF7r4AKs6X537aL -m \"$counter : $topic : $PROBE_MESSAGE\""
+      elif [[ $PUB_METHOD == "JMS" ]] ; then 
+        if [[ $LATENCY -eq 1 ]] ; then
+          #MESSAGE="$(date +%s.%N)"
+          MESSAGE=$(perl -MTime::HiRes=time -E 'printf "%.6f\n", time*1000')
+          #MESSAGE=$(perl -MTime::HiRes=time -E 'printf "%.0f\n", time')
+        else
+          MESSAGE="$counter : $PROBE_MESSAGE"
+        fi
+
+        PUBCMD="$JAVA -classpath $JMS_CLASSPATH com.ibm.ima.samples.jms.JMSSample -v -s tcp://$pub:1500 -a publish -t $topic -u r00t$ -p BF7r4AKs6X537aL -m \"$MESSAGE\""
+      fi
+
+      if [[ -n $DEBUG ]] ; then printf "\nDEBUG:: $PUBCMD\n\n"; fi
+
+      printf " ---} Publishing Message $counter to $topic {---\n\n"
+      eval $PUBCMD|tee -a $PUBLOG
+      printf "\n\n"
+      
+    done
+
+    counter=$(( counter += 1))
+  done
+
+  wait 
+
+  grep -i "Exception" $LOGSTUB.*.$$.$pub.$sub 
+
+  if [[ $? -eq 0 ]] ; then
+    echo "Subscriber failed:"
+    cat $SUBLOG
+  else
+    if [[ $LATENCY -ne 1 ]] ; then
+      for topic in $TOPICS
+      do
+        echo "grep \"$MESSAGE\" $SUBLOG | wc -l | tr -d ' '"
+        cnt_rcvd=$(grep "$MESSAGE" $SUBLOG | wc -l | tr -d ' ')
+  
+        printf "Topic : $topic\n"
+        printf "Messages expected:\t$COUNT\n"
+        printf "Messages received:\t$cnt_rcvd\n"
+  
+        if [[ $cnt_rcvd -ne $COUNT ]] ; then
+          printf "\n\n ##### FAILED : incorrect count of messages for topic $topic found #####"
+          printf "\nReview log files:\n $PUBLOG\n $SUBLOG\n\n" 
+        else
+          echo
+          echo "SUCCESS"
+          echo
+
+          rm $PUBLOG
+          rm $SUBLOG
+        fi
+      done 
+    else
+      total=$(cat $SUBLOG|grep Latency|awk '{print $10}'| paste -sd+ - | bc)
+      avg=$(echo "scale=5; $total/$counter"|bc)
+
+      echo "Average Latency is $avg"
+    fi
+  fi
+}
+
+
+pubsub() {
+  pub_eps=$1
+  sub_eps=$2
+
+  for pub_ep in $pub_eps
+  do
+    for sub_ep in $sub_eps
+    do
+      test_publishing $pub_ep $sub_ep
+    done
+  done
+}
+
+
+pubsub "$PUB" "$SUB"
+

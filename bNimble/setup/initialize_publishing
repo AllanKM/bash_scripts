@@ -1,0 +1,106 @@
+#!/bin/ksh
+
+if [ -d /lfs ]; then
+	echo "Using /lfs for publishing files"
+	BASEDIR="/lfs"
+else
+	echo "Using /www for publishing files"
+	BASEDIR="/www"
+fi
+
+#set -x
+# -BJ 
+# This script:
+#	- adds entry to PNDB for $PUBSITE and $PUBCONFIG
+#	- rsync's all pub binaries and configs from shared filesystem -> $BASEDIR
+#	- creates directories based on what is in the pub config file
+#	- creates a few links including the /etc/rc.bNimble link
+# You should be able to run this for each event on a webserver or PUBHUB
+umask 002
+
+if [ $# -eq 2 ]; then
+  PUBSITE=$1
+  PUBCONFIG=$2
+else [ $# -gt 0 ];
+  echo ""
+  echo " PUBSITE and PUBCONFIG were not added to configuration"
+  echo " script for this event."  
+  echo " Format is <event_shortname> <pub_config>"
+  echo ""
+  exit
+fi
+
+id pubinst > /dev/null 2>&1
+if [  $? -ne 0 ]; then
+    /fs/system/tools/auth/bin/mkeigroup -r local -f apps
+    /fs/system/tools/auth/bin/mkeiuser  -r local -f pubinst apps
+fi
+
+echo $PUBCONFIG | grep -i distr >/dev/null
+if [ $? -eq 0 ]; then
+	/lfs/system/tools/configtools/make_filesystem /diskqueue 5120 
+	chown pubinst.eiadm /diskqueue
+	chmod 755 /diskqueue
+fi
+	
+
+BNIMBLE_CONFDIR=${BASEDIR}/system/tools/publish/config
+
+echo "Initial sync between shared filesystem and local disk"
+mkdir -p ${BASEDIR}/system/tools/publish
+rsync -a /fs/system/tools/publish/ ${BASEDIR}/system/tools/publish/
+mkdir -p ${BASEDIR}/system/config/nd-gen
+rsync -a /fs/system/config/nd-gen/allnodes.xml ${BASEDIR}/system/config/nd-gen/
+chown pubinst.apps ${BASEDIR}/system/config/nd-gen/allnodes.xml
+chmod a+r ${BASEDIR}/system/config/nd-gen/allnodes.xml
+
+echo "Creating bNimble directories"
+
+#BNIMBLECONF=`/fs/system/tools/publish/bin/pndb/pngetconf.pl --site $PUBSITE`
+#if [ $? -eq 1 ]; then
+#        echo "$0: Unable to determine bNimble config path"
+#        exit 1
+#fi
+
+#DIRLIST=`grep -E 'home|disk-queue-directory' ${BNIMBLE_CONFDIR}/${PUBCONFIG}.conf | awk '{ print $3}'`
+
+${BASEDIR}/system/tools/publish/bin/rc.bNimble -p status ${PUBCONFIG} | grep -E 'home|disk-queue-directory|Disk-Queue-Directory' | awk '{ print $3}' > /tmp/init.$$
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+        echo "Creating $DIRECTORY"
+        mkdir -p $DIRECTORY
+        if [ $? -eq 1 ]; then
+                echo "$0: Unable to create $DIRECTORY"
+        fi
+	chown -R pubinst.apps $DIRECTORY
+	chmod -R g+rwx $DIRECTORY
+done
+
+${BASEDIR}/system/tools/publish/bin/rc.bNimble2 -p status ${PUBCONFIG} | grep -E 'home|disk-queue-directory|Disk-Queue-Directory' | awk '{ print $3}' > /tmp/init.$$
+DIRLIST=`cat /tmp/init.$$`
+
+for DIRECTORY in $DIRLIST
+do
+        echo "Creating $DIRECTORY"
+        mkdir -p $DIRECTORY
+        if [ $? -eq 1 ]; then
+                echo "$0: Unable to create $DIRECTORY"
+        fi
+	chown -R pubinst.apps $DIRECTORY
+	chmod -R g+rwx $DIRECTORY
+done
+
+# Broken -- trying to get the "home" entry to create short name link
+#HOME=`egrep home /tmp/init.$$ | awk '{print $3}'`
+
+#if [[ ! -L /logs/bNimble/$PUBSITE ]] ;; then
+#	ln -s $HOME /logs/bNimble/$PUBSITE
+#fi
+
+rm -f /tmp/init.$$
+
+echo "Create /etc/rc.bNimble link"
+ln -sf ${BASEDIR}/system/tools/publish/bin/rc.bNimble /etc/rc.bNimble
+ln -sf ${BASEDIR}/system/tools/publish/bin/rc.bNimble2 /etc/rc.bNimble2

@@ -1,0 +1,134 @@
+#!/usr/bin/perl
+#
+# Copyright IBM Corp. 2001, 2003
+# script to get channel status
+#
+# History -    8/15/2002 - SJB - commented out getopt calls & added loop to
+#                          parse args - removes dependency on perl getopt libs
+#                          all chgs commented with SJB_changes.
+#         -    1/09/2003 - SJB - added -s arg to say "skip" display of headers.
+#                          useful when using this tool in other scripts.
+
+my $STATUS   = "";
+my $cmd      = "";
+my @attribs  = ();
+my @channels = ();	# array of hashes since chl names aren't unique
+my %channel  = ();
+#my $formatStr= "%-16.16s%-10s%-16s%-9s%6s  %s\n";
+my $formatStr= "%-20s%-5s%-16s%-12s%-6s%6s  %s\n";
+#SJB_changes
+my $showHeaders= "1";
+
+#SJB_changes
+#commented out req line below - removed dependency on getopt lib.
+#require "getopt.pl";
+
+if ($ARGV[0] eq "-?" | $ARGV[0] =~ /-h/i ) {
+  &showHelp;
+  exit;
+}
+
+#
+#SJB_changes - changed getopt to while loop to parse args.
+#Getopt('m');
+
+while(<@ARGV>){
+  $arg=$_;
+  if($arg =~ /-m/i){
+        $junk=shift(@ARGV);
+        $opt_m=shift(@ARGV);
+  }
+  if($arg =~ /-a/i){
+        $opt_a=shift(@ARGV);
+  }
+  if($arg =~ /-d/i){
+        $opt_d=shift(@ARGV);
+  }
+#SJB_changes - added -s skip option to skip display of headers
+  if($arg =~ /-s/i){
+        $showHeaders = "0";
+        $opt_s=shift(@ARGV);
+  }
+}
+
+# build command line
+#$cmd .= "echo dis chs(\*) current all | runmqsc ";
+$cmd .= "echo \"dis chs(\*) current all\" | runmqsc ";
+$cmd .= $opt_m if ($opt_m);
+$cmd .= "|";
+
+#print "cmd=$cmd\n";
+# build necessary arrays for later use
+&init;
+
+# run command and pipe into $STATUS
+open STATUS, $cmd;
+
+while(<STATUS>) {
+  # if not AMQ8417 code, must be an error
+  if ((/^(AMQ.*)\s+/) && ((index $1, "AMQ8417") < 0)) {
+    print "$1\n\n"; 
+    close(STATUS);
+    exit;
+  }
+
+  # if channel name line, assign channel name 
+  if (/^\s*CHANNEL\((\S+)\)\s+.*$/) {
+    # push last channel hash onto array
+    # first one is no good, will be shifted off later
+    push @channels, $channel;
+    $channel = {};
+    $channel->{NAME} = $1;
+  }
+
+  # populate %channel hash using @attribs array for attribute names
+  foreach $attrib (@attribs) {
+    if ( /^.+$attrib\((\S+)\).*$/ ) {
+      $channel->{$attrib} = $1;
+    }
+  }
+}
+
+close(STATUS);
+
+# push last %channel hash onto array
+push @channels, $channel;
+# shift off first (empty) %channel hash
+shift @channels;
+
+#SJB_changes - added if-then to check if headers are desired
+# write header
+if($showHeaders){
+print `date`, `hostname`, "\n";
+printf $formatStr, "Channel", "Type", "ConName", "Status", "Msgs", "LastMsg";
+}
+
+# display channels using reference to each hash
+for $href ( @channels ) {
+  printf $formatStr, 
+         $href->{NAME}, 
+         $href->{'CHLTYPE'},
+         $href->{'CONNAME'}, 
+         $href->{'STATUS'},
+         $href->{'MSGS'},
+         $href->{'LSTMSGDA'} . "/" . $href->{'LSTMSGTI'};
+}
+
+sub init
+{
+  # populate channel attributes array
+  @attribs = (
+    "XMITQ", "CONNAME", "CHLTYPE", "STATUS", "LSTMSGTI", "LSTMSGDA", "MSGS", "BYTSSENT",
+    "BYTSRCVD", "HBINT", "CHSTATI", "CHSTADA", "BUFSSENT", "BUFSRCVD", "JOBNAME",
+    "MCASTAT", "STOPREQ" 
+  );
+}
+
+sub showHelp {
+  print "USAGE: $0 [-m QMGR_NAME] [-s]\n";
+  print "Display channel status for queue manager.\n";
+  print "  -m queue mgr, if blank then default queue manager is queried.\n";
+  print "  -s (skip) display of header lines - useful when scripts call this to
+l.\n";
+
+}

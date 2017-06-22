@@ -1,0 +1,268 @@
+#!/usr/bin/perl
+use HTTP::Date;
+use Getopt::Std;
+use Sys::Hostname;
+
+# Author: Thad Hinz
+# Date:   06/02/2012
+
+# Potential enhancements:
+#       - add hits per stat code 200 and 304 per top 10
+#       - add hits per method
+#       - add total bytes per top 10
+#       - option for top 10 unique with unique referrers (might need to peal off query strings)
+
+# subs ================================================
+
+sub usage {
+  warn "\n";
+  warn "   usage: $0 [-d <date>][-v <view>][-s <plex>][-r <hour/range>] EVENT\n";
+  warn "\n";
+  warn "    Options:\n";
+  warn "     event,  event name, e.g., cmrolg-even, cmusga-odd, etc.\n";
+  warn "        -d,  logdrop only, date to scan: mm/dd/yyyy, Default=today\n";
+  warn "        -v,  view options, s=seconds, m=minutes, h=hours. Default=minutes\n";
+  warn "        -s,  logdrop only, plex, p1, p2, p3, and all. Default=all\n";
+  warn "        -r,  logdrop only, hour range, hour or hour range to scan, XX or XX-YY format\n";
+  warn "\n";
+}
+
+sub padNumb {
+  # pads a number with specified zeros
+  $numb = $_[0] ;
+  $pads = $_[1] + 1 ;
+  $padded = sprintf("%0" . $pads . "d", $numb);
+  return $padded ;
+}
+
+sub inRange {
+  $hour =$_[0] ; 
+  if ($hour >= 0 && $hour <= 23) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+# main ================================================
+
+$ok = getopts('d:v:s:r:h');
+
+if (!($ok)) {
+  usage();
+  exit 1;
+}
+
+if($opt_h) {
+  usage();
+  exit 1;
+}
+
+if (!($ARGV[0])) {
+  warn "Error: Missing event\n";
+  usage();
+  exit 1;
+} else {
+  $event = $ARGV[0];
+}
+
+$host = hostname;
+
+# need to distinguish between logdrop and webserver
+$myrole = `/usr/bin/lssys -1 -l role $host` ;
+if ($myrole =~ m/WEBSERVER/) {
+  $logdir = "/logs/";
+  $isWebServer = 1 ;
+} elsif ($myrole =~ m/LOG.DROP/) {
+  $logdir = "/logdrop/events/";
+  $isWebServer = 0 ;
+}
+
+# new method will use subtr instead of str2time/modulus to set keys for time hash, str2time was too slow
+if ($opt_v eq "m") {
+  $timeoffset = 17;
+} elsif ($opt_v eq "h") {
+  $timeoffset = 14;
+} elsif ($opt_v eq "s") {
+  $timeoffset = 20;
+} else {
+  #print STDERR "Warning: No or invalid view specified. Defaulting to minutes.\n";
+  $timeoffset = 17;
+}
+
+# match plex to log pattern here
+if ($opt_s) {
+  $plex = $opt_s ;
+  if ($plex eq "p1") {
+    $plexpat = "v1" ;
+  } elsif ($plex eq "p2") {
+    $plexpat = "v2" ;
+  } elsif ($plex eq "p3") {
+    $plexpat = "v3" ;
+  } elsif ($plex eq "all") {
+    $plexpat = "v" ;
+  } else {
+  $plex = "all" ;
+  $plexpat = "v" ;
+  #print STDERR "Warning: invalid plex specified. Defaulting to all.\n";
+  }
+} else {
+  $plex = "all" ;
+  $plexpat = "v" ;
+}
+
+# let's get current time
+($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+
+# make it so if no date specified, defaults to today
+if (!($opt_d)) {
+  # place today's date in 
+  $day = padNumb($mday,1) ; 
+  $month = padNumb($mon + 1,1); # perl months start at 0
+  $year += 1900 ; # that crazy perl year thing
+  #print "No date specified, defaulting to today: $month/$day/$year\n";
+} else {
+  $date = $opt_d;
+  ($month, $day, $year) = split(/\//,$date);
+  if (!($day && $month && $year)) {
+    warn "Error: improper date format: use mm/dd/yyyy\n";
+    exit 1;
+  }
+}
+
+# create the hour pattern for the logname regex
+# opt_r is a number so when opt_r = 0 and you do if (opt_r), this section is skipped
+# using defined instead
+if (defined $opt_r) {
+  # here we take the hour arg and check if it's a range or single hour
+  # if it's a range we convert it to regex pattern for gunzip
+  $loghour = $opt_r ;
+  # ls  /logdrop/events/cmrolg-even/v*.access_log.20120604{09,10}*.gz
+  if ($loghour =~ m/^(\d+)-(\d+)$/) {
+    $first = padNumb($1,1) ;
+    $second = padNumb($2,1) ;
+    if (!(inRange($first))) {
+     warn "Error: hour $first is not a valid for log files\n";
+     exit 1;
+    }
+    if (!(inRange($second))) {
+     warn "Error: hour $second is not a valid for log files\n";
+     exit 1;
+    }
+    # ranges like 23 - 04 won't work since we only scan one days worth of logs
+    if ($first > $second) {
+      warn "Error: first hour must less than second hour\n";
+      exit 1;
+    }
+    # convert digits to strings so range works properly
+    $first = "$first";
+    $second = "$second";
+    @hourrange = ($first..$second);
+    $patstring = join(",", @hourrange);
+    $hourpat = "\{$patstring\}";
+  # doesn't match on 0 for some reason??? ah, opt_r was 0 so if(opt_r) was passing this block
+  } elsif ($loghour =~ m/^(\d+)$/) {
+    $myloghour = padNumb($1,1);
+    if (!(inRange($myloghour))) {
+     warn "Error: hour $myloghour is not a valid for log files\n";
+     exit 1;
+    }
+    $hourpat = $myloghour ;
+  } else {
+    warn "Error: must specify hour or hour range: XX or XX-YY\n";
+    exit 1;
+  }
+} else {
+  $hourpat = "*";
+}
+
+# if the day input equals today's day then logpath is diff
+if ($day eq padNumb($mday,1)) {
+  $sitelogdir = $logdir . $event . "/";
+} else {
+  $sitelogdir = $logdir . $event . "/" . $year . "/" . $month . "/" . $day . "/";
+}
+
+# form the logname pattern here
+if ($isWebServer) {
+  $lognamepat = "access_log.*" ;
+} else {
+  $lognamepat = $plexpat . "*.access_log." . $year . $month . $day . $hourpat . "*.gz";
+}
+
+$mylog = $sitelogdir . $lognamepat ;
+
+# create list of files to work with. had to use glob since OPEN didn't like braces for wildcards
+@filearray = glob("$mylog");
+$filelist = join(' ',@filearray);
+if ($filelist eq '') {
+  warn "Error: no files match the pattern $mylog\n";
+  exit 1;
+}
+
+#print scalar(@filearray)." total files\n";
+#print "$filelist\n";
+
+# logs are not gzipped on webservers so command must be diff
+if ($isWebServer) {
+  $OPENCMD = "cat" ;
+} else {
+  $OPENCMD = "gunzip -c" ;
+}
+
+$linecnt = 0;
+print STDERR "Scanning logs with pattern: $mylog\n";
+open (GZ, "$OPENCMD $filelist |");
+while (<GZ>) {
+  $linecnt++;
+  ($time, $method, $url, $protocol, $status, $bytes) = 
+   /\S+ \S+ \S+ \[([^\]]+)\] \"(\S+) (.+?) (\S+)\" (\S+) (\S+)/ or next;
+  $time = substr $1, 0, $timeoffset ;
+  # for ref $time looks like - 03/Jun/2012:12:06:36 +0000
+  $hits{$time}{$url}++;
+  # sum up total bytes for said timeslice
+  $bytes{$time} += $bytes;
+  # status update since parsing logs can take a while
+  print STDERR "Processed $linecnt lines\r" if ($linecnt % 1000 == 0) 
+}
+close GZ;
+
+for my $time (sort keys(%hits)) {
+  # in here hits are filtered down to per uri so need to sum hits for all uris to get total hits for time slice
+  $count = 1 ;
+  $timehitcnt = 0 ;
+  # count unique uri's for this time slice
+  $toturis = (keys %{$hits{$time}});
+
+  foreach $uri (keys %{$hits{$time}}) { 
+    $timehitcnt = $timehitcnt + $hits{$time}{$uri};
+  }
+
+  if ($isWebServer) {
+    $plexlabel = "" ;
+  } else {
+    $plexlabel = ":: PLEX=" . uc($plex) ;
+  }
+
+  $mb_bytes = sprintf("%.0f", $bytes{$time} / 1024);
+  # commify the number for easy read
+  $mb_bytes =~ s/(^[-+]?\d+?(?=(?>(?:\d{3})+)(?!\d))|\G\d{3}(?=\d))/$1,/g;
+  print "$time :: HITS = $timehitcnt :: BYTES = $bytes{$time} ($mb_bytes MB) $plexlabel\n";
+  printf "  %-5s   %-100s\n", "Reqs", "Top 10 Uri's";
+  printf "  %-5s   %-100s\n", "----", "-------------------";
+  foreach $uri (sort { $hits{$time}{$b} <=> $hits{$time}{$a} } keys %{$hits{$time}}) {
+     # print only top 10 hits/uri and break out of loop  
+     if ($count <= 10)  {
+       printf "  %-5d - %-100s\n", $hits{$time}{$uri}, $uri;
+       # if less than top 10 unique, break and print return
+       if ($count == $toturis) {
+         print "\n";
+         last; 
+       }
+     } else {
+       print "\n";
+       last;
+     } 
+     $count++;
+  }
+}

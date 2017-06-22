@@ -1,0 +1,236 @@
+################################################################################
+#
+# IBM WebSphere eXtreme Scale V7.0.0 InstallShield Options File
+#
+# Wizard name: Install
+# Wizard source: setup.jar
+#
+# This file can be used to configure Install with the options specified below
+# when the wizard is run with the "-options" command line option. Read each
+# setting's documentation for information on how to change its value.
+# Please enclose all values within a single pair of double quotes.
+# 
+# A common use of an options file is to run the wizard in silent mode. This lets
+# the options file author specify wizard settings without having to run the
+# wizard in graphical or console mode. To use this options file for silent mode
+# execution, use the following command line arguments when running the wizard:
+# 
+#    -options "D:\installImage\WXS\wxssetup.response" -silent
+#
+# Note that the fully qualified response file name must be used.
+#
+################################################################################
+
+################################################################################
+#
+# License Acceptance
+#
+# Valid Values:
+#  true - Accepts the license. Will install the product.
+#  false - Declines the license. Install will not occur.  
+#
+# If no install occurs, this will be logged to a temporary log file in the 
+# user's temporary directory.
+#
+# By changing the silentInstallLicenseAcceptance property in this response file 
+# to "true", you agree that you have reviewed and agree to the terms of the 
+# IBM International Program License Agreement accompanying this program, which
+# is located at CD_ROOT\XD\wxs.primary.pak\repository\legal.xs\license.xs.  If
+# you do not agree to these terms, do not change the value or otherwise
+# download, install, copy, access, or use the program and promptly return the
+# program and proof of entitlement to the party from whom you acquired it to
+# obtain a refund of the amount you paid.
+#
+-OPT silentInstallLicenseAcceptance="true"
+
+
+################################################################################
+# Non-blocking Prerequisite Checking
+#
+# If you want to disable non-blocking prerequisite checking, uncomment
+# the following line. This will notify the installer to continue with
+# the installation and log the warnings even though the prerequisite checking
+# has failed.
+#
+-OPT disableNonBlockingPrereqChecking="true"
+
+
+################################################################################
+#
+# Install Location
+#
+# The install location of the product. Specify a valid directory into which the
+# product should be installed. If the directory contains spaces, enclose it in
+# double-quotes as shown in the Windows example below. Note that spaces in the
+# install location is only supported on Windows operating systems. Maximum path 
+# length is 60 characters for Windows.
+# 
+# Below is the list of default install locations for each supported operating
+# system when you're installing as a root user.  By default, in this response
+# file, the Windows install location is used.  If you want to use the default
+# install location for another operating system, uncomment the appropriate
+# default install location entry (by removing '#') and then comment out
+# (by adding '#') the Windows operating system entry below.
+#
+# The install location is used to determine if WebSphere eXtreme Scale should
+# be installed as a stand-alone deployment or if it should be integrated with
+# an existing WebSphere Application Server installation.
+#
+# If the location specified is an existing WebSphere Application Server or
+# WebSphere Network Deployment installation, then eXtreme Scale is integrated
+# with the exising WebSphere Application Server.  If the location specified is
+# a new or empty directory, then WebSphere eXtreme Scale is installed as a
+# stand-alone deployment.
+#
+# Note: If the install location specified contains a previous installation of
+# WebSphere eXtreme Scale, WebSphere eXtended Deployment DataGrid or
+# ObjectGrid, the installation will fail.
+#
+# AIX Default Install Location:
+#
+#  -OPT installLocation="/usr/IBM/WebSphere/eXtremeScale"
+#
+# HP-UX, Solaris or Linux Default Install Location:
+#
+#  -OPT installLocation="/opt/IBM/WebSphere/eXtremeScale"   
+#
+#
+# Windows Default Install Location:
+#
+#  -OPT installLocation="C:\Program Files\IBM\WebSphere\eXtremeScale"
+-OPT installLocation="/usr/WebSphere61/AppServer"
+
+#
+# If you are installing as a non-root user on Unix or a non-administrator on 
+# Windows, the following default install locations are suggested. Be sure you
+# have write permission for the install location chosen.
+# 
+# AIX Default Install Location:
+#
+#  -OPT installLocation="<user's home>/IBM/WebSphere/eXtremeScale"
+#
+# HP-UX, Solaris or Linux Default Install Location:
+#
+#  -OPT installLocation="<user's home>/IBM/WebSphere/eXtremeScale"
+#
+# Windows Default Install Location: 
+#
+# -OPT installLocation="C:\IBM\WebSphere\eXtremeScale"
+
+
+################################################################################
+#  Optional Features Installation
+#
+# Specify which of the optional features you wish to install by setting each
+# desired feature to "true".  Set any optional features you do not want to   
+# install to "false".
+#
+# The options selectServer, selectClient, selectPF, and selectXSStreamQuery are
+# only valid when the installLocation option above contains an installation of 
+# WebSphere Application Server.  The options are ignored on an WebSphere eXtreme 
+# Scale standalone installation.
+#
+# On the WebSphere eXtreme Scale standalone installation, the eXtreme Scale
+# server and client are automatically installed.  The only feature option for
+# the eXtreme Scale standalone installation is selectXSStreamQueryOther.
+
+# 
+# This option, when selected, installs the components that are required to run
+# WebSphere eXtreme Scale servers and the eXtreme Scale dynamic cache service
+# provider. If this option is selected, then the WebSphere eXtreme Scale Client
+# must also be selected by being uncommented and set to a value of "true".
+# Otherwise, silent install will FAIL.
+#
+-OPT selectServer="true"
+
+#
+# This option, when selected, installs the components that are required to run
+# WebSphere eXtreme Scale client applications. If the Server option is selected
+# above, then this option must also be selected by being uncommented and set to
+# a value of "true" or silent install will FAIL.  
+#
+-OPT selectClient="true"
+
+#
+# The following options, if selected will install DEPRECATED functionality.
+#
+# This option selects WebSphere Partition Facility for installation.
+# This functionality is DEPRECATED.  To install this option, the following
+# option line must be uncommented and set to a value of "true".
+#
+#-OPT selectPF="false"
+
+#
+# This option selects WebSphere eXtreme Scale StreamQuery for WAS for
+# installation.  This functionality is DEPRECATED.  To install this option,
+# the following option line must be uncommented and set to a value of "true".
+# If this option is selected, then the WebSphere eXtreme Scale Client
+# must also be selected by being uncommented and set to a value of "true".
+# Otherwise, silent install will FAIL.
+#
+#-OPT selectXSStreamQuery="false"
+
+#
+# This option selects WebSphere eXtreme Scale StreamQuery for J2SE for
+# installation.  This functionality is DEPRECATED.  To install this option,
+# the following option line must be uncommented and set to a value of "true".
+# If this option is selected, then the WebSphere eXtreme Scale Client
+# must also be selected by being uncommented and set to a value of "true".
+# Otherwise, silent install will FAIL.
+#
+#-OPT selectXSStreamQueryOther="false"
+
+
+################################################################################
+#  Profile list for augmentation
+#
+# Specify which of the existing profiles you wish to augment or comment the
+# line to augment every existing profiles detected by the intallation.
+#
+# To specify multiple profiles, use comma to separate different profile names.
+# For example, "AppSrv01,Dmgr01,Custom01". The list must not contain any spaces.
+#
+-OPT profileAugmentList=""
+
+
+################################################################################
+# Tracing Control
+#
+# The trace output format can be controlled via the option 
+# -OPT traceFormat=ALL 
+#
+# The choices for the format are 'text' and 'XML'. By default, both formats will
+# be produced, in two different trace files. 
+#
+# If only one format is required, use the traceFormat option to specify which
+# one, as follows:
+#
+# Valid Values:
+#
+#  text -  Lines in the trace file will be in a plain text format for easy
+#          readability.
+#  XML  -  Lines in the trace file will be in the standard Java logging XML
+#          format which can be viewed using any text or XML editor or using the
+#          Chainsaw tool from Apache at the following URL:
+#          (http://logging.apache.org/log4j/docs/chainsaw.html).
+#
+# The amount of trace info captured can be controlled using the option:
+# -OPT traceLevel=INFO
+#
+# Valid Values:
+# 
+# Trace    Numerical 
+# Level      Level    Description
+# -------  ---------  ---------------------------------------------------------
+# OFF         0       No trace file is produced
+# SEVERE      1       Only severe errors are output to trace file
+# WARNING     2       Messages regarding non-fatal exceptions and warnings are
+#                     added to trace file
+# INFO        3       Informational messages are added to the trace file
+#                     (this is the default trace level)
+# CONFIG      4       Configuration related messages are added to the trace file
+# FINE        5       Tracing method calls for public methods
+# FINER       6       Tracing method calls for non public methods except
+#                     getters and setters
+# FINEST      7       Trace all method calls, trace entry/exit will include
+#                     parameters and return value

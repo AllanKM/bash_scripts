@@ -1,0 +1,107 @@
+#!/usr/bin/ksh
+
+#-------------------------------------------------------
+# pubtool2
+# description:  Shell script wrapper to determine OS and 
+#               platform to call the correct binary
+# todds@us.ibm.com - Wed Jul 26 13:13:25 CUT 2006
+#-------------------------------------------------------
+
+#
+# Set defaults
+#
+
+VERBOSE=0
+LOCALDISK_BASE="/lfs/system/tools/bNimble"
+OS=`uname`
+ACTION=""
+UNLOCK=0
+
+#
+# Define functions
+#
+
+command_syntax ()
+{
+	echo ""
+	echo "USAGE: "
+	echo " pubtool2 [-h] | ([-v] [-u] {pubtool2 command line arguements})"
+	echo ""
+	echo "    help:                -h"
+	echo "    verbose:             -v"
+        echo "    unlock:              -u"
+	echo ""
+	exit 2
+}
+
+#
+# Command line options
+#
+
+while getopts :vhu name
+do
+	case $name in
+		v)      shift $(($OPTIND -1))
+			VERBOSE=1 ;;
+		h)	shift $(($OPTIND -1))
+			command_syntax ;;
+                u)      shift $(($OPTIND -1))
+                        UNLOCK=1 ;;
+	esac
+done
+
+if [[ $VERBOSE = 1 ]] ; then
+        echo "Path is $LOCALDISK_BASE"
+fi
+
+case "$OS" in
+	AIX)
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "OS is $OS"
+			echo "${LOCALDISK_BASE}/bin/pubtool2.aix $*" 
+		fi
+		${LOCALDISK_BASE}/bin/pubtool2.aix $* ;;
+
+	Linux)
+		ARCH=`uname -m`
+		case "$ARCH" in
+			ppc64)
+				if [[ $VERBOSE = 1 ]] ; then
+					echo "OS is $OS"
+					echo "Using architecture $ARCH"
+                        		echo "${LOCALDISK_BASE}/bin/pubtool2.linuxppc $*"
+                		fi
+                		${LOCALDISK_BASE}/bin/pubtool2.linuxppc $* ;;
+			i686)
+				if [[ $VERBOSE = 1 ]] ; then
+					echo "OS is $OS"
+					echo "Using architecture $ARCH"
+                        		echo "${LOCALDISK_BASE}/bin/pubtool2.linux $*"
+                		fi
+                		${LOCALDISK_BASE}/bin/pubtool2.linux $* ;;
+			*)
+				echo "Unknown architecture: $ARCH"
+				exit 3 ;;
+		esac
+		;;
+	*)
+		echo "Unknown OS: $OS" 
+		exit 3 ;;
+esac 
+
+ACTION=`echo $* | /usr/bin/egrep -i "Add|Remove"`
+CONFIG=`ps -ef| grep bNimble | grep ".*classpath.*Daedalus.*config.*" |  awk '{print $NF}'`
+echo "$CONFIG" | while IFS="/" read f1 f2 f3
+do
+   CUSTTAG=$f1
+   FILE=$f3
+done
+FILE=`echo $FILE | sed s/\.conf$//`
+
+if [[ $ACTION != "" ]]; then
+   touch /projects/$CUSTTAG/config/pubtool2_${FILE}.lck
+   chmod 664 /projects/$CUSTTAG/config/pubtool2_${FILE}.lck
+fi
+if [[ $UNLOCK -eq 1 ]]; then
+   rm /projects/$CUSTTAG/config/pubtool2_${FILE}.lck
+fi

@@ -1,0 +1,355 @@
+#*******************************************************************************************************
+# getStats.jacl
+#
+#   Author: James Walton
+#   Initial Revision Date: 01/10/2006
+#*******************************************************************************************************
+
+#*******************************************************************************************************
+# Procedures
+#*******************************************************************************************************
+proc printMem {nName sName jCfg jObj csv} {
+	global AdminControl
+	global AdminConfig
+	if {[llength $jObj] > 0} {
+		set jvmheap [lindex [lindex [$AdminControl getAttributes $jObj "heapSize"] 0] 1]
+		set jvmfree [lindex [lindex [$AdminControl getAttributes $jObj "freeMemory"] 0] 1]
+	} else {
+		set jvmheap "NA"
+		set jvmfree "NA"
+	}
+	set jvmmax [lindex [lindex [$AdminConfig show $jCfg maximumHeapSize] 0] 1]
+	set jvmmin [lindex [lindex [$AdminConfig show $jCfg initialHeapSize] 0] 1]
+	if {[lsearch -exact "nodeagent dmgr" $sName] < 0} {
+		set srvGrp [lindex [split $sName _] 1]
+		set srvApp [lindex [split $sName _] 2]
+		set sName ""
+		append sName $srvGrp "_" $srvApp
+	}
+	if {$csv} {
+		puts "$nName,$sName,$jvmmin,$jvmmax,$jvmheap,$jvmfree"
+	} else {
+		puts "$nName : $sName : $jvmmin / $jvmmax : $jvmheap / $jvmfree"
+	}
+}
+
+proc printThreadStats {ver nName sName wcpool orbpool csv} {
+	global AdminControl
+	global AdminConfig
+	if {[llength $wcpool] > 0} {
+	    set wcMaxSz [lindex [lindex [$AdminControl getAttributes $wcpool maximumSize] 0] 1]
+	    set wcMinSz [lindex [lindex [$AdminControl getAttributes $wcpool minimumSize] 0] 1]
+	    if {$ver == "5.1"} {
+		    set wcStats [lindex [lindex [$AdminControl getAttributes $wcpool stats] 0] 1]
+	    } else {
+		    set wcStats [lindex [lindex [lindex [$AdminControl getAttributes $wcpool stats] 0] 1] 3]
+	    }
+	    if {$ver == "6.1"} {
+	    	# Get Thread Pool
+	    	set index [lsearch -exact $wcStats "name=PoolSize,"]
+		    set iHwm [expr ($index + 13)]
+		    set iCur [expr ($iHwm + 1)]
+		    set wcHwmP [lindex [split [lindex [split [lindex $wcStats $iHwm] ,] 0] =] 1]
+		    set wcCurP [lindex [split [lindex [split [lindex $wcStats $iCur] ,] 0] =] 1]
+		    # Get Active Threads
+		    set index [lsearch -exact $wcStats "name=ActiveCount,"]
+		    set iHwm [expr ($index + 11)]
+		    set iCur [expr ($iHwm + 1)]
+		    set wcHwm [lindex [split [lindex [split [lindex $wcStats $iHwm] ,] 0] =] 1]
+		    set wcCur [lindex [split [lindex [split [lindex $wcStats $iCur] ,] 0] =] 1]
+	    } else {
+		    # Get Thread Pool
+		    set iLwm [lsearch -exact $wcStats "lowWaterMark=1"]
+		    set iHwm [expr ($iLwm + 1)]
+		    set iCur [expr ($iHwm + 1)]
+		    set wcHwmP [lindex [split [lindex $wcStats $iHwm] =] 1]
+		    set wcCurP [lindex [split [lindex $wcStats $iCur] =] 1]
+		    # Get Active Threads
+		    set iLwm [lsearch -exact $wcStats "lowWaterMark=0"]
+		    set iHwm [expr ($iLwm + 1)]
+		    set iCur [expr ($iHwm + 1)]
+		    set wcHwm [lindex [split [lindex $wcStats $iHwm] =] 1]
+		    set wcCur [lindex [split [lindex $wcStats $iCur] =] 1]
+	    }
+	} else {
+	    set wcMaxSz "NA"
+	    set wcMinSz "NA"
+	    set wcHwmP "NA"
+	    set wcCurP "NA"
+	    set wcHwm "NA"
+	    set wcCur "NA"
+	}
+	if {[llength $orbpool] > 0} {
+	    set orbMaxSz [lindex [lindex [$AdminControl getAttributes $orbpool maximumSize] 0] 1]
+	    set orbMinSz [lindex [lindex [$AdminControl getAttributes $orbpool minimumSize] 0] 1]
+	    if {$ver == "5.1"} {
+			set orbStats [lindex [lindex [$AdminControl getAttributes $orbpool stats] 0] 1]
+	    } else {
+			set orbStats [lindex [lindex [lindex [$AdminControl getAttributes $orbpool stats] 0] 1] 3]
+	    }
+	    if {$ver == "6.1"} {
+	    	# Get Thread Pool
+	    	set index [lsearch -exact $orbStats "name=PoolSize,"]
+		    set iHwm [expr ($index + 13)]
+		    set iCur [expr ($iHwm + 1)]
+		    set orbHwmP [lindex [split [lindex [split [lindex $orbStats $iHwm] ,] 0] =] 1]
+		    set orbCurP [lindex [split [lindex [split [lindex $orbStats $iCur] ,] 0] =] 1]
+		    # Get Active Threads
+		    set index [lsearch -exact $orbStats "name=ActiveCount,"]
+		    set iHwm [expr ($index + 11)]
+		    set iCur [expr ($iHwm + 1)]
+		    set orbHwm [lindex [split [lindex [split [lindex $orbStats $iHwm] ,] 0] =] 1]
+		    set orbCur [lindex [split [lindex [split [lindex $orbStats $iCur] ,] 0] =] 1]
+	    } else {
+		    # Get Thread Pool
+		    set iLwm [lsearch -exact $orbStats "lowWaterMark=1"]
+		    set iHwm [expr ($iLwm + 1)]
+		    set iCur [expr ($iHwm + 1)]
+		    set orbHwmP [lindex [split [lindex $orbStats $iHwm] =] 1]
+		    set orbCurP [lindex [split [lindex $orbStats $iCur] =] 1]
+		    # Get Active Threads
+		    set iLwm [lsearch -exact $orbStats "lowWaterMark=0"]
+		    set iHwm [expr ($iLwm + 1)]
+		    set iCur [expr ($iHwm + 1)]
+		    set orbHwm [lindex [split [lindex $orbStats $iHwm] =] 1]
+		    set orbCur [lindex [split [lindex $orbStats $iCur] =] 1]
+	    }
+	} else {
+	    set orbMaxSz "NA"
+	    set orbMinSz "NA"
+	    set orbHwmP "NA"
+	    set orbCurP "NA"
+	    set orbHwm "NA"
+		set orbCur "NA"
+	}
+	
+	if {$csv} {
+		puts "$nName,$sName,$wcMinSz,$wcMaxSz,$wcHwmP,$wcCurP,$wcHwm,$wcCur,$orbMinSz,$orbMaxSz,$orbHwmP,$orbCurP,$orbHwm,$orbCur"
+	} else {
+		puts "$nName : $sName : {$wcMinSz/$wcMaxSz} ($wcHwmP/$wcCurP) ($wcHwm/$wcCur) : {$orbMinSz/$orbMaxSz} ($orbHwmP/$orbCurP) ($orbHwm/$orbCur)"
+	}
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+set checkMem 0
+set checkTransport 0
+set pollCell 0
+set pollInfra 0
+set printCSV 0
+if {[info exists nodeName]} {unset nodeName}
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-server"} {
+    if {[incr i] < $argc} {
+      set appServer [lindex $argv $i]
+    } else {
+      set argerr 1
+    }
+  } elseif {$arg == "-datasource"} {
+    if {[incr i] < $argc} {
+      set dataSource [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-cell"} {
+	  set pollCell 1
+  } elseif {$arg == "-filter"} {
+    if {[incr i] < $argc} {
+      set filterArg [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-infra"} {
+      set pollInfra 1
+  } elseif {$arg == "-csv"} {
+      set printCSV 1
+  } elseif {$arg == "memory"} {
+      set checkMem 1
+  } elseif {$arg == "transport"} {
+      set checkTransport 1
+  } else {
+    set argerr 5
+  }
+}
+
+if {[info exists appServer] && [info exists dataSource] && ($checkMem == 1 || $checkTransport == 1)} { set argerr 6 }
+if {$checkMem == 0 && $checkTransport == 0 && [info exists appServer] && ![info exists dataSource]} { set argerr 7 }
+if {($checkMem == 1 || $checkTransport == 1) && [info exists dataSource]} { set argerr 8 }
+if {[info exists appServer] && ($pollCell || $pollInfra)} { set argerr 9 }
+if {[info exists filterArg] && !($pollCell)} { set argerr 10 }
+if {$pollCell && $pollInfra} { set argerr 11 }
+
+if {$argerr} {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f getStats.jacl -server <appServerName> \[-node <nodeName>\] memory|transport [-csv]"
+  puts "   wsadmin -f getStats.jacl -cell \[-filter <searchString>\] memory|transport [-csv]"
+  puts "   wsadmin -f getStats.jacl -infra memory|transport [-csv]"
+  puts "   wsadmin -f getStats.jacl -datasource <datasourceName> \[-server <serverName>\] \[-node <nodeName>\]\n"
+  puts "Given an application server name <appServerName>, this script will display the"
+  puts "current free memory, current memory heap allocation, and maximum heap allowed"
+  puts "--OR-- the current statistics for the transport thread pool and configured min/max"
+  puts "--OR-- both the memory and transport statistics."
+  puts "Given a datasource name <datasourceName>, this script will display the common"
+  puts "statistics (i.e. connection pool min/max/current, etc) for each active instance"
+  puts "of the datasource (this will change depending on the scope).\n"
+  puts "** Adding the -csv flag for operations noted will print the output in CSV (comma separated) format."
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+set dmgr [$AdminControl completeObjectName name=dmgr,type=Server,*]
+set version [$AdminControl getAttribute $dmgr platformVersion]
+
+if {$checkMem} {
+	if {$printCSV} {
+		puts "Nodename,AppServer,MinHeap,MaxHeap,CurrentHeap,FreeHeap"
+	} else {
+		puts "======================================================="
+		puts "Nodename : AppServer : Min/Max Heap : Current/Free Heap"
+		puts "======================================================="
+	}
+	if {$pollCell || $pollInfra} {
+		set serverList [$AdminConfig list Server]
+		foreach server $serverList {
+			set serverName [lindex [split $server (] 0]
+			if {$pollInfra} {
+				if {[lsearch -exact "nodeagent dmgr" $serverName] < 0} { continue }
+			} elseif {[info exists filterArg]} {
+				if {[string first $filterArg $serverName] < 0} { continue }
+			}
+			set nodeName [lindex [split $server /] 3]
+			set jvmcfg [$AdminConfig getid /Node:$nodeName/Server:$serverName/JavaProcessDef:/JavaVirtualMachine:/]
+			set jvmobj [$AdminControl completeObjectName type=JVM,node=$nodeName,process=$serverName,*]
+			printMem $nodeName $serverName $jvmcfg $jvmobj $printCSV
+		}
+	} else {
+		if {[info exists nodeName]} {
+			set jvmobj [$AdminControl completeObjectName type=JVM,node=$nodeName,process=$appServer,*]
+			set jvmcfg [$AdminConfig getid /Node:$nodeName/Server:$appServer/JavaProcessDef:/JavaVirtualMachine:/]
+		} else {
+			set jvmobj [$AdminControl completeObjectName name=JVM,type=JVM,process=$appServer,*]
+			set jvmcfg [$AdminConfig getid /Server:$appServer/JavaProcessDef:/JavaVirtualMachine:/]
+		}
+		printMem $nodeName $appServer $jvmcfg $jvmobj $printCSV
+	}
+	puts "\n"
+}
+	
+if {$checkTransport} {
+	if {$printCSV} {
+		puts "Node,AppServer,HTTPCfgMin,HTTPCfgMax,HTTPPoolPeak,HTTPPoolNow,HTTPThreadsPeak,HTTPThreadsNow,ORBCfgMin,ORBCfgMax,ORBPoolPeak,ORBPoolNow,ORBThreadsPeak,ORBThreadsNow"
+	} else {
+		puts "============================================================================================"
+		puts "        :               :              HTTP               :              ORB"
+		puts "        :               :    Cfg       Pool     Threads   :    Cfg       Pool     Threads"
+		puts " Node   : AppServer     : {Min/Max} (Peak/Now) (Peak/Now) : {Min/Max} (Peak/Now) (Peak/Now)"
+		puts "============================================================================================"
+	}
+	if {$pollCell || $pollInfra} {
+		set serverList [$AdminConfig list Server]
+		foreach server $serverList {
+			set serverName [lindex [split $server (] 0]
+			if {$pollInfra} {
+				if {[lsearch -exact "nodeagent dmgr" $serverName] < 0} { continue }
+			} elseif {[info exists filterArg]} {
+				if {[string first $filterArg $serverName] < 0} { continue }
+			}
+			set nodeName [lindex [split $server /] 3]
+			if {$version == "5.1"} {
+				set wcPool [$AdminControl queryNames name=Servlet.Engine.Transports,node=$nodeName,process=$serverName,*]
+			} elseif {$version == "6.0" || $version == "6.1"} {
+				set wcPool [$AdminControl queryNames name=WebContainer,type=ThreadPool,node=$nodeName,process=$serverName,*]
+			} else {
+				puts stdout "No valid WebSphere version was found while attempting to obtain Web Container thread pool ID."
+				exit
+			}
+			set orbPool [$AdminControl queryNames name=ORB.thread.pool,node=$nodeName,process=$serverName,*]
+			printThreadStats $version $nodeName $serverName $wcPool $orbPool $printCSV
+		}
+	} else {
+		if {$version == "5.1"} {
+			## Get transport thread pools and stats for v5.1
+			if {[info exists nodeName]} {
+				set wcPool [$AdminControl queryNames name=Servlet.Engine.Transports,node=$nodeName,process=$appServer,*]
+			} else {
+				set wcPool [$AdminControl queryNames name=Servlet.Engine.Transports,process=$appServer,*]
+			}
+		} elseif {$version == "6.0" || $version == "6.1"} {
+			## Get transport thread pools and stats for v6.0/6.1
+			if {[info exists nodeName]} {
+				set wcPool [$AdminControl queryNames name=WebContainer,type=ThreadPool,node=$nodeName,process=$appServer,*]
+			} else {
+				set wcPool [$AdminControl queryNames name=WebContainer,type=ThreadPool,process=$appServer,*]
+			}
+		} else {
+			puts stdout "No valid WebSphere version was found while attempting to obtain thread pool ID."
+			exit
+		}
+		if {[info exists nodeName]} {
+			set orbPool [$AdminControl queryNames name=ORB.thread.pool,node=$nodeName,process=$appServer,*]
+		} else {
+			set orbPool [$AdminControl queryNames name=ORB.thread.pool,process=$appServer,*]
+		}
+		printThreadStats $version $nodeName $appServer $wcPool $orbPool $printCSV
+	}
+	puts "\n"
+}
+
+if {[info exists dataSource]} {
+  if {$version == "5.1"} {
+	set poolContentOp getPoolContents
+  } elseif {$version == "6.0" || $version == "6.1"} {
+	set poolContentOp showPoolContents
+  } else {
+	puts stdout "No valid WebSphere version was found while attempting to set datasource connection pool operation."
+	exit
+  }
+  if {[info exists appServer]} {
+    # Get DS instance for specifc appserver
+    set ds [$AdminControl queryNames type=DataSource,process=$appServer,name=$dataSource,*]
+    set dsInfo [$AdminControl invoke $ds $poolContentOp]
+    puts "AppServer: $appServer"
+    puts $dsInfo
+  } elseif {[info exists nodeName] && ![info exists appServer]} {
+    # Get all DS instances on node
+    set dsList [$AdminControl queryNames type=DataSource,node=$nodeName,name=$dataSource,*]
+    puts "Node: $nodeName"
+    puts "====================================================="
+    foreach ds $dsList {
+      # get appserver that DS is tied to and print it
+      set dsargs [split $ds ,]
+      set sName [lindex [split [lindex $dsargs [lsearch -regexp $dsargs "^Server=*"]] =] 1]
+      puts "AppServer: $sName"
+      set dsInfo [$AdminControl invoke $ds $poolContentOp]
+      puts $dsInfo
+      puts "---------------------------------------------------"
+    }
+  } else {
+    # Churn through all instances of the datasource
+    set dsList [$AdminControl queryNames type=DataSource,name=$dataSource,*]
+    foreach ds $dsList {
+      # get node and appserver that DS is tied to and print it
+      set dsargs [split $ds ,]
+      set sName [lindex [split [lindex $dsargs [lsearch -regexp $dsargs "^Server=*"]] =] 1]
+      set nName [lindex [split [lindex $dsargs [lsearch -regexp $dsargs "^node=*"]] =] 1]
+      puts "Node: $nName  --  ApplicationServer: $sName"
+      set dsInfo [$AdminControl invoke $ds $poolContentOp]
+      puts $dsInfo
+      puts "-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-"
+    }
+  }
+  puts "\n"
+}
+

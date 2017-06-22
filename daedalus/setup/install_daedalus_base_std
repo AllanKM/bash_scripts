@@ -1,0 +1,103 @@
+#!/bin/ksh
+#set -x
+# This script:
+#	- rsync's all pub binaries from FS to /opt/IBM
+#	- creates the /etc/rc.daedalus link
+#       - creates or resizes the local publishing system
+#         if directory does not exist
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 4 -a $1 -a $1 == "create_PUB_FS" ]; then
+  PUB_FS=$2
+  PUB_FS_SIZE=$3
+  PUB_VG=$4
+  ABORT_PUB_FS=0
+elif [ $# -eq 0 ]; then
+  ABORT_PUB_FS=1
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."
+  echo "   Format is <create_filesystem> <publishing file system>"
+  echo "   <publishing file system size> <publishing volumn group>"
+  echo "              OR"
+  echo "   Format is no arguments"
+  echo ""
+  exit 1
+else
+  echo ""
+  echo "   Script parameters were"
+  echo "   not added to configuration script for this event."
+  echo "   Format is <create_filesystem> <publishing file system>"
+  echo "   <publishing file system size> <publishing volumn group>"
+  echo "              OR"
+  echo "   Format is no arguments"
+  echo ""
+  exit 1
+fi
+
+echo "Checking that daedalus image is available for version requested"
+if [ ! -d /fs/system/images/publishing/daedalus_dikran ]; then
+  echo "   Images files for daedalus version daedalus_dikran"
+  echo "     do not exist, aborting"
+  exit 2
+fi
+
+echo "Setting Base Dir"
+if [ -e /lfs ]; then
+  echo "   Using /lfs for publishing files"
+  BASEDIR="/lfs"
+elif [ -e /www ]; then
+  echo "   Using /www for publishing files"
+  BASEDIR="/www"
+else
+  echo "   Local filesystem to be used as base dir not detected, aborting"
+  exit 3
+fi
+
+echo "Checking that local tools version of rc.daedalus exist"
+if [ ! -f ${BASEDIR}/system/tools/daedalus/bin/rc.daedalus ]; then
+  echo "   Local tools version of rc.daedalus does not exist, aborting"
+  exit 2
+fi
+
+if [ $ABORT_PUB_FS -eq 0 ]; then
+  echo "Checking to see if directory $PUB_FS exist"
+  if [ -d $PUB_FS ]; then
+    if [ `ls -l $PUB_FS | grep -v "^total 0$" | grep -v "lost+found" | wc -l` -gt 0 ]; then
+      echo "   $PUB_FS already exists and contains files"
+      echo "   ############################################"
+      echo ""
+      echo "   I am assumming that this is because    "
+      echo "   $PUB_FS                                      "
+      echo "   has already been setup correctly"      
+      echo ""
+      echo "   ############################################"
+      ABORT_PUB_FS=1 
+    else
+      echo "   $PUB_FS exist but contains no files"
+    fi
+  else
+    echo "   $PUB_FS does not exist"
+  fi
+fi
+
+if [ $ABORT_PUB_FS -eq 0 ]; then
+  echo "Creating publishing filesystem, $PUB_FS"
+  /lfs/system/tools/configtools/make_filesystem $PUB_FS $PUB_FS_SIZE $PUB_VG
+
+  if [ $? -gt 0 ]; then
+    echo "   Filesystem $PUB_FS was not able to be created, aborting"
+    exit 5
+  fi
+fi
+
+echo "Initial sync between AFS and local disk"
+echo "Code ......."
+${BASEDIR}/system/tools/configtools/filesync /fs/system/images/publishing/daedalus_dikran/ /opt/IBM/daedalus_dikran/ avc 1 0
+
+echo "Create /etc/rc.daedalus link"
+ln -sf ${BASEDIR}/system/tools/daedalus/bin/rc.daedalus /etc/rc.daedalus

@@ -1,0 +1,673 @@
+#!/usr/bin/ksh 
+
+#-----------------------------------------------------
+# rc.bNimble
+# description: Control script for bNimble Daemon.
+# hpear3@us.ibm.com - Wed Mar 21 10:04:57 UTC 2001
+# Hacked by milo@Wed Aug  1 20:32:37 CUT 2001
+# jensenb@us.ibm.com - 	One version for linux/aix/AFS/DFS
+# todds@us.ibm.com - Major cleanup and mods for bNimble2 - Jul 06
+# todds@us.ibm.com - Added code to remove the /tmp/bNimble<PID> dirs
+#                    Also added code to determine config file from a
+#                    standard log or start using the config specified
+#                    on the command line. -- 8/1/2008
+# todds@us.ibm.com - Added code to pick java version and bits from config
+#                    defaulting to standard java and 32 bits -- 8/1/2008
+# todds@us.ibm.com - Added code to look for the pubtool2 lock file - 8/19/2009
+#-----------------------------------------------------
+#
+# rc.bNimble [-v] [-d] [-b bNimble.jar] [-x NUM] [-n NUM] [-u USER] 
+# [[-l] [-c <config dir>]] {start|stop|stop9|restart|restart9|status|
+# print|check} {bNimbleConfig}
+#
+# verbose:       -v
+# force          -F
+# list configs   -l
+# debug:         -d
+# bnimble:       -b <...>
+# maXmem:        -x <...>
+# miNmem:        -n <...>
+# user:	         -u <...>
+# config dir     -c <...>
+#-----------------------------------------------------
+
+#
+# Define functions
+#
+
+command_syntax ()
+{
+ 	echo ""
+	echo "USAGE: "
+	echo " rc.bNimble [-v] [-F] [-d] [-b bNimble.jar] [-x NUM]"
+        echo "   [-n NUM] [-u USER] [[-l] [-c <config_dir>]]" 
+        echo "   {start|stop|stop9|restart|restart9|status|print|check}"
+	echo ""
+	echo " rc.bNimble [-v] [-F] [-d] [-b bNimble.jar] [-x NUM]"
+        echo "   [-n NUM] [-u USER]"
+        echo "   {start|stop|stop9|restart|restart9|status|print|check}"
+        echo "   {bNimbleConfig}"
+	echo ""
+	echo "    verbose:        -v"
+        echo "    force:          -F"
+        echo "    list configs:   -l"
+	echo "    debug:          -d"
+	echo "    bnimble:        -b <...>"
+	echo "    maXmem:         -x <...>"
+	echo "    miNmem:         -n <...>"
+	echo "    user:           -u <...>"
+        echo "    config dir      -c <...>"
+	echo ""
+	exit 2
+}
+
+check_tmp_dir ()
+{
+   for DIR in "$@"
+   do
+      FIND_CONF=`find $DIR -name $CONFIGFILE`
+      if [[ $FIND_CONF != "" ]]; then
+         rm -r /tmp/$(basename $DIR)
+      fi 
+   done
+}
+
+clean_tmp_dir ()
+{
+        echo "Cleaning bNimble directories from /tmp used during the start/stop process"
+	DIRLIST=`find /tmp -name 'bNimble*' -type d -prune | grep -f /lfs/system/tools/bNimble/conf/bNimble_dir.pat` 
+        check_tmp_dir ${DIRLIST}
+}
+
+
+#
+# Define base defaults
+#
+DEBUG_PARMS=""
+VERBOSE=0
+FORCE=0
+LIST_CONFS=0
+CONF_DIR=""
+BNIMBLE_JAR=latest
+MEM_MIN="-Xms128M"
+MEM_MAX="-Xmx512M"
+USER="pubinst"
+UMASK=022
+BITS=""
+USE_SSL="false"
+OS=`uname`
+CODE_BASE="/opt/IBM/bNimble2"
+KEYSTOREPASS=""
+TRUSTSTOREPASS=""
+HOST_PREFIX=""
+
+# Command line options (these override everything if used)
+while getopts vFldb:x:n:u:c: name
+do
+        case $name in
+		v)	VERBOSE=1 ;;
+                F)      FORCE=1 ;;
+                l)      LIST_CONFS=1 ;;
+                d)      DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE -Djavax.net.debug=true " ;;
+                b)      BNIMBLE_JAR="$OPTARG" ;;
+                x)      MEM_MAX="-Xmx${OPTARG}M" ;;
+                n)      MEM_MIN="-Xms${OPTARG}M" ;;
+                u)      USER="$OPTARG" ;;
+                c)      CONF_DIR="$OPTARG" ;;
+                ?) 	command_syntax;;
+        esac
+done
+
+shift $(($OPTIND -1))
+
+if [[ $VERBOSE = 1 ]] ; then
+	printf "Remaining arguments are: %s\n" "$*" 
+fi
+
+JAR_DIR=${CODE_BASE}/lib
+
+CONFIG_PARAM=$2
+if [[ $CONFIG_PARAM == "" && $LIST_CONFS -eq 0 ]]; then
+   if [[ -f /logs/pub_vars_per_node.log ]]; then
+      CONFIG_PARAM=`cat /logs/pub_vars_per_node.log | grep "CONF " | awk {'print $NF'}`
+   fi
+elif [[ $CONFIG_PARAM == "" && $LIST_CONFS -eq 1 ]]; then
+   if [[ $CONF_DIR == "" ]]; then
+      if [[ -f /logs/pub_vars_per_node.log ]]; then
+         CONF_DIR=`cat /logs/pub_vars_per_node.log | grep "CONF_DIR " | awk {'print $NF'}`
+      fi
+      if [[ $CONF_DIR == "" ]]; then
+         echo "Can not determine the directory where configs are stored"
+         exit 1
+      fi
+   fi
+   if [[ -d $CONF_DIR ]]; then
+      CONF_LIST=`ls $CONF_DIR | egrep "Distributor.*.conf|Endpoint.*.conf"`
+      if [[ $CONF_LIST != "" ]]; then
+         echo "Need to add code to process list"
+         exit
+      else
+         echo "No bNimble configs for is requested config dir"
+         exit 1
+      fi
+   else
+      echo "The requested configuration directory does not exist"
+      exit 1
+   fi
+fi
+ 
+CONFIGSTRIPPED=`echo $CONFIG_PARAM | sed s/\.conf$//`
+CONFIGEXT=.conf
+FULL_CONFIGFILE=${CONFIGSTRIPPED}${CONFIGEXT}
+if [[ $VERBOSE = 1 ]] ; then
+   echo "Param is $CONFIG_PARAM"
+   echo "Stripped Param is $CONFIGSTRIPPED"
+   echo "Requested CONF: $FULL_CONFIGFILE"
+fi
+
+# Check that the config file exist
+if [ ! -f $FULL_CONFIGFILE ] ; then
+  if [ $1 != "check" ]; then
+    echo "Config file does not exist"
+    exit 1
+  else
+    MESSAGE="$MESSAGE\n   Config file: Failed"
+    echo "Checked: Failed"
+    echo $MESSAGE
+    exit 3
+  fi
+elif [ $1 == "check" ]; then
+  MESSAGE="$MESSAGE\n   Config file: Passed"
+fi
+
+# Determine the conf file name and custtag from the CONFIGSTRIPPED param
+echo "$CONFIGSTRIPPED" | while IFS="/" read f1 f2 f3 f4 f5
+do
+   CUSTTAG=$f3
+   FILE=$f5
+done
+
+# Using the CUSTTAG and FILE determine what the pubtool2 lock file would be
+LOCKFILE="/projects/$CUSTTAG/config/pubtool2_${FILE}.lck"
+
+# Determine plex and then populate HOST_PREFIX
+PLEX=`/lfs/system/tools/configtools/get_plex.sh`
+
+case $PLEX in
+  p1)   HOST_PREFIX="v1 w1" ;;
+  p2)   HOST_PREFIX="v2 w2" ;;
+  p3)   HOST_PREFIX="v3 w3" ;;
+  p5)   HOST_PREFIX="v5" ;;
+esac
+
+# pull out rc.bNimble parameters in config file
+for i in `cat $FULL_CONFIGFILE				\
+	| grep -E "^[[:space:]]*#[[:space:]]*param"	\
+	| awk -F"param" '{print $2}'			\
+	| sed 's/^[[:space:]][[:space:]]*//g' 			\
+	| sed 's/[[:space:]][[:space:]]*/:/g'`
+do
+	if [[ $VERBOSE = 1 ]] ; then
+		echo "LINE: $i"
+	fi 
+	PARM=`echo $i | awk -F: '{print $1}'`
+	VAL=`echo $i | awk -F: '{print $2}'`
+	if [[ $VERBOSE = 1 ]] ; then
+		echo "PARM=$PARM VAL=$VAL"
+	fi 
+	case $PARM in
+	 DEBUG)		 DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE -Djavax.net.debug=true" ;;
+	 BNIMBLE_JAR)	 BNIMBLE_JAR=$VAL ;;
+	 MEM_MIN)	 MEM_MIN="-Xms${VAL}M" ;;
+	 MEM_MAX)	 MEM_MAX="-Xmx${VAL}M" ;;
+	 USER)		 USER=$VAL ;;
+         UMASK)          UMASK=$VAL ;;
+	 USE_SSL)	 USE_SSL=$VAL;;
+	 KEYSTORE)	 KEYSTORE=$VAL ;;
+	 TRUSTSTORE)	 TRUSTSTORE=$VAL ;;
+	esac
+done
+
+# Sanitize keyring values
+if [[ $KEYSTORE != [a-zA-Z_/]*.jks ]]; then
+  KEYSTORE=""
+fi
+if [[ $TRUSTSTORE != [a-zA-Z_/]*.jks ]]; then
+  TRUSTSTORE=""
+fi
+
+# get passwords for keyrings if we are using ssl
+if [[ $USE_SSL == "true" || $USE_SSL == "hybrid" ]]; then
+   if [ -f /home/${USER}/.bNimble ]; then
+     MESSAGE="$MESSAGE\n   Keyring password file: Passed"
+     KEYSTORENAME=`echo $KEYSTORE | awk -F "/" {'print $NF'}`
+     TRUSTSTORENAME=`echo $TRUSTSTORE | awk -F "/" {'print $NF'}`
+     if [[ $KEYSTORENAME == [a-zA-Z_]*.jks ]]; then
+       KEYSTOREPASS=`cat /home/${USER}/.bNimble | grep -F " $KEYSTORENAME " | awk {'print $NF'}`
+     else
+       KEYSTOREPASS=""
+     fi
+     if [[ $TRUSTSTORENAME  == [a-zA-Z_]*.jks ]]; then
+       TRUSTSTOREPASS=`cat /home/${USER}/.bNimble | grep -F " $TRUSTSTORENAME " | awk {'print $NF'}`
+     else
+       TRUSTSTOREPASS=""
+     fi
+   else
+     if [ $1 != "check" -a $1 != "print" ]; then
+       echo "File containing keyring passwords does not exist in $USER home dir"
+       exit 3
+     else
+       CHECK_FAILED=1
+       MESSAGE="$MESSAGE\n   Keyring password file: Failed"
+     fi
+   fi
+   if [ $1 == "check" ]; then
+     if [ -f $KEYSTORE ]; then
+       MESSAGE="$MESSAGE\n   KEYSTORE -- $KEYSTORE: Passed"
+     else
+       CHECK_FAILED=1
+       MESSAGE="$MESSAGE\n   KEYSTORE -- $KEYSTORE: Failed"
+     fi
+
+     if [ -n "$KEYSTOREPASS" ]; then
+       MESSAGE="$MESSAGE\n   KEYSTORE password: Passed"
+     else
+       CHECK_FAILED=1
+       MESSAGE="$MESSAGE\n   KEYSTORE password: Failed"
+     fi
+
+     if [ -f $TRUSTSTORE ]; then
+       MESSAGE="$MESSAGE\n   TRUSTSTORE -- $TRUSTSTORE: Passed"
+     else
+       CHECK_FAILED=1
+       MESSAGE="$MESSAGE\n   TRUSTSTORE -- $TRUSTSTORE: Failed"
+     fi
+
+     if [ -n "$TRUSTSTOREPASS" ]; then
+       MESSAGE="$MESSAGE\n   TRUSTSTORE password: Passed"
+     else
+       CHECK_FAILED=1
+       MESSAGE="$MESSAGE\n   TRUSTSTORE password: Failed"
+     fi
+   fi
+fi
+
+#Setup temporary config file location
+MAIN_SITE=`cat $FULL_CONFIGFILE                         \
+	| grep -E "^[[:space:]]*#[[:space:]]*define"    \
+        | grep -E MAIN_SITE                             \
+        | awk '{print $NF}'`
+RUNDIR="/tmp/bNimble$$"
+mkdir -p $RUNDIR/$MAIN_SITE/config
+chmod -R a+r,a+x $RUNDIR
+CONFIGFILE=`echo $FULL_CONFIGFILE | sed s/[/]/#/g | awk -F"#" '{print $NF}'`
+FOO=`echo $CONFIGFILE | sed s/[/]/\./g`
+USETHIS="$RUNDIR/$MAIN_SITE/config/$CONFIGFILE"
+USETHIS_TMP="$RUNDIR/$MAIN_SITE/config/$CONFIGFILE.tmp"
+
+cp $FULL_CONFIGFILE $USETHIS
+
+# pull out defines in config file
+for i in `cat $FULL_CONFIGFILE                          \
+	| grep -E "^[[:blank:]]*#[[:blank:]]*define"    \
+	| awk -F"define" '{print $2}'                   \
+	| sed s/^[[:space:]]*//g                        \
+	| sed s/[[:space:]][[:space:]]*/\%/g`
+do
+	PARM=`echo $i | awk -F"%" '{print $1}'`
+	VAL=`echo $i | awk -F"%" '{print $2}'`
+	if [[ $VERBOSE = 1 ]] ; then
+		echo "Substituting $PARM with $VAL"
+	fi
+	cat $USETHIS | egrep -v define | sed s^%$PARM%^$VAL^g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+done
+
+if [[ -f /logs/pub_vars_per_node.log ]]; then
+   JAVA=`cat /logs/pub_vars_per_node.log | grep JAVA | awk {'print $NF'}`
+   BITS=`cat /logs/pub_vars_per_node.log | grep BITS | awk {'print $NF'}`
+   if [[ $BITS != 64 ]]; then
+      BITS=""
+   fi
+fi
+
+case "$OS" in
+  AIX)
+        if [[ $JAVA == "" ]]; then
+	   JAVA=/usr/java5/jre/bin/java
+        fi
+	PS="ps -ef"
+	NATIVE_SYMLINK_LIBRARY="${CODE_BASE}/lib/native/AIX/SymLink/symlink${BITS}.so" ;;
+  Linux)
+        if [[ $JAVA == "" ]]; then
+	   JAVA=/usr/bin/java
+        fi
+	PS="ps --cols 1000 -ef"
+	ARCH=`uname -m`
+	case "$ARCH" in
+		ppc64)  NATIVE_SYMLINK_LIBRARY="${CODE_BASE}/lib/native/Linux_ppc64/SymLink/symlink${BITS}.so" ;;
+		i686)  NATIVE_SYMLINK_LIBRARY="${CODE_BASE}/lib/native/Linux_i686/SymLink/symlink.so" ;;
+		x86_64)  NATIVE_SYMLINK_LIBRARY="${CODE_BASE}/lib/native/Linux_x86_64/SymLink/symlink${BITS}.so" ;;
+	esac
+	;;
+  *)
+	echo "Unknown OS type $OS. Exiting."
+	exit 1
+	;;
+esac
+
+if [[ ! -f $JAVA ]]; then
+   echo "Requested version of java"
+   echo "$JAVA"
+   echo "not found"
+   exit 2
+fi
+
+if [[ ! -f $NATIVE_SYMLINK_LIBRARY ]]; then
+   echo "Native library "
+   echo "$NATIVE_SYMLINK_LIBRARY"
+   echo "not found"
+   exit 2
+fi
+ 
+if [[ $VERBOSE = 1 ]]; then
+   echo "OS is $OS"
+fi
+
+# %HOST_PREFIX% is a special variable that gets substituted with the current Host Prefixes
+cat $USETHIS | egrep -v define | sed s/%HOST_PREFIX%/"$HOST_PREFIX"/g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+# %NATIVE_SYMLINK_LIBRARY% is a special variable that gets set based on OS
+NATIVE_SYMLINK_LIBRARY=`echo $NATIVE_SYMLINK_LIBRARY | sed -e 's/[/]/\\\\\//g'`
+cat $USETHIS | egrep -v define | sed s/%NATIVE_SYMLINK_LIBRARY%/$NATIVE_SYMLINK_LIBRARY/g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+
+if [[ $USE_SSL = "true" ]] ; then
+	TRUSTSTOREPARM=`echo $TRUSTSTORE | sed -e 's/[/]/\\\\\//g'`
+	TRUSTSTOREPASSPARM=$TRUSTSTOREPASS
+	KEYSTOREPARM=`echo $KEYSTORE | sed -e 's/[/]/\\\\\//g'`
+        KEYSTOREPASSPARM=$KEYSTOREPASS
+
+	cat $USETHIS | egrep -v define | sed s/%TRUSTSTORE%/$TRUSTSTOREPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%TRUSTSTOREPASS%/$TRUSTSTOREPASSPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%KEYSTORE%/$KEYSTOREPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+	cat $USETHIS | egrep -v define | sed s/%KEYSTOREPASS%/$KEYSTOREPASSPARM/g > $USETHIS_TMP
+	mv -f $USETHIS_TMP $USETHIS
+
+fi  
+
+if [ $1 != "print" ]; then
+  chown $USER $RUNDIR/$MAIN_SITE/config/$CONFIGFILE
+fi
+chmod 600 $RUNDIR/$MAIN_SITE/config/$CONFIGFILE
+
+FULL_CONFIGFILE=$USETHIS
+
+if [ $1 != "check" -a $1 != "print" -a $1 != "stop9" ]; then
+   if [ -d $JAR_DIR ]; then
+	cd $JAR_DIR
+	unalias ls
+	if [[ "$BNIMBLE_JAR" = "latest" ]] ; then
+		BNIMBLE_JAR=`ls bNimblePublishing*jar | egrep 'bNimblePublishing[0-9]+.jar' | sort | tail -1`
+        elif [[ ! -f ${JAR_DIR}/$BNIMBLE_JAR ]] ; then
+           echo "Configured jar file does not exist, exiting"
+           exit 4
+	fi
+	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}"
+	JAVA_ARGS="$MEM_MIN $MEM_MAX $DEBUG_PARMS -classpath ${JAVA_CLASSPATH} com.ibm.webos.daedalus.Daedalus" 
+        JAVA_SSL_ARGS="-Djavax.net.ssl.trustStore=$TRUSTSTORE -Djavax.net.ssl.trustStorePassword=\"$TRUSTSTOREPASS\" -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=\"$KEYSTOREPASS\""
+        if [[ $USE_SSL = "hybrid" ]]; then
+          BNIMBLE="$JAVA $JAVA_SSL_ARGS $JAVA_ARGS"
+        else
+	  BNIMBLE="$JAVA $JAVA_ARGS"
+        fi
+   else
+        echo "Base code is not installed, exiting"
+        exit 3
+   fi
+fi
+
+####################################################################
+# Vars that need to be set after OS is determined
+BNIMBLE_HOME=`grep -E "^[[:blank:]]*[h|H]ome[[:blank:]]*=[[:blank:]]*" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+BNIMBLE_LOGFILE=$BNIMBLE_HOME/output.log
+PORT=`grep -E "^[[:blank:]]*[p|P]ort[[:blank:]]*=[[:blank:]]*" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+####################################################################
+
+        if [[ $VERBOSE = 1 ]] ; then
+	   echo ""
+	   echo "The following are the list of configured parameters"
+           echo "HOST_PREFIX:  $HOST_PREFIX"
+	   echo "PORT:         $PORT"
+	   echo "BNIMBLE_HOME  $BNIMBLE_HOME"
+	   echo "BNIMBLE_LOG   $BNIMBLE_LOGFILE"
+	   echo "BNIMBLE:      $BNIMBLE"
+	   echo "USE_SSL:      $USE_SSL"
+	   echo "BNIMBLE_JAR:  $BNIMBLE_JAR"
+	   echo "MEM_MAX:      $MEM_MAX"
+	   echo "MEM_MIN:      $MEM_MIN"
+	   echo "USER:         $USER"
+           echo "UMASK:        $UMASK"
+	   echo "JAVA:         $JAVA"
+	   echo "FULL_CONFIG:  $FULL_CONFIGFILE"
+	   echo "SYMLINK_LIB:  $NATIVE_SYMLINK_LIBRARY"
+	   echo "DEBUG_PARMS:  $DEBUG_PARMS"
+	   if [[ $USE_SSL = "true" ]] ; then
+   		echo "TRUSTSTORE:   $TRUSTSTORE"
+		echo "TRUSTPASS:    $TRUSTSTOREPASS"
+		echo "KEYSTORE:     $KEYSTORE"
+		echo "KEYPASS:      $KEYSTOREPASS"
+   	   fi
+       fi
+
+####################################################################
+case "$1" in
+  start)
+        if [[ `$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | grep -v rc.bNimble | wc -l` -gt 0 ]] ; then
+                MESSAGE=" bNimble running with config \n $CONFIGFILE \n on port $PORT \n appears to be running. Try restarting it."
+                print "$MESSAGE"
+                exit 1
+        fi
+        if [[ -f $LOCKFILE && $FORCE -eq 0 ]]; then
+           MESSAGE=" The previous running bNimble config had been altered using pubtool.\n That process was stopped without removing the lockfile.  If you \n want to start this process, add the -F parameter to force the start."
+           print "$MESSAGE"
+           exit 1
+        elif [[ -f $LOCKFILE && $FORCE -eq 1 ]]; then
+           rm $LOCKFILE
+        fi
+
+	#Deal with issue where permission on /opt/IBM are set so that only root can view subdirectories
+	su - $USER -c "ls -ld /opt/IBM/bNimble*/ >/dev/null 2>&1" 
+	if [ $? -ne 0 ]; then
+		echo "Fixing permissions on /opt/IBM so $USER has access"
+		chmod a+rx /opt/IBM
+	fi
+	echo ""
+	echo "Starting $BNIMBLE_JAR using $FULL_CONFIGFILE, logging to $BNIMBLE_LOGFILE:"
+	echo "$FULL_CONFIGFILE"
+	echo "$BNIMBLE_LOGFILE"
+
+		# hack to get stuff to work with dssh/dsh/etc
+		RUNTHIS="$RUNDIR/bNimble$$"
+		cd $RUNDIR
+		echo "cd $RUNDIR" > $RUNTHIS
+                echo "umask $UMASK" >> $RUNTHIS
+		chown $USER $RUNTHIS
+                chmod u+x $RUNTHIS
+		echo "$BNIMBLE ${MAIN_SITE}/config/$CONFIGFILE >> $BNIMBLE_LOGFILE" >> $RUNTHIS
+		echo "su - $USER -c $RUNTHIS > /dev/null 2>&1" | at now
+		echo "Giving bNimble 5 seconds to get started."
+		sleep 5
+	        echo "Number of procs: \c"
+	        $PS | grep $CONFIGFILE | grep bNimble | grep -v grep | grep -v rc.bNimble | wc -l
+	echo ""
+	;;
+  stop)
+        if [[ `$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | grep -v rc.bNimble | wc -l` -eq 0 ]] ; then
+                MESSAGE=" bNimble running with config \n $CONFIGFILE \n on port $PORT \n does not appear to be running."
+                print "$MESSAGE"
+                exit 1
+        fi
+
+        if [[ -f $LOCKFILE && $FORCE -eq 0 ]]; then
+           MESSAGE=" The running bNimble config has been altered using pubtool.\n If you want to stop this process, add the -F parameter \n to force the stop."
+           print "$MESSAGE"
+           exit 1
+        elif [[ -f $LOCKFILE && $FORCE -eq 1 ]]; then
+           rm $LOCKFILE
+        fi
+	echo ""
+	echo "Shutting down bNimble running with config"
+        echo "$CONFIGFILE"
+        echo "on port $PORT:"
+
+	if [[ $USE_SSL = "true" ]] ; then
+		echo "$JAVA -Djavax.net.ssl.trustStore=$TRUSTSTORE -Djavax.net.ssl.trustStorePassword=$TRUSTSTOREPASS -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=$KEYSTOREPASS -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -ssl -host localhost -port ${PORT} -term"
+		$JAVA -Djavax.net.ssl.trustStore=$TRUSTSTORE -Djavax.net.ssl.trustStorePassword=$TRUSTSTOREPASS -Djavax.net.ssl.keyStore=$KEYSTORE -Djavax.net.ssl.keyStorePassword=$KEYSTOREPASS -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -ssl -host localhost -port ${PORT} -term
+	else
+		echo "$JAVA -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term"
+		$JAVA -classpath ${JAR_DIR}/${BNIMBLE_JAR} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term
+	fi
+
+	sleep 10
+	numprocs=`$PS | grep $CONFIGFILE | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Try rc.bNimble stop9 to kill"
+		exit 1
+	fi
+        clean_tmp_dir
+	;;
+  stop9)
+        if [[ -f $LOCKFILE && $FORCE -eq 0 ]]; then
+           MESSAGE=" The running bNimble config has been altered using pubtool.\n If you want to stop this process, add the -F parameter \n to force the stop."
+           print "$MESSAGE"
+           exit 1
+        elif [[ -f $LOCKFILE && $FORCE -eq 1 ]]; then
+           rm $LOCKFILE
+        fi
+	echo ""
+	echo "Shutting down bNimble running with config"
+        echo "$CONFIGFILE"
+        echo "on port $PORT"
+        echo "the hard and nasty -9 way:"
+	echo ""
+
+	echo -n "Killing:  "
+	for pid in `$PS | grep $CONFIGFILE | grep ${BNIMBLE_JAR} | grep -v grep | grep -v $0 | awk '{print $2;}'`
+	do
+		echo -n " $pid"
+		kill -9 $pid
+	done
+	echo ""
+
+	sleep 5
+	numprocs=`$PS | grep $CONFIGFILE | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Better just kill them by hand"
+                exit 1
+	fi
+        clean_tmp_dir
+	;;
+  status)
+	echo "========== bNimble Status =========="
+        echo "bNimble running with config"
+        echo "$CONFIGFILE"
+        echo "on port $PORT"
+	echo "Number of procs: \c"
+	$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | grep -v rc.bNimble | wc -l
+	echo ""
+	;;
+  print)
+        cat $FULL_CONFIGFILE
+        echo "# file is $USETHIS"
+        ;;
+  check)
+        /etc/rc.bNimble print ${CONFIG_PARAM} | grep -E 'home|Disk-Queue-Directory|Document-Root|Backup-Root' | awk '{print $3}'| sort | uniq > /tmp/init.$$
+
+        DIRLIST=`cat /tmp/init.$$`
+
+        for DIRECTORY in $DIRLIST
+        do
+          if [ -d $DIRECTORY ]; then
+            MESSAGE="$MESSAGE\n   $DIRECTORY exist: Passed"
+          else
+            CHECK_FAILED=1
+            MESSAGE="$MESSAGE\n   $DIRECTORY exist: Failed"
+          fi
+        done
+
+        rm -f /tmp/init.$$
+
+        if [ $1 == "check" ]; then
+          if [ -d $JAR_DIR ]; then
+            MESSAGE="$MESSAGE\n   Code installed: Passed"
+          else
+            CHECK_FAILED=1
+            MESSAGE="$MESSAGE\n   Code installed: Failed"
+          fi
+          
+          if [ -f ${JAR_DIR}/$BNIMBLE_JAR ]; then
+            MESSAGE="$MESSAGE\n   JAR File: Passed"
+          else
+            CHECK_FAILED=1
+            MESSAGE="$MESSAGE\n   JAR File: Failed"
+          fi
+
+          if [ -f $JAVA ]; then
+            MESSAGE="$MESSAGE\n   Java Executable: Passed"
+          else
+            CHECK_FAILED=1
+            MESSAGE="$MESSAGE\n   Java Executable: Failed"
+          fi
+
+          if [ -e /etc/rc.bNimble ]; then
+            MESSAGE="$MESSAGE\n   rc.bNimble link: Passed"
+          else
+            CHECK_FAILED=1
+            MESSAGE="$MESSAGE\n   rc.bNimble link: Failed"
+          fi
+        fi
+
+
+        if [ $CHECK_FAILED ]; then
+          echo "Check: Failed"
+          echo $MESSAGE
+        else
+          echo "Check: Passed"
+          echo $MESSAGE
+        fi
+        ;;
+  restart)
+        echo "Stopping bNimble using command:"
+        echo "$0 stop $CONFIG_PARAM"
+        echo ""
+	$0 stop $CONFIG_PARAM
+        sleep 10 
+        echo "Starting bNimble using command:"
+        echo "$0 start $CONFIG_PARAM"
+        echo ""
+	$0 start $CONFIG_PARAM
+	;;
+  restart9)
+        echo "Stopping bNimble using command:"
+        echo "$0 stop9 $CONFIG_PARAM"
+        echo ""
+	$0 stop9 $CONFIG_PARAM
+        sleep 5
+        echo "Starting bNimble using command:"
+        echo "$0 start $CONFIG_PARAM"
+        echo ""
+	$0 start $CONFIG_PARAM
+	;;
+  *)    command_syntax;;
+esac
+####################################################################
+exit 0
+

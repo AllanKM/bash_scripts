@@ -1,0 +1,16 @@
+#!/bin/ksh
+
+DL="/etc/rc.daedalus"
+EXIT_NO=0
+
+if [ ! -e $DL ]; then
+  echo "Missing /etc/rc.daedalus"
+  EXIT_NO=1
+fi
+
+if [ ! -d /opt/IBM/daedalus_dikran/lib ]; then
+  echo "Missing base daedalus_dikran code"
+  EXIT_NO=1
+fi
+
+exit $EXIT_NO 

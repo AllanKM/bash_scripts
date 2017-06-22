@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Init file for IHS
+#
+### BEGIN INIT INFO
+# Provides: IBM-HTTPD
+# Required-Start: $network $local_fs $remote_fs
+# Required-Stop: $network $local_fs $remote_fs
+# Default-Start: 3 5
+# Default-Stop: 0 1 2 6
+# Short-Description: IHS HTTP Server
+# Discription:  Starts IHS HTTP Server to provide web services
+### END INIT INFO
+
+
+# source function library
+if [ -f /etc/rc.d/init.d/functions ] ; then
+        . /etc/rc.d/init.d/functions
+else
+        success () {
+                echo "Success: $1"
+        }
+
+        failure () {
+                echo "Fail: $1"
+        }
+fi
+
+#Cover the case of no user env
+if [ "$USER" = "" ] ; then
+   export USER=root
+fi
+
+# Set search path
+export PATH=$PATH:/sbin:/usr/sbin:/usr/local/sbin:/root/bin:/usr/local/bin:/usr/bin:/bin
+
+case "$1" in
+        start)
+               if [ -x /lfs/system/tools/ihs/bin/rc.ihs ] ; then
+                  echo -n "Starting IHS Server(s): "
+                  /lfs/system/tools/ihs/bin/rc.ihs -i all start all
+                  RETVAL=$?
+                  if [ "$RETVAL" = "0" ] ; then
+                     success "IHS Server startup"
+                  else
+                     failure "IHS Server startup"
+                  fi
+               fi
+               echo
+               ;;
+         stop)
+               if [ -x /lfs/system/tools/ihs/bin/rc.ihs ] ; then
+                  echo -n "Shutting down IHS Server(s): "
+                  /etc/rc.itm stop ht
+                  /lfs/system/tools/ihs/bin/rc.ihs -i all stop all
+                  RETVAL=$?
+                  if [ "$RETVAL" = "0" ] ; then
+                     success "IHS Server shutdown"
+                  else
+                     failure "IHS Server shutdown"
+                  fi
+               fi
+               echo
+               ;;
+esac
+
+exit $RETVAL

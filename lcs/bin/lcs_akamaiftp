@@ -1,0 +1,109 @@
+#!/bin/ksh
+
+# Make ncftpget do all the work
+#
+# ncftpget returns the following exit values: 
+#
+#   0 Success. 
+#   1 Could not connect to remote host. 
+#   2 Could not connect to remote host - timed out. 
+#   3 Transfer failed. 
+#   4 Transfer failed - timed out. 
+#   5 Directory change failed. 
+#   6 Directory change failed - timed out. 
+#   7 Malformed URL. 
+#   8 Usage error. 
+#   9 Error in login configuration file. 
+#  10 Library initialization failed. 
+#  11 Session initialization failed. 
+#
+
+# NOTE: This locking method will not work in NFS - due to possible PID clash
+mklockfile () {
+  tempfile="$1.$$"
+  lockfile="$1.lock"
+  #{ echo $$ > $tempfile } >/dev/null 2>&1 || {
+  echo $$ >$tempfile 2>/dev/null || {
+    echo "You don't have permission to access `dirname $tempfile`"
+    return 1
+  }
+  ln $tempfile $lockfile >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 0
+  }
+  kill -0 `cat $lockfile` >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 1
+  }
+  echo "Removing stale lock file"
+  rm -f $lockfile
+  ln $tempfile $lockfile >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 0
+  }
+  rm -f $tempfile
+  return 1
+}
+
+getip () {
+  h=`ping -c 1 -w 1 $1 2>/dev/null | grep PING`
+  h=${h#*\(}
+  h=${h%%\)*}
+  echo $h
+}
+
+myhost=`hostname`
+myip=`getip $myhost`
+
+# If first argument exists, it is a host that the script
+# is allowed to proceed on, otherwise quietly exit
+if [ -n "$1" ] ; then
+  ip=`getip $1`
+  if [ "$ip" != "$myip" ] ; then
+    #echo "$1 ($ip) does not match local host $myhost ($myip)"
+    exit 0
+  fi
+fi
+
+umask 022
+
+lcldestdir="/logs/cache"
+lclmovedir="/logs/cache/akamai"
+
+ncftpget="/usr/bin/ncftpget"
+
+ftphost="ibmspecial.download.akamai.com"
+ftpuser="ibmspecialdown"
+ftppass="l0gsrg00d"
+
+# Wait for a lock
+until mklockfile $0 ; do
+  sleep 1
+done
+# Should now have $nodefile.lock with PID for contents
+
+if [ -x "$ncftpget" ] ; then
+  if [ -d "$lcldestdir" ] ; then
+    cd $lcldestdir
+    echo "`date` - START"
+    $ncftpget -DD -u $ftpuser -p $ftppass $ftphost $lcldestdir \*.gz
+    rc=$?
+    if [ $rc -eq 0 ] ; then
+      ls -l *.gz
+      mv $lcldestdir/*.gz $lclmovedir
+    else
+      echo "`date` - $ncftpget error ($rc)"
+    fi
+    echo "`date` - END"
+    echo "====="
+  else
+    echo "`date` - $lcldestdir directory does not exist"
+  fi
+else
+  echo "`date` - $ncftpget program not found"
+fi
+
+# Remove the lock,
+rm -f $0.lock
+
+exit 0

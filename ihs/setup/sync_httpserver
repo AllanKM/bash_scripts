@@ -1,0 +1,111 @@
+#!/bin/ksh
+
+# This script performs all the steps to sync the global webserver
+# It also creates the appropriate symlinks
+
+echo "Setting umask"
+umask 002
+
+# Default Values
+CUSTTAG=""
+CUSTENV=""
+DESTDIR=/usr/HTTPServer
+TOOLSDIR=/lfs/system/tools
+
+#process command-line options
+until [ -z "$1" ] ; do
+        case $1 in
+                cust=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTTAG=$VALUE; fi ;;
+                env=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTENV=$VALUE; fi ;;
+                root=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then DESTDIR=$VALUE; fi ;;
+                toolsdir=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then TOOLSDIR=$VALUE; fi ;;
+                *)      print -u2 -- "#### Unknown argument: $1"
+                        print -u2 -- "#### Usage: $0 [ cust=< label given the customer > ] [ env =< Environment for this install > ]"
+                         print -u2 -- "####          [ toolsdir=< location of ei local tools directory ]"
+                        exit 1
+                        ;;
+        esac
+        shift
+done
+
+echo "Checking the ihs is installed and /projects was created"
+if [[ ! -d ${DESTDIR}/bin ]]; then
+  echo "   IHS is not installed on this node, aborting"
+  exit 2
+fi
+
+if [[ ! -d /projects ]]; then
+  echo "   /projects does not exist on this node, aborting"
+  exit 2
+fi
+
+# Determine which standard to follow
+if [[ -d /fs/${CUSTTAG} && ${CUSTENV} = "" ]]; then
+   GLOBAL_BASE="/fs/${CUSTTAG}"
+elif [[ -d /fs/projects/${CUSTENV}/${CUSTTAG} && ${CUSTENV} != "" ]]; then
+   GLOBAL_BASE="/fs/projects/${CUSTENV}/${CUSTTAG}"
+else
+   echo "Can not find global master base directory"
+   echo "Aborting httpserver sync"
+   exit 1
+fi
+
+# Determine HTTP Dir
+HTTPDIR=`echo ${DESTDIR} | cut -d"/" -f3`
+
+if [[ ! -d /projects/${HTTPDIR} ]]; then
+   # Create local global server dir
+   mkdir /projects/${HTTPDIR}
+fi
+
+echo "Sync'ing global server directories"
+echo "   config dir ...."
+${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/conf/ /projects/${HTTPDIR}/conf/ "avc --exclude=RCS --exclude=plugin-cfg*.xml*" 1 1
+
+echo "   etc dir ...."
+${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/etc/ /projects/${HTTPDIR}/etc/ "avc --exclude=RCS" 1 0
+
+echo "   modules dir ...."
+
+${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/modules/ ${DESTDIR}/modules/ "avc --exclude=RCS" 0 0
+
+#Determine if there is a ei_redirect module for this server and if so sync redd
+ls ${GLOBAL_BASE}/HTTPServer/modules/mod_ei_redirect*.so > /dev/null 2>&1
+if [[ "$?" == 0 ]]; then
+   echo "   redd daemon for redirect module ....."
+   ${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/bin/redd ${DESTDIR}/bin/ "avc --exclude=RCS" 0 0
+fi
+
+echo "   lib dir ...."
+${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/lib/ ${DESTDIR}/lib/ "avc --exclude=RCS" 0 0
+
+echo "   content dir ...."
+${TOOLSDIR}/configtools/filesync ${GLOBAL_BASE}/HTTPServer/content/ /projects/${HTTPDIR}/content/ "avc --exclude=RCS" 1 0
+
+echo ""
+if [[ ! -f /projects/${HTTPDIR}/content/site.txt ]]; then
+   # Call the site.txt creation script
+   ${TOOLSDIR}/ihs/setup/mksitetxt_apps.ksh
+fi
+
+echo ""
+echo "Creating global server symlinks"
+echo "   httpd.conf symlink ...."
+ln -sf /projects/${HTTPDIR}/conf/httpd.conf ${DESTDIR}/conf/httpd.conf
+
+if [[ -f /projects/${HTTPDIR}/config/ldap.prop ]]
+then
+  echo "   ldap.prop symlink ...."
+  ln -fs /projects/${HTTPDIR}/config/ldap.prop ${DESTDIR}/conf/ldap.prop
+fi
+
+echo "Create symlink from /projects/ihscluster to the shared global directory"
+echo "for the webserver cluster"
+case `uname` in
+   AIX)
+      ln -sf $GLOBAL_BASE /projects/ihscluster
+   ;;
+   Linux)
+      ln -sfn $GLOBAL_BASE /projects/ihscluster
+   ;;
+esac

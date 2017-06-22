@@ -1,0 +1,39 @@
+/logs/was51/http_plugin.log   
+{  daily
+   copytruncate
+   rotate 1
+   compress
+   missingok
+}
+
+/logs/was/http_plugin.log
+{  daily
+   copytruncate
+   rotate 1
+   compress
+   missingok
+}
+
+/logs/was60/http_plugin.log
+{  daily
+   copytruncate
+   rotate 1
+   compress
+   missingok
+}
+
+/logs/HTTPServer/Plugins/http_plugin.log
+{  daily
+   copytruncate
+   rotate 1
+   compress
+   missingok
+}
+
+/logs/HTTPServer/Plugins70/http_plugin.log
+{  daily
+   copytruncate
+   rotate 1
+   compress
+   missingok
+}

@@ -1,0 +1,1143 @@
+#!/usr/local/bin/perl
+#
+
+eval 'exec /usr/local/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+# Determine if we can use the Directory Store module
+my $dirstore;
+BEGIN {
+  $dirstore = 0;
+  eval { require EI::DirStore };
+  unless ($@) {
+    EI::DirStore->import();
+    $dirstore = 1;
+  }
+}
+
+use strict;
+use Getopt::Long;
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Sys::Syslog qw(:DEFAULT setlogsock);
+use Time::Local;
+
+umask 022;
+
+$| = 1;
+
+# Determine self identity
+my $mylname = $0;
+my $mysname = $mylname;
+$mysname =~ s%^.*/%%;
+my $mypath = $mylname;
+$mypath =~ s%$mysname$%%;
+$mypath = './' if ($mypath eq '');
+$mypath =~ s%/$%%g;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+# Determine who is running this
+my ($realuser,$effuser);
+($realuser) = getpwuid($<);
+($effuser) = getpwuid($>);
+
+# Where are we running from
+my $tty;
+$tty = ttyname(*STDIN);
+$tty = "UNKNOWN" if ($? ne 0 || $tty eq '' || $tty =~ / /);
+
+# Define some of the settings we need (some based on OS)
+my($os);
+($os) = uname();
+
+# Argument capture - how were we invoked
+my @allargv = @ARGV;
+
+my %zipinfo = (
+  "Z" => {
+    "multiple" => 0,                    # concatenate compressed files
+    "ccmd" => "compress",               # compress command
+    "cargs" => "",                      # arguments to compress file
+    "ucmd" => "uncompress",             # uncompress command
+    "uargs" => "-c",                    # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "gz" => {
+    "multiple" => 1,                    # concatenate compressed files
+    "ccmd" => "gzip",                   # gzip compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "gzip",                   # gzip uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+  "bz2" => {
+    "multiple" => 1,                    # concatenate compressed files
+    "ccmd" => "bzip2",                  # bzip2 compress command
+    "cargs" => "-9",                    # arguments to compress file
+    "ucmd" => "bzip2",                  # bzip2 uncompress command
+    "uargs" => "-d -c",                 # arguments assume uncompress from
+  },                                    #  a file and sent to a pipe
+);
+my $zregex = '(\.'.join("|\.",sort keys %zipinfo).')?';
+
+my $lcs_ctl = "lcs_ctl";                # Control configurations
+my $cfgdir = "/opt/HPODS/LCS/conf";     # Daemon configuration dir
+my $cfgbase = "$cfgdir/";               # Configuration base filespec
+my $cfgext = ".conf";                   # Configuration filespec extension
+
+my %clargs = ();
+my $rc = &main::GetOptions(
+  # Script options
+  'debug' => sub { $clargs{$_[0]} = 1 },
+);
+if (! $rc) {
+  usage($mysname);
+  exit 1;
+}
+
+my $debug = $clargs{debug} || 0;
+
+# Set up cache file for DirStore data
+my $cachedir="/var/cache";
+if (! -d $cachedir) {
+  # Make FHS compliant cachedir if we can
+  mkdir($cachedir,0755);
+  chown(0,0,$cachedir);
+  $cachedir="/tmp" if (! -d $cachedir || ! -w $cachedir);
+}
+
+my $fnodes = "nodes";                    # Filename for nodes files
+my $mytime = time();                     # Wall clock time
+my $ts = "196912312359";                 # Bogus timestamp YYYYmmddHHMM
+my $mvinterval = 6*60;                   # Seconds to move .$fnodes to $fnodes
+my $dscache="$cachedir/LCS_DirStore";    # DirStore cache file
+my $dsmaxage = 900;                      # DirStore cache file max age
+
+# Bad hardcodes
+#  siteprefix is used if AggServer site->archivedirectory is not set
+my $siteprefix = "/ftp/events";          # Site-specific directory prefix
+#  extension is used if site configuration file does not have logextension
+my $extension = "%Y%m%d%H%M";            # Extension ONLY supports:
+                                         #  %Y%m%d%H%M, %Y%m%d%H, %Y%m%d
+#  interval is used if site configuration file does not have a loginterval
+my $interval = 6*60;                     # Six minute timestamp
+#  timeout is used if site configuration file does not have a timeout
+my $timeout = 60*60;                     # Seconds to delay the move while
+                                         # check is made on all files present
+#  if .nodes.<timestamp> files exist, we auto fill-in missing timeslices
+my $maxnodeage = 30*(24*60*60);          # Max age for .nodes auto-fill-in
+                                         # remove nodes lists older than this
+                                         # default: 30 days since we last ran
+
+### MAIN ###
+
+my %NODES = ();
+my %DSNODES = ();
+my %allinst = ();
+my %cfgs = ();
+my @cfglst = ();
+if (opendir(DIR,$cfgdir)) {
+  @cfglst = grep($_ =~ /^$lcs_ctl\S*$cfgext$/,(readdir(DIR)));
+  closedir(DIR);
+  if (@cfglst) {
+    foreach my $cfg (sort @cfglst) {
+      my $i = $cfg;
+      $i =~ s/$cfgext$//;
+      logit($mysname,1,"Loading $lcs_ctl $cfg $i") if ($debug);
+      loadfile(\%cfgs,"$cfgbase$cfg",$i,1);
+      foreach my $key (keys %cfgs) {
+        if (! defined $allinst{$key}) {
+          $allinst{$key} = $i;
+        }
+      }
+    }
+  }
+}
+
+# Build valid sites list based on control files
+my %loaded = ();
+my %sitehsh = ();
+my ($site,$line,$key,$value);
+foreach $site (sort keys %cfgs) {
+  logit($mysname,1,"Control file parse for $site") if ($debug);
+  if (defined $cfgs{$site}{generatenodelist}) {
+    if (defined $cfgs{$site}{aggregate}) {
+      if (grep($host eq $_ || $host =~ /$_/, @{$cfgs{$site}{aggregate}})) {
+        my ($year,$mon,$mday,$hour,$min,$sec);
+        logit($mysname,1,"Control file valid site $site") if ($debug);
+        if (defined $cfgs{$site}{dateend}) {
+          ($year,$mon,$mday,$hour,$min,$sec) =
+            unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{dateend}})[$[]);
+          if ($year eq "" || $mon eq "" || $mday eq "") {
+            logit($mysname,1,"Invalid DateEnd value; must be ".
+                  "YYYYMMDD[hh[mm[ss]]]");
+            next;
+          }
+          $hour = 0 if ($hour eq "");
+          $min = 0 if ($min eq "");
+          $sec = 0 if ($sec eq "");
+          my $stopts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+          if ($mytime > $stopts) {
+            logit($mysname,1,"Current time is beyond stop time (".
+                  (@{$cfgs{$site}{dateend}})[$[].")") if ($debug);
+            next;
+          }
+        }
+        if (defined $cfgs{$site}{datebegin}) {
+          ($year,$mon,$mday,$hour,$min,$sec) =
+            unpack("A4A2A2A2A2A2",(@{$cfgs{$site}{datebegin}})[$[]);
+          if ($year eq "" || $mon eq "" || $mday eq "") {
+            logit($mysname,1,"Invalid DateBegin value; must be ".
+                  "YYYYMMDD[hh[mm[ss]]]");
+            next;
+          }
+          $hour = 0 if ($hour eq "");
+          $min = 0 if ($min eq "");
+          $sec = 0 if ($sec eq "");
+          my $startts = timelocal($sec,$min,$hour,$mday,$mon-1,$year-1900);
+          if ($mytime < $startts) {
+            logit($mysname,1,"Current time is before start time (".
+                  (@{$cfgs{$site}{datebegin}})[$[].")") if ($debug);
+            next;
+          }
+        }
+        push(@{$sitehsh{$site}},$site);
+        if (defined $cfgs{$site}{alias}) {
+          push(@{$sitehsh{$site}},@{$cfgs{$site}{alias}});
+          logit($mysname,1,"Control file with aliases: ".
+                join(" ",@{$sitehsh{$site}})) if ($debug);
+        }
+        my $inst = $allinst{$site};
+        if (defined $cfgs{$inst}{lcscurrent}) {
+          my $lcscurrent = (@{$cfgs{$inst}{lcscurrent}})[$[];
+          if (! defined $loaded{$lcscurrent} && -r $lcscurrent) {
+            if (open(LCSC,"<$lcscurrent")) {
+              chomp(@{$loaded{$lcscurrent}{lst}} = <LCSC>);
+              close(LCSC);
+            }
+          }
+          foreach $line (@{$loaded{$lcscurrent}{lst}}) {
+            my ($c,$s,$t) = (split(/[,]/,$line))[$[+1,$[+2,$[+3];
+            $loaded{$lcscurrent}{data}{$c}{$s} = $t;
+          }
+        }
+        if (defined $cfgs{$inst}{lbcurrent}) {
+          my $lbcurrent = (@{$cfgs{$inst}{lbcurrent}})[$[];
+          if (! defined $loaded{$lbcurrent} && -r $lbcurrent) {
+            if (open(LBC,"<$lbcurrent")) {
+              chomp(@{$loaded{$lbcurrent}{lst}} = <LBC>);
+              close(LBC);
+            }
+          }
+          foreach $line (@{$loaded{$lbcurrent}{lst}}) {
+            my ($c,$p,$w,$s) = (split(/[=,]/,$line))[$[+1,$[+3,$[+4,$[+6];
+            $loaded{$lbcurrent}{data}{$c}{$p}{$w}{$s}++;
+          }
+        } elsif (defined $cfgs{$inst}{dirstore}) {
+          %DSNODES = ();
+          if (-r $dscache && (time() - (stat($dscache))[$[+9]) < $dsmaxage) {
+            # Use the cache file
+            eval { require $dscache; };
+            if (! $@) {
+              %{$loaded{dirstore}{hsh}} = %DSNODES;
+            } else {
+              logit($mysname,2,"Unable to read cache $dscache: $@");
+            }
+          }
+          if (! %DSNODES) {
+            if ($dirstore) {
+              my %results = ();
+              if (dsSearch(%results,'SYSTEM',
+                           expList => [ "systemtype!=NETWORK.*" ],
+                           attrs => [ "sitesserved", "nodestatus" ])) {
+                foreach my $name (sort keys %results) {
+                  my $hshref = $results{$name};
+                  @{$DSNODES{$name}} = [ @{$hshref->{sitesserved}},
+                                         @{$hshref->{nodestatus}} ]
+                    if ((@{$hshref->{nodestatus}})[$[] eq "LIVE");
+                }
+              } else {
+                logit($mysname,2,"DirStore search failed");
+                next;
+              }
+              %{$loaded{dirstore}{hsh}} = %DSNODES;
+              # Write cache
+              my $out = "%DSNODES = (\n";
+              foreach my $name (sort keys %DSNODES) {
+                $out .= sprintf("  %-12s => [ ",$name);
+                foreach my $i (@{$DSNODES{$name}}) {
+                  $out .= "\"$name\", ";
+                }
+                $out .= "],\n";
+              }
+              $out .= ");\n";
+              if (open(CACHE,">$dscache")) {
+                if (print CACHE "$out") {
+                  close(CACHE);
+                  chown(0,0,$dscache);
+                  chmod(0644,$dscache);
+                } else {
+                  logit($mysname,2,"Unable to create cache $dscache");
+                  close(CACHE);
+                  unlink($dscache);
+                }
+              }
+            } else {
+              logit($mysname,2,"DirStore unavailable");
+              next;
+            }
+          }
+          # Loop on %DSNODES
+          while(($key,$value) = each %DSNODES) {
+            if (grep($_ eq "LIVE",@{$value})) {
+              foreach my $name (grep($_ =~ /[a-z]/,@{$value})) {
+                my ($c,$p) = split(/[:]/,$name);
+                $p = "80" if ($p eq "");
+                $loaded{dirstore}{data}{$c}{$p}{10}{$key}++;
+              }
+            }
+          }
+        } elsif (defined $cfgs{$inst}{allnodes}) {
+          my $allnodes = (@{$cfgs{$inst}{allnodes}})[$[];
+          %NODES = ();
+          eval { require $allnodes; };
+          if ($@) {
+            logit($mysname,2,"Unable to read allnodes $allnodes: $@");
+            next;
+          }
+          # Loop on %NODES
+          while(($key,$value) = each %NODES) {
+            if (grep($_ eq "LIVE",@{$value})) {
+              foreach my $name (grep($_ =~ /[a-z]/,@{$value})) {
+                my ($c,$p) = split(/[:]/,$name);
+                $p = "80" if ($p eq "");
+                $loaded{$allnodes}{data}{$c}{$p}{10}{$key}++;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+# Generate the following hashes:
+#   %cdown{cluster}{server}
+#   %czero{cluster}{server}
+#   %cok{cluster}{server}
+#   %sdown{server}{cluster}
+#   %szero{server}{cluster}
+#   %sok{server}{cluster}
+#   %clusters{cluster}
+#   %servers{server}
+# @{$NODESITE{$site}} is generated from %cok{cluster}
+my (%NODESITE,%clusters,%servers,%cdown,%sdown,%czero,%szero,%cok,%sok);
+foreach $site (sort keys %sitehsh) {
+  my $inst = $allinst{$site};
+  if (defined $cfgs{$site}{node}) {
+    push(@{$NODESITE{$site}},@{$cfgs{$site}{node}});
+  } else {
+    if (defined $cfgs{$inst}{lbcurrent}) {
+      $key = (@{$cfgs{$inst}{lbcurrent}})[$[];
+    } elsif (defined $cfgs{$inst}{dirstore}) {
+      $key = "dirstore";
+    } elsif (defined $cfgs{$inst}{allnodes}) {
+      $key = (@{$cfgs{$inst}{allnodes}})[$[];
+    } else {
+      logit($mysname,2,"Unable to determine current list of nodes");
+    }
+    logit($mysname,1,"Site=$site Key=$key") if ($debug);
+    if (defined $loaded{$key}) {
+      my ($c,$p,$w,$s);
+      foreach my $entry (@{$sitehsh{$site}}) {
+        ($c,$p) = split(/[:]/,$entry);
+        $p = "80" unless ($p);
+      
+        if (defined $loaded{$key}{data}{$c}{$p}) {
+          $clusters{$site}++;             # Track list of clusters
+          foreach $w (keys %{$loaded{$key}{data}{$c}{$p}}) {
+            foreach $s (keys %{$loaded{$key}{data}{$c}{$p}{$w}}) {
+              # Skip unknown names and caches (no logs there)
+              # Should have XX####X# and XX#XX###X# machines only
+              # (eg. se0101e1, px1si001e1, px1x345ae1, at0101ae1,
+              # at0101a, v10001e0 and v10001)
+              next if ($s !~ /^\w\w\d\d\d\d\w\d$|^\w\w\d\w\w\d\d\d\w\d$|^\w\w\d\w\d\d\d\w\w\d$|^\w\w\d\d\d\d\w\w\d$|^\w\w\d\d\d\d\w$|^\w\d\d\d\d\d\w\d$|^\w\d\d\d\d\d$/);
+              # Let's use the e0 interface
+              # or strip the e0 if necessary (eg. px1si001e0, px1x345ae0,
+              # at0101ae0 and v10001e0)
+              $s =~ s/e[0-9]$/e0/;
+              $s =~ s/e0// if ($s =~ /^\w\w\d\w\w\d\d\d\w\d$|^\w\w\d\w\d\d\d\w\w\d$|^\w\w\d\d\d\d\w\w\d$|^\w\d\d\d\d\d\w\d$/);
+              $servers{$s}++;             # Track list of servers
+              # Generate lists of servers in clusters and the other way too
+              if ($w < 0) {
+                $cdown{$site}{$s}++;
+                $sdown{$s}{$site}++;
+              } elsif ($w == 0) {
+                $czero{$site}{$s}++;
+                $szero{$s}{$site}++;
+              } else {
+                $cok{$site}{$s}++;
+                $sok{$s}{$site}++;
+              }
+              logit($mysname,1,"Track $c, $p, $w, $s as $site")
+                if ($debug);
+            }
+          }
+        }
+      }
+      @{$NODESITE{$site}} = sort keys %{$cok{$site}};
+    }
+  }
+}
+
+# Supplement $lcscurrent nodes for the sites if requested
+my %lcsadd = ();
+foreach $site (sort keys %sitehsh) {
+  my $inst = $allinst{$site};
+  if (defined $cfgs{$inst}{lcscurrent}) {
+    $key = (@{$cfgs{$inst}{lcscurrent}})[$[];
+    if (defined $loaded{$key}) {
+      my %thsh = ();
+      grep($thsh{$site}{$_}++, @{$NODESITE{$site}});
+      if (defined $cfgs{$site}{addlcsnodelist} &&
+          defined $loaded{$key}{data}{$site}) {
+        foreach my $node (keys %{$loaded{$key}{data}{$site}}) {
+          if (! (defined $thsh{$site}{$node} ||
+                 (defined $czero{$site} && defined $czero{$site}{$node}) ||
+                 (defined $cdown{$site} && defined $cdown{$site}{$node}))) {
+            my $loginterval = $interval;
+            $loginterval = (@{$cfgs{$site}{loginterval}})[$[]
+              if (defined $cfgs{$site}{loginterval});
+            my $inttime = $mytime - ($mytime % $loginterval);
+            if ($loaded{$key}{data}{$site}{$node} >= $inttime) {
+              $lcsadd{$site}{$node}++;
+              $thsh{$site}{$node}++;
+            } else {
+              my $diff = $inttime - $loaded{$key}{data}{$site}{$node};
+              logit($mysname,1,
+                    "Skipping LCS add of $node for $site ($diff seconds old)")
+                if ($debug);
+            }
+          }
+        }
+        if (defined $lcsadd{$site}) {
+          @{$NODESITE{$site}} = sort keys %{$thsh{$site}};
+        }
+      }
+    }
+  }
+}
+
+# WARNING: Debug output information here will be very large
+if ($debug) {
+  my($c,$s);
+  foreach $site (sort keys %sitehsh) {
+    my $out = "$site:\n".
+              "\tOK:\n".
+              "\t\t".join(',',sort keys %{$cok{$site}})."\n".
+              "\tZERO:\n".
+              "\t\t".join(',',sort keys %{$czero{$site}})."\n".
+              "\tDOWN:\n".
+              "\t\t".join(',',sort keys %{$cdown{$site}})."\n";
+    $out .=   "\tLCSADD:\n".
+              "\t\t".join(',',sort keys %{$lcsadd{$site}})."\n"
+      if (defined $lcsadd{$site});
+    logit($mysname,1,$out);
+  }
+  logit($mysname,1,"\nServer information:");
+  foreach $s (sort keys %servers) {
+    logit($mysname,1,"$s: OK:".join(',',sort keys %{$sok{$s}}).
+          " ZERO:".join(',',sort keys %{$szero{$s}}).
+          " DOWN:".join(',',sort keys %{$sdown{$s}}))
+      if (keys %{$szero{$s}} || keys %{$sdown{$s}});
+  }
+  logit($mysname,1,"\nCluster information:");
+  foreach $c (sort keys %clusters) {
+    logit($mysname,1,"$c: OK:".join(',',sort keys %{$cok{$c}}).
+          " ZERO:".join(',',sort keys %{$czero{$c}}).
+          " DOWN:".join(',',sort keys %{$cdown{$c}}))
+      if (keys %{$czero{$c}} || keys %{$cdown{$c}});
+  }
+}
+
+# Show current time of run
+logit($mysname,1,"Current time: $mytime ".scalar localtime($mytime))
+  if ($debug);
+
+# Loop on each sites LIVE nodes and re-create .$fnodes.tmp
+# renaming it to .$fnodes.<ts>
+my ($dir,$uid,$gid,$loginterval,$logextension,$mvtimeout,$ok,$ok2);
+my ($lasttime,$inttime,$oldts,$lastts,$xts,$i,$l,$tot,$cnt);
+my ($year,$mon,$mday,$hour,$min,$fbdir,$rsdir,$f,$fnd);
+my ($prevok,$tts,$ttime,$node,$miss,$skip,$numlogroot);
+my ($lroot,$lr,$mlr,$plex,$mf,$mfile,$n,$r,$lrexpr);
+my (@dirlst,@nlst,@delfiles,@misslst);
+my (%seen);
+foreach $site (keys %NODESITE) {
+  my $inst = $allinst{$site};
+  if (@{$NODESITE{$site}}) {
+    if (defined $cfgs{$site}{archivedirectory}) {
+      $dir = (@{$cfgs{$site}{archivedirectory}})[$[];
+    } else {
+      $dir = "$siteprefix/$site";
+    }
+    my $pext = "";
+    my $pregex = "";
+    if (defined $cfgs{$site}{partialextension}) {
+      $pext = (@{$cfgs{$site}{partialextension}})[$[];
+    } elsif (defined $cfgs{$inst}{partialextension}) {
+      $pext = (@{$cfgs{$inst}{partialextension}})[$[];
+    }
+    if ($pext) {
+      my ($g,$e) = pdate2globnexpr($pext);
+      $pregex = '(\.'.$e.')';
+    }
+    if (-d $dir && -w $dir) {
+      my @lrlst = ();
+      my $lrregex = '.*';
+      $lrregex = '('.join("|",@{$cfgs{$site}{logroot}}).')'
+        if (defined $cfgs{$site}{logroot});
+      if (opendir(DIR,$dir)) {
+        @lrlst = grep($_ =~ /$lrregex/,(readdir(DIR)));
+        closedir(DIR);
+      }
+      ($uid,$gid) = (stat($dir))[$[+4,$[+5];
+      if (defined $cfgs{$site}{loginterval}) {
+        $loginterval = (@{$cfgs{$site}{loginterval}})[$[];
+      } else {
+        $loginterval = $interval;
+      }
+      if (defined $cfgs{$site}{logextension}) {
+        $logextension = (@{$cfgs{$site}{logextension}})[$[];
+      } else {
+        $logextension = $extension;
+      }
+      if (defined $cfgs{$site}{timeout}) {
+        $mvtimeout = (@{$cfgs{$site}{timeout}})[$[];
+      } else {
+        $mvtimeout = $timeout;
+      }
+      # Calculate the time() relative to loginterval
+      $inttime = $mytime - ($mytime % $loginterval);
+      $ts = POSIX::strftime($logextension, localtime($inttime));
+      logit($mysname,1,"Adjusted time: $mytime ".
+            scalar localtime($inttime)."/$ts") if ($debug);
+      $oldts = POSIX::strftime($logextension,localtime($inttime-$loginterval));
+
+      ### MISSING TIMESLICES
+      # Check if there are missing .$fnodes.<timestamp> files
+      # and create them as long as no .$fnodes.$ts or .$fnodes.$oldts
+      # exist; if the current timestamp and old timestamp exist,
+      # then the missing .$fnodes.<timestamp> files will need to be
+      # recreated manually
+      $l = length($ts);
+      opendir(DIR,$dir);
+      # Grab list of .$fnodes.<ts> files and
+      # sort in reverse file mtime ((stat)[9])
+      @dirlst = map { $_->[$[] }
+                   sort { $b->[$[+1] <=> $a->[$[+1] }
+                   map { [ $_, (stat($_))[$[+9] ] }
+                   grep($_ =~ /^\.$fnodes\.\d{$l}$/, (readdir(DIR)));
+      closedir(DIR);
+      if (@dirlst &&
+          ! grep($_ eq ".$fnodes.$ts" || $_ eq ".$fnodes.$oldts", @dirlst)) {
+        # Get timestamp of most recent .$fnodes.<ts> list
+        ($lastts = $dirlst[$[]) =~ s/^\.$fnodes\.//;
+        ($year,$mon,$mday,$hour,$min) =
+          ($lastts =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)$/);
+        ($year,$mon,$mday,$hour) =
+          ($lastts =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+        ($year,$mon,$mday) =
+          ($lastts =~ m/^(\d\d\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+        $hour = 0 if ($hour eq "");
+        $min = 0 if ($min eq "");
+
+        # Convert timestamp YYYYMMDDHHMM to real time value
+        $lasttime = timelocal(0,$min,$hour,$mday,$mon-1,$year-1900);
+
+        # Clean out old timestamps if most recent is older than maxnodeage
+        if ($lasttime < ($mytime - $maxnodeage)) {
+          @dirlst = (map { "$dir/$_" } @dirlst);
+          logit($mysname,1,"Removing old .$fnodes.timestamp files:\n".
+                "\t".join("\n\t",@dirlst));
+          $tot = @dirlst;
+          $cnt = unlink(@dirlst);
+          if ($cnt != $tot) {
+            logit($mysname,1,"Warning: only removed $cnt of $tot file(s)");
+          }
+        } else {
+          # Loop on missing timestamp files merging current data into
+          # the very last timestamp (other .$fnodes.<ts> files
+          # are left alone to be renamed).  For example:
+          #       Interval: 6 minutes
+          #     Current ts: 200101010518
+          #          oldts: 200101010512
+          #   Reverse list: .$fnodes.200101010412 .$fnodes.200101010406 (etc)
+          #  So, we merge current info into 200101010412 timestamp,
+          #  leave 200101010406 (etc) alone and fill in the missings up
+          #  to and including the old timestamp (oldts)
+          for ($i=$lasttime; $i < $inttime; $i += $loginterval) {
+            $xts = POSIX::strftime($logextension, localtime($i));
+
+            logit($mysname,1,"Generating missing nodes file .$fnodes.$xts");
+
+            # Grab existing node list (if available for this timeslice)
+            @nlst = ();
+            if (open(NTS, "<$dir/.$fnodes.$xts")) {
+              chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+              close(NTS);
+            }
+            # Merge node list (@nlst) with new node list (@{$NODESITE{$site}})
+            # Generate .$fnodes.$xts file
+            %seen = ();
+            grep($seen{$_}++,@nlst,@{$NODESITE{$site}});
+            if (open(NTMP, ">$dir/.$fnodes.tmp")) {
+              $ok = 0;
+              $ok = 1
+                if (print NTMP join("\n",'BEGIN',(sort keys %seen),'END')."\n");
+              close(NTMP);
+              chown($uid,$gid,"$dir/.$fnodes.tmp");
+              chmod(0644, "$dir/.$fnodes.tmp");
+              # If .$fnodes.tmp file created successfully, go ahead and move it
+              # to the real .$fnodes.<ts> file
+              if ($ok) {
+                rename("$dir/.$fnodes.tmp","$dir/.$fnodes.$xts");
+              } else {
+                logit($mysname,1,"Unable to create $dir/.$fnodes.tmp");
+              }
+            }
+            unlink("$dir/.$fnodes.tmp") if (-e "$dir/.$fnodes.tmp");
+          }
+        }
+      }
+
+      ### CURRENT TIMESLICE
+      # Grab existing node list (if available for this timeslice)
+      @nlst = ();
+      if (open(NTS, "<$dir/.$fnodes.$ts")) {
+        chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+        close(NTS);
+      }
+      # Merge node list (@nlst) with new node list (@{$NODESITE{$site}})
+      # Generate .$fnodes.$ts file
+      %seen = ();
+      grep($seen{$_}++,@nlst,@{$NODESITE{$site}});
+      if (open(NTMP, ">$dir/.$fnodes.tmp")) {
+        $ok = 0;
+        $ok = 1
+          if (print NTMP join("\n",'BEGIN',(sort keys %seen),'END')."\n");
+        close(NTMP);
+        chown($uid,$gid,"$dir/.$fnodes.tmp");
+        chmod(0644, "$dir/.$fnodes.tmp");
+        # If .$fnodes.tmp file created successfully, go ahead and move it
+        # to the real .$fnodes.<ts> file
+        if ($ok) {
+          rename("$dir/.$fnodes.tmp","$dir/.$fnodes.$ts");
+        } else {
+          logit($mysname,1,"Unable to create $dir/.$fnodes.tmp");
+        }
+      }
+      unlink("$dir/.$fnodes.tmp") if (-e "$dir/.$fnodes.tmp");
+
+      ### OLD TIMESLICE
+      # Merge old node list (@nlst) with new node list (@{$NODESITE{$site}})
+      # Generate .$fnodes.$oldts file (if it still exists)
+      if (-e "$dir/.$fnodes.$oldts") {
+        # Grab old timestamp node list if exists
+        @nlst = ();
+        if (open(NTS, "<$dir/.$fnodes.$oldts")) {
+          chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+          close(NTS);
+        }
+        %seen = ();
+        grep($seen{$_}++,@nlst,@{$NODESITE{$site}});
+        if (open(NTMP, ">$dir/.$fnodes.tmp")) {
+          $ok = 0;
+          $ok = 1
+            if (print NTMP join("\n",'BEGIN',(sort keys %seen),'END')."\n");
+          close(NTMP);
+          chown($uid,$gid,"$dir/.$fnodes.tmp");
+          chmod(0644, "$dir/.$fnodes.tmp");
+          # If .$fnodes.tmp file created successfully, go ahead and move it
+          # to the real .$fnodes.<oldts> file
+          if ($ok) {
+            rename("$dir/.$fnodes.tmp","$dir/.$fnodes.$oldts");
+          } else {
+            logit($mysname,1,"Unable to create $dir/.$fnodes.tmp");
+          }
+        }
+        unlink("$dir/.$fnodes.tmp") if (-e "$dir/.$fnodes.tmp");
+        ### All renames have been moved below
+        ## If current time is beyond rename interval, move it to $fnodes.$oldts
+        #if ($mytime>=($inttime+$mvinterval)) {
+        #  #unlink("$dir/.$fnodes.$oldts");
+        #  rename("$dir/.$fnodes.$oldts","$dir/$fnodes.$oldts");
+        #}
+      }
+
+      ### RENAME TIMESLICES
+      # Check for old .$fnodes.<ts> files that have not been renamed and
+      # rename them to their real $fnodes.<ts> name.  Allow for collection
+      # verification timeout ($mvtimeout) to ensure all files have arrived.
+      # If no files arrive from a particular node and are confirmed to never
+      # arrive, remove the node from the .$fnodes.<ts> file.  If all files
+      # have arrived within the $mvtimeout delay or the $mvtimeout delay
+      # has expired, rename the .$fnodes.<ts> to the real $fnodes.<ts>.
+      # Skip the current timestamp $ts; skip old timestamp $oldts if current
+      # time is before the $mvinterval.
+      $l = length($ts);
+      opendir(DIR,$dir);
+      @dirlst = grep($_ =~ /^\.$fnodes\.\d{$l}$/,(readdir(DIR)));
+      closedir(DIR);
+      $prevok = 1;
+      $fbdir = "$dir/feedback";
+      $rsdir = "$dir/results";
+      foreach $f (sort @dirlst) {
+        next if ($f eq ".$fnodes.$ts" ||
+                 ($f eq ".$fnodes.$oldts" &&
+                  $mytime < ($inttime+$mvinterval)));
+        ($tts = $f) =~ s/^\.$fnodes\.//;
+        ($year,$mon,$mday,$hour,$min) =
+          ($tts =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)(\d\d)$/);
+        ($year,$mon,$mday,$hour) =
+          ($tts =~ m/^(\d\d\d\d)(\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+        ($year,$mon,$mday) =
+          ($tts =~ m/^(\d\d\d\d)(\d\d)(\d\d)$/) if ($year eq "");
+        $hour = 0 if ($hour eq "");
+        $min = 0 if ($min eq "");
+
+        $ttime = timelocal(0,$min,$hour,$mday,$mon-1,$year-1900);
+        if (($mytime-$ttime) <= $mvtimeout) {
+          @nlst = ();
+          if (open(NTS, "<$dir/$f")) {
+            chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+            close(NTS);
+          }
+          %seen = ();
+          grep($seen{$_}++,@nlst);
+          my @lst = sort keys %seen;
+          foreach $node (@lst) {
+            @delfiles = ();
+            $miss = $skip = 0;
+            $numlogroot = @{$cfgs{$site}{logroot}};
+            foreach $lroot (@{$cfgs{$site}{logroot}}) {
+              my @flst = ();
+              my @pflst = ();
+              $lr = "$node.$lroot.$tts";
+              @flst = grep($_ =~ /^$lr$/ ||
+                           $_ =~ /^$lr$zregex$/,@lrlst);
+              @pflst = grep($_ =~ /^$lr$pregex$/ ||
+                            $_ =~ /^$lr$pregex$zregex$/,@lrlst)
+                if ($pregex);
+              if (! @flst) {
+                if (! @pflst) {
+                  logit($mysname,1,"$dir/$lr not found (compressed or not)");
+                  $mlr = "$fbdir/lcs-miss.$lr";
+                  open(FILE,">$mlr");
+                  close(FILE);
+                  chown($uid,$gid,$mlr);
+                  chmod(0644,$mlr);
+                  push(@delfiles,$mlr);
+                  $miss++;
+                } else {
+                  logit($mysname,1,
+                        "$dir/$lr partial found: ".join(",",@pflst))
+                    if ($debug);
+                }
+              }
+              if (-e "$rsdir/lcs-skip.$lr") {
+                logit($mysname,1,"$rsdir/lcs-skip.$lr found");
+                push(@delfiles,"$rsdir/lcs-skip.$lr");
+                $skip++;
+              } else {
+                $plex = $node;
+                $plex = substr($node,$[,1) if ($plex =~ /^[adg]/);
+                $plex = substr($node,$[,2) if ($plex =~ /^[vwz]/);
+                if (-e "$rsdir/lcs-skip.$plex") {
+                  logit($mysname,1,"$rsdir/lcs-skip.$plex found");
+                  $skip++;
+                } else {
+                  if (-e "$rsdir/lcs-skip.$node") {
+                    logit($mysname,1,"$rsdir/lcs-skip.$node found");
+                    $skip++;
+                  }
+                }
+              }
+              if (defined $cfgs{$inst}{ignore}) {
+                foreach $i (@{$cfgs{$inst}{ignore}}) {
+                  if ($node eq $i || $node =~ /^$i/) {
+                    logit($mysname,1,"$site ignore $i match for $node");
+                    $skip++;
+                    last;
+                  }
+                }
+              }
+              if (-e "$rsdir/lcs-found.$lr") {
+                logit($mysname,1,"$rsdir/lcs-found.$lr found");
+              }
+            }
+            if (($miss == $numlogroot) && ($miss == $skip)) {
+              # remove matching missing and lcs-found/skip files
+              unlink(@delfiles) if (@delfiles);
+              # remove node from nodes.list
+              delete $seen{$node};
+              if (open(NTMP, ">$dir/.$fnodes.tmp")) {
+                $ok = 0;
+                $ok = 1
+                  if (print NTMP join("\n",'BEGIN',(sort keys %seen),'END')."\n");
+                close(NTMP);
+                chown($uid,$gid,"$dir/.$fnodes.tmp");
+                chmod(0644, "$dir/.$fnodes.tmp");
+                # If .$fnodes.tmp file created successfully, go ahead and
+                # move it to the real .$fnodes.<tts> file
+                if ($ok) {
+                  rename("$dir/.$fnodes.tmp","$dir/.$fnodes.$tts");
+                  logit($mysname,1,"Removed $node from $dir/.$fnodes.$tts");
+                } else {
+                  logit($mysname,1,
+                        "Unable to create $dir/.$fnodes.tmp to remove $node");
+                }
+              } # end of open nodes list for removal of node
+            } # end all files confirmed missing and skipped
+          } # end foreach node
+        } # end if mvtimeout collection check delay
+        # Read directory looking for missings
+        opendir(DIR,$fbdir);
+        @misslst = grep($_ =~ /^lcs-miss\.[\s\S]+\.$tts/,(readdir(DIR)));
+        closedir(DIR);
+        $ok = 1;
+        foreach $mfile (@misslst) {
+          ($mf = $mfile) =~ s/^(.*?)\.//;
+
+          $node = $mf;
+          $node =~ s/\..*//;
+          $plex = $node;
+          $plex = substr($node,$[,1) if ($plex =~ /^[adg]/);
+          $plex = substr($node,$[,2) if ($plex =~ /^[vwz]/);
+
+          my $ignore = 0;
+          if (defined $cfgs{$inst}{ignore}) {
+            foreach $i (@{$cfgs{$inst}{ignore}}) {
+              if ($node eq $i || $node =~ /^$i/) {
+                $ignore = 1;
+                last;
+              }
+            }
+          }
+
+          if (($ignore == 0) &&
+              (! -e "$rsdir/lcs-skip.$mf") &&
+              (! -e "$rsdir/lcs-skip.$node") &&
+              (! -e "$rsdir/lcs-skip.$plex") &&
+              (! -e "$rsdir/lcs-found.$mf") &&
+              (($mytime-$ttime) <= $mvtimeout)) {
+            logit($mysname,1,"No ignore/lcs-skip/lcs-found within timeout ".
+                  (($mytime-$ttime)).
+                  " <= $mvtimeout\n\t$rsdir/lcs-skip.$mf\n".
+                  "\t$rsdir/lcs-found.$mf");
+            $ok = 0;
+          } else {
+            logit($mysname,1,"Cleaning up lcs-miss/lcs-skip/lcs-found\n".
+                  "\t$fbdir/$mfile\n\t$rsdir/lcs-skip.$mf\n".
+                  "\t$rsdir/lcs-found.$mf");
+            unlink("$fbdir/$mfile",
+                   "$rsdir/lcs-skip.$mf",
+                   "$rsdir/lcs-found.$mf");
+          }
+        }
+        if ($ok > 0 && $prevok > 0) {
+          # Check for extra logs before rename and pull them into nodes list
+          my (%extra,%fseen,%tseen,%nhsh,%logroots);
+          # Grab hash of all files of <ts> with optional compression
+          # extension for this timestamp
+          %fseen = ();
+          opendir(DIR,$dir);
+          grep((/\.$tts$zregex$/ ||
+                ($pregex ne "" && /\.$tts$pregex$zregex$/)) &&
+               $fseen{$_}++,(readdir(DIR)));
+          closedir(DIR);
+          # Obtain current nodes list
+          @nlst = ();
+          if (open(NTS, "<$dir/$f")) {
+            chomp(@nlst = grep($_ !~ /BEGIN/ && $_ !~ /END/,<NTS>));
+            close(NTS);
+          }
+          # Turn list of nodes into hash for quick lookup
+          %nhsh = ();
+          grep($nhsh{$_}++, @nlst);
+          # Build logroots hash
+          %logroots = ();
+          grep($logroots{$_}++, @{$cfgs{$site}{logroot}});
+          # Only add new nodes with valid logroots in the file name
+          %tseen = ();
+          %extra = ();
+          $lrexpr = join("|",keys %logroots);
+          foreach my $s (keys %fseen) {
+            $n = $r = "";
+            if ($s =~ m/^([\s\S]+)\.($lrexpr)\.$tts$zregex$/) {
+              ($n,$r) = ($1,$2);
+            } elsif ($pregex ne "" &&
+                     $s =~ m/^([\s\S]+)\.($lrexpr)\.$tts$pregex$zregex$/) {
+              ($n,$r) = ($1,$2);
+            }
+            logit($mysname,1,"s=$s n=$n r=$r") if ($debug);
+            next if (defined $nhsh{$n});        # Skip nodes already in list
+            next if (! defined $logroots{$r});  # Skip invalid log roots
+            $tseen{"$n.$r.$tts"}++;             # Track simple name for below
+            $extra{$n}++;
+            $nhsh{$n}++;
+          }
+          if (keys %extra) {
+            # Verify all logroots are there for a particular node
+            $ok = 1;
+            foreach $n (keys %extra) {
+              logit($mysname,1,"Adding extra node $n for timestamp $tts");
+              foreach $l (keys %logroots) {
+                $ok = 0 if (! defined $tseen{"$n.$l.$tts"});
+              }
+            }
+            # Rewrite nodes list with all nodes in it
+            if (open(NTMP, ">$dir/.$fnodes.tmp")) {
+              $ok2 = 0;
+              $ok2 = 1
+                if (print NTMP join("\n",'BEGIN',(sort keys %nhsh),'END')."\n");
+              close(NTMP);
+              chown($uid,$gid,"$dir/.$fnodes.tmp");
+              chmod(0644, "$dir/.$fnodes.tmp");
+              # If .$fnodes.tmp file created successfully, go ahead and
+              # move it to the real .$fnodes.<tts> file
+              if ($ok2) {
+                rename("$dir/.$fnodes.tmp","$dir/.$fnodes.$tts");
+                logit($mysname,1,"Added extra node(s) to $dir/.$fnodes.$tts");
+              } else {
+                logit($mysname,1,
+                      "Unable to create $dir/.$fnodes.tmp".
+                      " to add extra node(s)");
+              }
+            }
+          }
+          if ($ok > 0) {
+            if (-z "$dir/$f") {
+              logit($mysname,1,
+                    "Unable to rename empty nodes list file $dir/$f");
+              $ok = $prevok = 0;
+            } else {
+              ($fnd = $f) =~ s/^\.//;
+              $cnt = keys %nhsh;
+              logit($mysname,1,
+                    "Renaming old nodes list file $dir/$f to $fnd ($cnt)");
+              rename("$dir/$f","$dir/$fnd");
+
+              # If NodesDirectory variable set and that directory currently
+              # exists, then symlink the new node.<timestamp> file to
+              # <NodesDirectory>/nodes.$site.$fnd
+              if (defined $cfgs{$site}{nodesdirectory}) {
+                my $nodesdir = (@{$cfgs{$site}{nodesdirectory}})[$[];
+                if (-d $nodesdir) {
+                  symlink("$dir/$fnd","$nodesdir/nodes.$site.$fnd");
+                  logit($mysname,1,
+                        "symlinked nodes list file $dir/$fnd to".
+                        " $nodesdir/nodes_${site}_${fnd}");
+                }
+              }
+            }
+          }
+        } else {
+          $prevok = 0;
+        }
+      } # end foreach f (.fnodes.<ts> ...)
+    } else {
+      logit($mysname,1,"Unable to find/write to $dir");
+    }
+  } else {
+    logit($mysname,1,"No nodes found for $site");
+  }
+}
+
+exit 0;
+
+sub usage {
+  my($me) = @_;
+
+  print "$me [-debug]\n".
+        "  where: -debug     - debug mode\n";
+}
+
+sub logit {
+  my($me,$logtype,@logargs) = @_;
+  my($logopt) = "ndelay,pid";
+  #my($date) = POSIX::strftime("%b %d %T",localtime());
+  my($date) = POSIX::strftime("%Y/%m/%d %H:%M:%S",localtime());
+  my($facility,$priority);
+  my %logtypes = (
+    "none"   => 0,
+    "stdout" => 1,
+    "stderr" => 2,
+    "outerr" => 4,
+    "syslog" => 8,
+  );
+  my($dfltlogtype) = $logtypes{"stdout"};
+
+  $logtype = $dfltlogtype if ($logtype <= 0);
+
+  # Split out arguments based on log type
+  if ($logtype & $logtypes{"syslog"}) {
+    ($facility,$priority,@logargs) = @logargs;
+  }
+  my($format,@myargs) = @logargs;
+
+  # Handle syslog
+  if ($logtype & $logtypes{"syslog"}) {
+    setlogsock("unix");
+    if (defined openlog($me,$logopt,$facility)) {
+      if (@myargs) {
+        syslog($priority,$format,@myargs);
+      } else {
+        syslog($priority,$format);
+      }
+      closelog();
+    } else {
+      setlogsock("inet");
+      if (defined openlog($me,$logopt,$facility)) {
+        if (@myargs) {
+          syslog($priority,$format,@myargs);
+        } else {
+          syslog($priority,$format);
+        }
+        closelog();
+      } else {
+        # Assume failure requires further processing
+        # by incorporating the default log type
+        $logtype |= $dfltlogtype;
+      }
+    }
+  }
+
+  # Handle STDERR
+  if ($logtype & $logtypes{"stderr"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDERR "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDERR "$date $me\[$$\]: $format\n";
+    }
+  }
+
+  # Handle STDOUT
+  if ($logtype & $logtypes{"stdout"} || $logtype & $logtypes{"outerr"}) {
+    if (@myargs) {
+      printf STDOUT "$date $me\[$$\]: $format\n", @myargs;
+    } else {
+      print STDOUT "$date $me\[$$\]: $format\n";
+    }
+  }
+}
+
+# Load lcs configuration file
+sub loadfile {
+  my($href,$file,$dfltsite,$multisite) = @_;
+  my($site,$arg1,$arg2);
+
+  $site = $dfltsite;
+  #print "loadfile $file $dfltsite $multisite\n";
+  if (open(FILE,"<$file")) {
+    while (<FILE>) {
+      next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+      chomp;
+      s/\s+#.*$//;                   # Strip ending comments
+      s/^\s+//g;                     # Strip all beginning space
+      s/\s+$//g;                     # Strip all ending space
+      ($arg1,$arg2) = split(/\s+/,$_,2);
+      if ($arg1) {
+        $arg1 = "\L$arg1";
+        #print "$arg1 $arg2\n";
+        if ($arg1 eq "endsite") {
+          $site = $dfltsite;
+          next;
+        }
+        if ($arg1 eq "site") {
+          $site = $arg2 if ($multisite);
+        }
+        push(@{$href->{$site}{$arg1}},$arg2);
+      }
+    }
+    close(FILE);
+  }
+}
+
+# Input: pattern
+# Output: (globpattern,regexpattern)
+sub pdate2globnexpr {
+  my($i) = @_;
+  my ($tglob,$texpr,$tg,$te,$match);
+  my %pdatehsh = (
+    # %a - abbreviated weekday name
+    '%a' => [ '???', '(Sun|Mon|Tue|Wed|Thu|Fri|Sat)' ],
+    # %A - full weekday name
+    '%A' => [ '*', '(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)' ],
+    # %b - abbreviated month name
+    '%b' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %B - full month name
+    '%B' => [ '*', '(January|February|March|April|May|June|July|August|September|October|November|December)' ],
+    # %C - first two digits of the four-digit year as a decimal number (00-99)
+    '%C' => [ '??', '\d\d' ],
+    # %d - day of the month as a decimal number (01-31)
+    '%d' => [ '??', '\d\d' ],
+    # %D - date in the format equivalent to %m/%d/%y
+    '%D' => [ '??/??/??', '\d\d/\d\d/\d\d' ],
+    # %e - day of the month as a decimal number (1-31) - space filled
+    '%e' => [ '??', '(\s\d|\d\d)' ],
+    # %h - abbreviated month name (like %b)
+    '%h' => [ '???', '(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)' ],
+    # %H - hour (24-hour clock) as a decimal number (00-23)
+    '%H' => [ '??', '\d\d' ],
+    # %j - day of year as a decimal number (001-366)
+    '%j' => [ '???', '\d\d\d' ],
+    # %k - 24-hour-clock hour clock (0 to 23) - space filled
+    '%k' => [ '??', '(\s\d|\d\d)' ],
+    # %m - month of year as a decimal number (01-12)
+    '%m' => [ '??', '\d\d' ],
+    # %M - minutes as a decimal number (00- 59)
+    '%M' => [ '??', '\d\d' ],
+    # %p - either AM or PM
+    '%p' => [ '??', '\w\w' ],
+    # %r - 12-hour clock time (01-12)
+    '%r' => [ '??', '\d\d' ],
+    # %S - seconds as a decimal number (00- 59)
+    '%S' => [ '??', '\d\d' ],
+    # %s - seconds since epoch
+    '%s' => [ '*', '\d+' ],
+    # %T - 24-hour clock (00-23) in the format equivalent to HH:MM:SS
+    '%T' => [ '??:??:??', '\d\d:\d\d:\d\d' ],
+    # %u - weekday as a decimal number from 1-7 (Sunday = 7)
+    '%u' => [ '?', '[0-7]' ],
+    # %U - week of the year as a decimal number[00 - 53]
+    '%U' => [ '??', '\d\d' ],
+    # %w - weekday as a decimal number from 0-6 (Sunday = 0)
+    '%w' => [ '?', '[0-6]' ],
+    # %W - week number of the year as a decimal number (00-53)
+    '%W' => [ '??', '\d\d' ],
+    # %y - last two numbers of the year
+    '%y' => [ '??', '\d\d' ],
+    # %Y - four-digit year as a decimal number
+    '%Y' => [ '????', '\d\d\d\d' ],
+  );
+
+  $tglob = $texpr = $i;
+  $tglob =~ s!\%\%!\001!g;
+  $texpr =~ s!\%\%!\001!g;
+  foreach $match (sort keys %pdatehsh) {
+    $tg = (@{$pdatehsh{$match}})[$[];
+    $te = (@{$pdatehsh{$match}})[$[+1];
+    $tglob =~ s!$match!$tg!g;
+    $texpr =~ s!$match!$te!g;
+  }
+  $tglob =~ s!\001!%!g;
+  $texpr =~ s!\001!%!g;
+
+  ($tglob,$texpr);
+}
+
+print "$main::running_under_some_shell\n";

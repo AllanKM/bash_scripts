@@ -1,0 +1,33 @@
+#!/bin/ksh
+
+if [[ $# -lt 2 ]]
+  then
+    print "Usage: $(basename $0) DBName ApplyQual [args...]"
+    exit -1
+fi
+
+
+DB="$1"
+AQ="$2"
+shift 2
+
+
+if [[ ! -d $HOME/repl ]]
+  then
+    mkdir $HOME/repl
+fi
+cd $HOME/repl
+if [[ $? -ne 0 ]]
+  then
+    print "Error: couldn't cd to $HOME/repl"
+    exit 1
+fi
+
+
+if [[ ! -f "$AQ.PWD" ]]
+  then
+    print "Error: Password file $PWD/$AQ.PWD doesn't exist"
+    exit 1
+fi
+
+asnapply $AQ $DB $* >/tmp/$DB.apply-$AQ.log 2>&1 &

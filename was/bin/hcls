@@ -1,0 +1,103 @@
+#!/usr/local/bin/perl
+use Getopt::Long;
+use EI::DirStore;
+use Data::Dumper;
+my $system=`hostname`;
+use strict;
+my $arg_count=scalar @ARGV;
+my (%results,@check,$opt_role,$opt_app,$opt_hcname,$opt_help);
+
+main();
+
+sub usage() {
+  print "   please use:  hcls -r <role> -a <app> -n <hcname>\n";
+  exit 1;  
+}
+
+sub initialize() {
+
+
+  Getopt::Long::Configure("bundling");
+  GetOptions(
+    'r:s'     => \$opt_role,
+    'a:s'   => \$opt_app,
+    'n:s'     => \$opt_hcname,
+  ) or usage();
+  #print "role:${opt_role}, app:${opt_app}, hcname:${opt_hcname}\n";
+  usage() if (! defined $opt_role && ! defined $opt_app && ! defined $opt_hcname);
+  #usage() if (! defined $opt_app);
+  #usage() if (! defined $opt_hcname);
+}
+
+sub main() {
+
+  initialize();
+
+  my @hc_role;
+  if(! defined $opt_role){
+    dsGet(%results,"system","$system",attrs=> ["role"]) or die $dsErrMsg;
+    @hc_role=grep(/^(was|webserver)\./i,@{$results{"role"}});
+  }
+  else {
+    push @{hc_role},$opt_role;
+  }
+  if (defined $opt_app) {
+    $opt_app=~s/\*/\.\*/;
+  }
+  if (defined $opt_hcname) {
+    $opt_hcname=~s/\*/\.\*/;
+  }
+
+  foreach my $role ( @{hc_role}) {
+    my $hc_dn="hc_${role}";
+    my %in_results;
+    dsSearch(%in_results,"software",name => $hc_dn,attrs => ["instances"]);
+    foreach my $app (keys %in_results) {
+      $app=~/.*_(.+?)$/;
+      #my $appname=$1;
+      my $appname=`echo "${app}"|cut -d'_' -f3-`;
+      if ( ! defined $opt_app || $appname =~/${opt_app}$/ ) {
+        my @instances=@{$in_results{$app}{"instances"}};
+        while (@instances > 0 ) {
+          my $inst=shift(@instances);
+          if( $inst =~ /(.*)\@\@(.*)/){
+            my ($hc_app,$hc_url,$pattern,$timeout) = split(/@@/,$inst);
+            if(! defined ${opt_hcname} || $hc_app =~/${opt_hcname}$/){
+              if($pattern){
+                $hc_url="${hc_url}\@\@${pattern}";
+              }
+              if($timeout){
+                $hc_url="${hc_url}\@\@${timeout}";
+              }
+              for ( my $i=0; $i<scalar @instances; $i++) {
+                if ($app=~/^hc_was/ && $instances[$i] =~ /^${hc_app}\@\@/ ) {
+                  my($app,$url,$parm,$timeout_1) = split(/@@/,$instances[$i]);
+                  if(! $parm){
+                    $hc_url="${hc_url}${url}";
+                  }
+                  else {
+                    $hc_url="${hc_url}${url}\@\@${parm}";
+                    if(${timeout_1}){
+                      $hc_url="${hc_url}\@\@${timeout_1}";
+                    }
+                  }
+                  delete $instances[$i];
+                }  
+              } 
+              $inst="${hc_app}\@\@${hc_url}";
+              push @check,$inst;
+            }
+          }
+        }
+        if(@check > 0){
+          print "\n${app}:\n";
+        }
+        while (@check > 0) {
+          my $check_url=shift(@check);
+          print "  instances       =${check_url}\n";
+        }
+      } 
+    }
+  }
+  print "\n";
+}

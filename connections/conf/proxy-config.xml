@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ***************************************************************** -->
+<!--                                                                   -->
+<!-- Licensed Materials - Property of IBM                              -->
+<!--                                                                   -->
+<!-- 5724-E76                                                          -->
+<!--                                                                   -->
+<!-- Copyright IBM Corp. 2008  All Rights Reserved.                    -->
+<!--                                                                   -->
+<!-- US Government Users Restricted Rights - Use, duplication or       -->
+<!-- disclosure restricted by GSA ADP Schedule Contract with           -->
+<!-- IBM Corp.                                                         -->
+<!--                                                                   -->
+<!-- ***************************************************************** -->
+
+<!-- ************************************************************************************
+Listed below are example rules that can be used to control the behavior of the AjaxProxy
+
+Consider the AjaxProxy installed as a WAR application into an application server. The
+AjaxProxy WAR file by default maps to /proxy per the web.xml definition.
+    <servlet-mapping>
+        <servlet-name>ProxyServlet</servlet-name>
+        <url-pattern>/proxy/*</url-pattern>         
+    </servlet-mapping>
+
+If the context-path of the Web Application is /myapp, then the <proxy:mappings> would be 
+interpreted as the following:
+
+Example #1:
+<proxy:mapping contextpath="/http/*" />
+
+The following request would map through the proxy:
+       http://localhost/myapp/proxy/http/www.cnn.com    
+
+       would be the same as issuing a front page request to http://www.cnn.com
+
+       NOTE: The Ajax Proxy does not attempt to do URL rewriting on HTML pages.  In other words, 
+             the URI's contained in the page returned by http://www.cnn.com will not be modified 
+             to map through the proxy. 
+
+Example #2:
+<proxy:mapping contextpath="/rss/money_latest.rss" url="http://rss.cnn.com" />   
+
+The following request would map through the proxy:
+       http://localhost/myapp/proxy/rss/money_latest.rss  
+
+       would be the same as issuing a page request to http://rss.cnns.com/rss/money_latest.rss                                                            
+
+************************************************************************************************ -->
+<config id="proxy-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="proxy-config.xsd"
+    xmlns:proxy="http://www.ibm.com/xmlns/prod/websphere/featurepack/v6.1/proxy-config">
+
+<proxy-rules>
+
+    <proxy:mapping contextpath="/http/www.ibm.com/*" />
+    <proxy:mapping contextpath="/https/www.ibm.com/*" />
+    <proxy:mapping contextpath="/http/www-951.ibm.com/*" />
+    <proxy:mapping contextpath="/https/www-951.ibm.com/*" />
+
+    <proxy:policy url="*" acf="none" allowAuthRequest="false">
+        <proxy:actions>
+            <proxy:method>GET</proxy:method>
+            <proxy:method>POST</proxy:method>
+            <proxy:method>PUT</proxy:method>
+            <proxy:method>DELETE</proxy:method>
+        </proxy:actions>
+        <proxy:cookies>
+        <proxy:cookie>SESSION_ibmpre_connections</proxy:cookie>
+        <proxy:cookie>LtpaToken</proxy:cookie>
+        <proxy:cookie>LtpaToken2</proxy:cookie>
+        </proxy:cookies>
+        <proxy:headers>
+        <proxy:header>User-Agent</proxy:header>
+        <proxy:header>Accept*</proxy:header>
+        <proxy:header>Content*</proxy:header>
+        <proxy:header>Authorization*</proxy:header>
+        </proxy:headers>
+    </proxy:policy>
+</proxy-rules>
+</config>

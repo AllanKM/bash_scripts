@@ -1,0 +1,167 @@
+#!/bin/ksh
+#set -x
+# This script:
+#	- rsync's all pub binaries from FS to /opt/IBM
+#       - rsync's allnodes from FS to LFS
+#	- creates the /etc/rc.bNimble link
+#       - creates or resizes the local publishing system
+#         if directory does not exist if asked to
+
+echo "Setting umask"
+umask 002
+
+echo "Checking script arguments"
+if [ $# -eq 5 ]; then
+  if [ $1 == "create_PUB_FS" ]; then
+    BNIMBLE_VERSION=$2
+    PUB_FS=$3
+    PUB_FS_SIZE=$4
+    PUB_VG=$5
+    ABORT_PUB_FS=0
+    ABORT_DQ_FS=1
+  elif [ $1 == "create_DQ_FS" ]; then
+    BNIMBLE_VERSION=$2
+    DQ_FS=$3
+    DQ_FS_SIZE=$4
+    DQ_VG=$5
+    ABORT_PUB_FS=1
+    ABORT_DQ_FS=0
+  fi
+elif [ $# -eq 8 -a $1 -a $1 == "create_BOTH_FS" ]; then
+  BNIMBLE_VERSION=$2
+  PUB_FS=$3
+  PUB_FS_SIZE=$4
+  PUB_VG=$5
+  DQ_FS=$6
+  DQ_FS_SIZE=$7
+  DQ_VG=$8
+  ABORT_PUB_FS=0
+  ABORT_DQ_FS=0
+elif [ $# -eq 1 ]; then
+  BNIMBLE_VERSION=$1
+  ABORT_PUB_FS=1
+  ABORT_DQ_FS=1
+elif [ $# -gt 0 ]; then
+  echo ""
+  echo "   The incorrect number of arguments were added to "
+  echo "   configuration script for this event."  
+  echo "   Format is <which file system> <bNimble_version>"
+  echo "   [<publishing file system> <publishing file system size>"
+  echo "   <publishing volumn group>]"
+  echo "   [<disk queue file system> <disk queue file system size>"
+  echo "   <disk queue volumn group>]"
+  echo "                OR"
+  echo "   Format is <bNimble_version>"
+  echo ""
+  exit 1
+else 
+  echo ""
+  echo "   Script parameters were" 
+  echo "   not added to configuration script for this event."  
+  echo "   Format is <which file system> <bNimble_version>"
+  echo "   [<publishing file system> <publishing file system size>"
+  echo "   <publishing volumn group>]"
+  echo "   [<disk queue file system> <disk queue file system size>"
+  echo "   <disk queue volumn group>]"
+  echo "                OR"
+  echo "   Format is <bNimble_version>"
+  echo ""
+  exit 1
+fi
+
+echo "Checking that image file for bNimble version $BNIMBLE_VERSION exist"
+if [ ! -d /fs/system/images/publishing/${BNIMBLE_VERSION}/ ]; then
+  echo "   Image files for bNimble version $BNIMBLE_VERSION"
+  echo "     do not exist, aborting"
+  exit 2
+fi
+
+echo "Setting Base Dir"
+if [ -e /lfs ]; then
+  echo "   Using /lfs for publishing files"
+  BASEDIR="/lfs"
+elif [ -e /www ]; then
+  echo "   Using /www for publishing files"
+  BASEDIR="/www"
+else
+  echo "   Local tools directory does not exist"
+  exit 3
+fi
+
+echo "Checking the local tools version of rc.bNimble exist"
+if [ ! -f ${BASEDIR}/system/tools/bNimble/bin/rc.bNimble ]; then
+  echo "   Local tools version of rc.bNimble does not exist, aborting"
+  exit 2
+fi
+ 
+if [ $ABORT_PUB_FS -eq 0 ]; then
+  echo "Checking to see if directory $PUB_FS exist"
+  if [ -d $PUB_FS ]; then
+    if [ `ls -l $PUB_FS | grep -v "^total 0$" | grep -v "lost+found" | wc -l` -gt 0 ]; then
+      echo "   $PUB_FS already exists and contains files"
+      echo "   ############################################"
+      echo ""
+      echo "   I am assuming that this is because    "
+      echo "   $PUB_FS                                      "
+      echo "   has already been setup correctly"
+      echo ""
+      echo "   ############################################"
+      ABORT_PUB_FS=1
+    else
+      echo "   $PUB_FS exist but contains no files"
+    fi
+  else
+    echo "   $PUB_FS does not exist"
+  fi
+fi
+
+if [ $ABORT_PUB_FS -eq 0 ]; then
+  echo "Creating publishing filesystem, $PUB_FS"
+  /fs/system/bin/eimkfs $PUB_FS ${PUB_FS_SIZE}M $PUB_VG
+
+  if [ $? -gt 0 ]; then
+    echo "   Filesystem $PUB_FS was not able to be created, aborting"
+    exit 5
+  fi
+fi
+
+if [ $ABORT_DQ_FS -eq 0 ]; then
+  echo "Checking to see if directory $DQ_FS exist"
+  if [ -d $DQ_FS ]; then
+    if [ `ls -l $DQ_FS | grep -v "^total 0$" | grep -v "lost+found" | wc -l` -gt 0 ]; then
+      echo "   $DQ_FS already exists and contains files"
+      echo "   ############################################"
+      echo ""
+      echo "   I am assuming that this is because    "
+      echo "   $DQ_FS                                      "
+      echo "   has already been setup correctly"
+      echo ""
+      echo "   ############################################"
+      ABORT_DQ_FS=1
+    else
+      echo "   $DQ_FS exist but contains no files"
+    fi
+  else
+    echo "   $DQ_FS does not exist"
+  fi
+fi
+
+if [ $ABORT_DQ_FS -eq 0 ]; then
+  echo "Creating publishing filesystem, $DQ_FS"
+  /fs/system/bin/eimkfs $DQ_FS ${DQ_FS_SIZE}M $DQ_VG
+
+  if [ $? -gt 0 ]; then
+    echo "   Filesystem $DQ_FS was not able to be created, aborting"
+    exit 5
+  fi
+fi
+
+echo "Initial sync between AFS and local disk"
+echo "Code ......."
+${BASEDIR}/system/tools/configtools/filesync /fs/system/images/publishing/${BNIMBLE_VERSION}/ /opt/IBM/${BNIMBLE_VERSION}/ acv 1 0
+
+echo "Allnodes ......."
+${BASEDIR}/system/tools/configtools/filesync /fs/system/config/nd-gen/allnodes.xml ${BASEDIR}/system/config/nd-gen/ avc 1 0
+
+echo "Create /etc/rc.bNimble link"
+ln -sf ${BASEDIR}/system/tools/bNimble/bin/rc.bNimble /etc/rc.bNimble

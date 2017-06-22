@@ -1,0 +1,1597 @@
+#!/usr/bin/perl
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use POSIX;
+use Socket;
+use Sys::Hostname;
+use Getopt::Long;
+
+# Set $debug to 1 for debug output
+$debug = 0;
+
+# Get caller information
+($myprog = $0) =~ s@.*/@@;
+($mypath = $0) =~ s/$myprog$//;
+$mypath = './' if ($mypath eq '');
+
+# Unbuffer output to non-character device
+$| = 1;
+
+# Creation mask
+umask(002);
+
+$tmp = "/tmp";                            # Temporary write directory
+$pagets = POSIX::strftime( "%H:%M %m/%d", localtime() );
+$pidfile = "$tmp/lcs_poll.pid";           # Process id "lock" file
+$ndwthalf = 10;                           # Maximum ND weight divided by 2
+$fanout = 64;
+($host) = gethostbyname(&Sys::Hostname::hostname());
+$host   =~ tr/A-Z/a-z/;
+
+# Configuration data
+%data = ();
+%olddata = ();
+%hlines = ();
+%ignores = ();
+
+# List of files for "grep . filelst" output
+%filelst = (
+  "/var/ibmnd/logs/asclog" => 1,
+  "/var/ibmnd/configurations/ndconf.out" => 2,
+  "/var/ibmnd/logs/costlog" => 3,
+  "/var/ibmnd/logs/livelog" => 4,
+);
+
+# List of files to copy to nd-cur
+@copylst = (
+  "/fs/system/config/nd-gen/allnodes.conf",
+  "/fs/system/config/nd-gen/allnodes.xml",
+  "/fs/system/config/nd-gen/caches.xml",
+  "/fs/system/config/nd-gen.new/global.conf",
+  "/fs/system/config/nd-gen.new/nd.conf",
+  "/fs/system/config/nd-gen.new/nodes.conf",
+  "/fs/system/config/nd-gen.new/sites.conf",
+);
+
+# Destination directory for files
+$ndcfgdir = "/lfs/system/config";
+$ndcur = "nd-cur";
+$ndcurdir = "$ndcfgdir/$ndcur";
+
+# current = ["nd=sitename,siteip,port,weight,serverip,servername,altport"]
+# costs = ["nd=sitename,siteip,cost[.off]"]
+# gslb = ["nd=fqdn,zone,hn,ip,policy,affinity,source,type,state,
+#          location,fbtcp,fbapp,dnscount,dnspct,actbnd,site,weight,
+#          lbname,lbip,utilpct,availsessions,pref"]
+# %SITES hash (sitename => [ array of IPs ])
+$sitesconf = "/fs/system/config/nd-gen.new/sites.conf";
+# %NDCONF hash (nd => stuff...)
+$ndconf = "/fs/system/config/nd-gen.new/nd.conf";
+# List of ["nd=sitename,siteip,port,weight,serverip,servername"]
+$outfile = "$ndcurdir/current";
+# List of ["nd=sitename,siteip,cost"]
+$bgpfile = "$ndcurdir/costs";
+# List of ["nd=fqdn,zone,hn,ip,policy,affinity,source,type,state,
+#          location,fbtcp,fbapp,dnscount,dnspct,actbnd,site,weight,
+#          lbname,lbip,utilpct,availsessions,pref"]
+$gslbfile = "$ndcurdir/gslb";
+
+$sshcmd = "/usr/bin/ssh";
+$sshkhf = "/tmp/.lcs_poll_known_hosts.fdpoll";
+$sshcmdargs = "-n -q -x -o ConnectionAttempts=1 -o UserKnownHostsFile=$sshkhf -o strictHostKeyChecking=no";
+$sshuser = "-l ndpoll";
+$sshprog = "grep . ";
+$sshprog .= join(" ",sort { $filelst{$a} <=> $filelst{$b} } keys %filelst);
+
+$fdcmd = "$mypath/fdpolllive";
+$fdcmdargs = "-r -s -g";
+$fduser = "";
+$fdprog = "";
+
+$lccmd = "$mypath/lcpolllive";
+$lccmdargs = "-days 1";
+
+$ltpcmd = "$mypath/lcs_tarpkg";
+$ltp1cmdargs = "-c -n all -s $ndcfgdir -f $ndcur";
+$ltp2cmdargs = "-c -z all -d fs -s $ndcfgdir -f $ndcur";
+
+# Well known ports for Foundry definitions
+%{$data{PORTS}{NAME}} = (
+  "echo" => 7,
+  "discard" => 9,
+  "ftp" => 21,
+  "ssh" => 22,
+  "telnet" => 23,
+  "smtp" => 25,
+  "time" => 37,
+  "tacacs" => 49,
+  "dns" => 53,
+  "bootps" => 67,
+  "bootpc" => 68,
+  "tftp" => 69,
+  "http" => 80,
+  "pop2" => 109,
+  "pop3" => 110,
+  "nntp" => 119,
+  "ntp" => 123,
+  "netbios-ns" => 137,
+  "netbios-dgm" => 138,
+  "imap4" => 143,
+  "snmp" => 161,
+  "snmp-trap" => 162,
+  "bgp" => 179,
+  "dnsix" => 195,
+  "ldap" => 389,
+  "mobile-ip" => 434,
+  "ssl" => 443,
+  "talk" => 517,
+  "rip" => 520,
+  "rtsp" => 554,
+  "ldaps" => 636,
+  "mms" => 1755,
+  "radius" => 1812,
+  "radius-old" => 1645,
+);
+%{$data{PORTS}{PORT}} = reverse %{$data{PORTS}{NAME}};
+
+# Foundry port states to weight translations
+%{$data{STATES}} = (
+  "ACT" => 10,
+  "ENB" => 9,
+  "FAL" => 0,
+  "TST" => 8,
+  "SUS" => 4,
+  "GDN" => 1,
+  "DIS" => -1,
+  "UNK" => 5,
+  "UNB" => -1,
+  "AWU" => 2,
+  "AWD" => 3,
+);
+
+# NO CUSTOMIZATION SHOULD BE NEEDED BEYOND THIS POINT
+
+# Default values while reading GSLB information
+@gslbdflts = (
+  "NONE",
+  "Global",
+  "global",
+  "dns",
+  "v-ip",
+  "DOWN",
+  "N-AM",
+  -1,
+  -1,
+  -1,
+  0,
+  0,
+  "UNKNOWN",
+  0,
+  "UNKNOWN",
+  "UNKNOWN",
+  0,
+  0,
+  128
+);
+
+mkdir($tmp,0755) unless (-d $tmp);
+
+# Already running, make sure, then bail out, otherwise create pidfile "lock"
+if (-f $pidfile) {
+  open(PID,"<$pidfile");
+  chomp($pid = <PID>);
+  close(PID);
+  $found = 0;
+  open(PS,"ps -e|");
+  while(<PS>) {
+    ($p) = split(' ');
+    if ($pid eq $p) {
+      $found = 1;
+      last;
+    }
+  }
+  close(PS);
+  if ($found) {
+    print "$pagets - Program already running; delete $pidfile\?\n";
+    exit 0;
+  } else {
+    print "$pagets - Cleaning up $pidfile and continuing\n";
+    unlink($pidfile);
+  }
+}
+system( "echo $$ >$pidfile" );
+
+# Parse arguments
+$rc = &main::GetOptions(
+  'b|bgpcostfile:s',
+  'd|debug',
+  'f|fanout:i',
+  'g|gslbfile:s',
+  'h|host:s',
+  'i|ignores:s',
+  'o|outputfile:s',
+);
+if (! $rc) {
+  print STDERR "Invalid command line options\n";
+  &usage();
+  unlink($pidfile);
+  exit 1;
+}
+
+# Override values from command line
+$fanout = $opt_f if ($opt_f);
+$outfile = $opt_o if ($opt_o);
+$bgpfile = $opt_b if ($opt_b);
+$gslbfile = $opt_g if ($opt_g);
+grep($ignores{$_}++,split(",",$opt_i)) if ($opt_i);
+$debug = $opt_d if ($opt_d);
+
+# If host specified, must match our current host
+if (defined $opt_h) {
+  ($n,$a,$t,$l,@ips) = gethostbyname($host);
+  print "host match: $n $a $t $l\n" if ($debug);
+  $match = 0;
+  foreach $h (split(/[ ,]/,$opt_h)) {
+    ($name,$aliases,$addrtype,$length,@addrs) =
+        gethostbyname($h);
+    print "host match x: $name $aliases $addrtype $length\n" if ($debug);
+    foreach $a (@addrs) {
+      if (grep($_ eq $a,@ips)) {
+        $match++;
+        last;
+      }
+    }
+    last if ($match);
+  }
+  if (! $match) {
+    unlink($pidfile);
+    exit 0;
+  }
+}
+
+### Read sites (shared filespace, then local) or just local first?
+# Read in sites.conf: try shared fs version first, then local one
+%oldwt = ();
+%oldbgp = ();
+%oldcurr = ();
+%oldcost = ();
+%oldgslb = ();
+%SITES = ();
+&loadfile($sitesconf,$tmp,0,1,$debug);
+%{$data{SITES}{NAME}} = %SITES;
+foreach $sn (keys %SITES) {
+  foreach $ip (@{$SITES{$sn}}) {
+    $data{SITES}{IP}{$ip} = $sn;
+  }
+}
+
+@oldcurrent = &loadfile($outfile,$tmp,0,2,$debug) if (-r $outfile);
+if (@oldcurrent) {
+  foreach (@oldcurrent) {
+    ($server,$vs,$vi,$po,$wt,$si,$sv,$sp) = split(/[,=]/);
+    next if (defined $ignores{$server});
+
+    push(@{$oldcurr{$server}},$_);
+    $oldwt{"$server,$vi,$po,$si"} = $wt;
+
+    $sp = $po unless ($sp);
+    $olddata{SERVERS}{NAME}{$sv}{IP} = $si;
+    $olddata{SERVERS}{IP}{$si}{NAME} = $sv;
+    $olddata{SERVERS}{VIPS}{$sv}{VIP}{$vi}{PORT}{$po}++;
+    $olddata{$server}{SERVERS}{IP}{$si}{NAME} = $sv;
+    $olddata{$server}{VIPS}{NAME}{$cn}{IP}{$vi}++;
+    $olddata{$server}{VIPS}{IP}{$vi}{NAME}{$cn}++;
+    $olddata{$server}{VIPS}{IP}{$vi}{BIND}{$po}{$si}{$sp}++;
+    #$olddata{$server}{VIPS}{BIND}{$po}{$si}{$sp} = $vi;
+    $olddata{$server}{VIPS}{WEIGHT}{$vi}{$po}{$si}{$sp} = $wt;
+    push(@{$olddata{$server}{TRACK}{WEIGHTS}},"$vi,$po,$wt,$si,$sp");
+  }
+}
+@oldcosts = &loadfile($bgpfile,$tmp,0,2,$debug) if (-r $bgpfile);
+if (@oldcosts) {
+  foreach (@oldcosts) {
+    ($server,$cn,$vi,$co) = split(/[,=]/);
+    next if (defined $ignores{$server});
+
+    push(@{$oldcost{$server}},$_);
+    $oldbgp{"$server,$vi"} = $co;
+
+    $olddata{$server}{VIPS}{COST}{$vi} = $co;
+    push(@{$olddata{$server}{TRACK}{COSTS}},"$vi,$co");
+  }
+}
+@oldgslb = &loadfile($gslbfile,$tmp,0,2,$debug) if (-r $gslbfile);
+if (@oldgslb) {
+  foreach (@oldgslb) {
+    ($server,$fqdn,$zone,$hn,$ip,$policy,$affinity,$src,$typ,$st,
+     $loc,$fbtcp,$fbapp,$dnscnt,$dnspct,$actbnd,$site,$wt,$lbname,$lbip,
+     $utilpct,$availsess,$pref) = split(/[,=]/);
+    next if (defined $ignores{$server});
+
+    push(@{$oldgslb{$server}},$_);
+
+    $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE} = $_;
+    $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT} = $dnscnt;
+    push(@{$olddata{$server}{TRACK}{GSLB}},$fqdn);
+  }
+}
+
+# Build list of load balancers from command line
+@wc = @ARGV;
+unless (@wc) {
+  &usage();
+  unlink($pidfile);
+  exit 1;
+}
+
+# Pull in entire list of load balancers where we see ALL (weed out dups)
+if (grep($_ eq 'ALL',@wc)) {
+  # Read in nd.conf: try shared filesystem version first, then local one
+  %NDCONF = ();
+  &loadfile($ndconf,$tmp,0,1,$debug);
+  @newwc = ();
+#  @allwc = grep($_ =~ /^..[0-9]/ &&
+#                $_ !~ /DEFAULT/,sort keys %NDCONF);
+  @allwc = grep($_ !~ /DEFAULT/,sort keys %NDCONF);
+  foreach $server (@wc,@allwc) {
+    if ($server ne 'ALL') {
+      next if (defined $ignores{$server});
+      push(@newwc,$server) if (! $seen{$server});
+      $seen{$server}++;
+    }
+  }
+  @wc = @newwc;
+}
+
+# Remove the ssh knownhostsfile
+unlink($sshkhf);
+
+# Populate hashes with load balancer information
+&collectdata;
+&parsedata;
+
+# current = ["nd=sitename,siteip,port,weight,serverip,servername"]
+$ok = 0;
+@tcurrent = &currentarr();
+foreach $line (@tcurrent) {
+  ($server,$vs,$vi,$po,$wt,$si,$sv,$sp) = split(/[,=]/,$line);
+  if (defined $olddata{$server}{VIPS}{WEIGHT}{$vi}{$po}{$si} &&
+      $olddata{$server}{VIPS}{WEIGHT}{$vi}{$po}{$si} == 0 &&
+      #$oldwt{"$server,$vi,$po,$si"} &&
+      #$oldwt{"$server,$vi,$po,$si"} == 0 &&
+      $wt >= $ndwthalf &&
+      $special{"$si,$po"} == 0) {
+    $wt = -$wt;
+    $line = "$server=$vs,$vi,$po,$wt,$si,$sv,$sp";
+    print STDERR "$pagets - ND misbehaving: $line\n";
+  }
+  if ($wt eq "") {
+    $line = "$server=$vs,$vi,$po,-1,$si,$sv,$sp";
+  }
+  push(@current,$line);
+}
+# For fun sort @current by:
+#   by reversed weight (highest to lowest)
+#   by servername
+#   by sitename
+#   by nd
+@current = map { $_->[0] }               # whole line
+           sort {
+                  $b->[1] <=> $a->[1]    # weight (reversed)
+                      ||
+                  $a->[2] cmp $b->[2]    # servername
+                      ||
+                  $a->[3] cmp $b->[3]    # sitename
+                      ||
+                  $a->[4] cmp $b->[4]    # nd
+           }
+           map { [ $_, (split /[,=]/)[4,6,1,0] ] }
+           @current;
+if (open(OUTFILE, ">$outfile.$$")) {
+  $ok = 1 if (print OUTFILE join("\n",@current)."\n");
+  close(OUTFILE);
+  if ($ok) {
+    # Move temporary output file to real name
+    unlink("$outfile.Old") if (-e "$outfile.Old");
+    rename($outfile,"$outfile.Old") if (-r $outfile);
+    rename("$outfile.$$",$outfile);
+  } else {
+    print STDERR "$pagets - Incomplete write to $outfile.$$: $!\n";
+  }
+} else {
+  print STDERR "$pagets - Unable to write to $outfile.$$: $!\n";
+}
+
+# costs = ["nd=sitename,siteip,cost"]
+$ok = 0;
+@tcosts = &costarr();
+@costs = @tcosts;
+if (open(BGPFILE, ">$bgpfile.$$")) {
+  $ok = 1 if (print BGPFILE join("\n",@costs)."\n");
+  close(BGPFILE);
+  if ($ok) {
+    # Move temporary output file to real name
+    unlink("$bgpfile.Old") if (-e "$bgpfile.Old");
+    rename($bgpfile,"$bgpfile.Old") if (-r $bgpfile);
+    rename("$bgpfile.$$",$bgpfile);
+    #print "Not running $lccmd $lccmdargs\n";
+    system("$lccmd $lccmdargs");
+
+    # Copy files if newer than what we have
+    foreach $f (@copylst) {
+      $fdst = $f;
+      $fdst =~ s%^.*/%%;
+      $fdst = "$ndcurdir/$fdst";
+      $ssec = $dsec = 0;
+      $ssec = (stat($f))[9] if (-e $f);
+      $dsec = (stat($fdst))[9] if (-e $fdst);
+      if (($ssec > $dsec) && ($ssec < (time() - 120))) {
+        # print "Not copying $f to $fdst\n";
+        system("cp -p $f $ndcurdir/");
+        chown(0,0,$fdst);
+        chmod(0664,$fdst);
+      }
+    }
+
+    #print "Not running $ltpcmd $ltp1cmdargs\n";
+    system("$ltpcmd $ltp1cmdargs");
+    sleep 3;
+    #print "Not running $ltpcmd $ltp2cmdargs\n";
+    system("$ltpcmd $ltp2cmdargs");
+  } else {
+    print STDERR "$pagets - Incomplete write to $bgpfile.$$: $!\n";
+  }
+} else {
+  print STDERR "$pagets - Unable to write to $bgpfile.$$: $!\n";
+}
+
+# gslb = ["nd=fqdn,zone,hn,ip,policy,affinity,source,type,state,
+#          location,fbtcp,fbapp,dnscount,dnspct,actbnd,site,weight,
+#          lbname,lbip,utilpct,availsessions,pref"]
+$ok = 0;
+@tgslb = &gslbarr();
+foreach $line (@tgslb) {
+  ($server,$fqdn,$zone,$hn,$ip,$policy,$affinity,$src,$typ,$st,
+   $loc,$fbtcp,$fbapp,$dnscnt,$dnspct,$actbnd,$site,$wt,$lbname,$lbip,
+   $utilpct,$availsess,$pref) = split(/[,=]/);
+  if (defined $olddata{$server}{GSLB}{FQDN}{$fqdn} &&
+      defined $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP} &&
+      defined $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip} &&
+      defined $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT} &&
+      $dnscnt < $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT} &&
+      $dnscnt < 0) {
+    $olddnscnt = $olddata{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT};
+    print STDERR "$pagets - GSLB misbehaving ($olddnscnt): $line\n";
+  }
+  push(@gslb,$line);
+}
+# For fun sort @gslb by:
+#   by zone
+#   by fqdn
+#   by nd
+@gslb = map { $_->[0] }               # whole line
+        sort {
+               $a->[1] cmp $b->[1]    # zone
+                   ||
+               $a->[2] cmp $b->[2]    # fqdn
+                   ||
+               $a->[3] cmp $b->[3]    # nd
+        }
+        map { [ $_, (split /[,=]/)[2,1,0] ] }
+        @gslb;
+if (open(GSLBFILE, ">$gslbfile.$$")) {
+  $ok = 1 if (print GSLBFILE join("\n",@gslb)."\n");
+  close(GSLBFILE);
+  if ($ok) {
+    # Move temporary output file to real name
+    unlink("$gslbfile.Old") if (-e "$gslbfile.Old");
+    rename($gslbfile,"$gslbfile.Old") if (-r $gslbfile);
+    rename("$gslbfile.$$",$gslbfile);
+  } else {
+    print STDERR "$pagets - Incomplete write to $gslbfile.$$: $!\n";
+  }
+} else {
+  print STDERR "$pagets - Unable to write to $gslbfile.$$: $!\n";
+}
+
+%seen = ();
+grep($seen{$_}++,keys %hostrc,keys %hosterr);
+foreach $h (sort keys %seen) {
+  if ($hostrc{$h} > 0 || @{$hosterr{$h}}) {
+    print STDERR "$pagets - $h: Exit code: $hostrc{$h}\n" if ($hostrc{$h} > 0);
+    print STDERR "$pagets - $h: ",join("$pagets - $h: ",@{$hosterr{$h}})
+      if (@{$hosterr{$h}});
+  } else {
+    print STDERR "$pagets - $h: Responded with no information\n"
+      if (! @{$hlines{$h}});
+  }
+}
+
+# Clean up PID "lock" file
+unlink ($pidfile);
+
+exit 0;
+
+print "$main::running_under_some_shell\n";
+
+sub usage {
+  print STDERR "usage: $myprog [-b bgpcostfile] [-f fanout] [-g gslbfile]\n",
+               "         [-i loadbalancer[,...]] [-o outputfile]\n",
+               "         {loadbalancer[,...]|ALL}\n",
+               " NOTE: Use ALL to reference all loadbalancers\n";
+}
+
+sub parsedata {
+  local($server);
+
+  foreach $server (keys %hlines) {
+    if ($NDCONF{$server}{ARCH} =~ /^221/) {
+      &parsemib($server);
+    } elsif ($NDCONF{$server}{FUNCTION} =~ /^SLB/) {
+      &parsefd($server);
+    } else {
+      &parsend($server);
+    }
+  }
+}
+
+sub parsefd {
+  local($server) = @_;
+  local($state,$srvtype,$name,$ip,$maxconn,$port,$st);
+  local($fd,$po,$si,$sp,$vi,$vs,$sv,$wt);
+  local($type,$line,$cmd,@parms,$p,$port,$i);
+  local($srv,$srvport,$si,$vip);
+  local($zone,$fqdn,$hn,$policy,$affinity,$src,$typ,$st);
+  local($loc,$fbtcp,$fbapp,$dnscnt,$dnspct,$actbnd,$site);
+  local($lbname,$lbip,$utilpct,$availsess,$pref);
+
+  $state = 0;
+  $srvtype = "";
+  $name = "";
+  $ip = "";
+  $port = "";
+  $st = "";
+  $zone = "";
+  $hn = "";
+  foreach (@{$hlines{$server}}) {
+    chomp;
+    ($type,$line) = split(":",$_,2);
+    $_ = $line;
+    print "'$_'\n" if ($debug);
+    if ($type =~ /\/r/) {
+      ($cmd,@parms) = split(" ");
+      $cmd = "" if (! defined $cmd);
+      if (/^\s*\!\s*$/) {
+        print "State reset\n" if ($debug);
+        $state = 0;
+        $srvtype = "";
+        next;
+      } elsif ($cmd eq "server") {
+        ($name,$ip) = (@parms)[1,2];
+        if (/server real/) {
+          $srvtype = "SERVERS";
+          $state = 1;
+        } elsif (/server remote/) {
+          $srvtype = "SERVERS";
+          $state = 2;
+        } elsif (/server virtual/) {
+          #$cmdtype = "virtual";
+          $srvtype = "VIPS";
+          $state = 3;
+        } else {
+          #$cmdtype = "";
+          $state = 0;
+          next;
+        }
+        $data{$server}{$srvtype}{NAME}{$name}{IP} = $ip;
+        $data{$server}{$srvtype}{IP}{$ip}{NAME} = $name;
+        print "Server def: $srvtype $name $ip\n" if ($debug);
+        next;
+      }
+      if ($state > 0) {
+        print "In server def $srvtype $name\n" if ($debug);
+        push(@{$data{$server}{$srvtype}{IP}{$ip}{ATTR}{'rawstanza'}},$_);
+        if ($cmd eq "port") {
+          $p = $parms[0];
+          $p = $data{PORTS}{NAME}{$p} if (defined $data{PORTS}{NAME}{$p});
+          $data{$server}{$srvtype}{IP}{$ip}{PORT}{$p}{SET}++;
+          if (@parms == 1) {
+            print "Port def: $parms[0]\n" if ($debug);
+          } elsif (@parms == 2) {
+            push(@{$data{$server}{$srvtype}{IP}{$ip}{PORT}{$p}{ATTR}{$parms[1]}},1);
+            print "Port flags def: $parms[0] $parms[1]\n" if ($debug);
+          } elsif (@parms > 2) {
+            print "Port values def: $parms[0] $parms[1] ".join(" ",(@parms)[(2..$#parms)])."\n" if ($debug);
+            push(@{$data{$server}{$srvtype}{IP}{$ip}{PORT}{$p}{ATTR}{$parms[1]}},
+              join(" ",(@parms)[(2..$#parms)]));
+          }
+        } elsif ($cmd eq "bind") {
+          $port = shift @parms;
+          $port = $data{PORTS}{NAME}{$port} if (defined $data{PORTS}{NAME}{$port});
+          $i = 0;
+          while ($i < @parms) {
+            ($srv,$srvport) = (@parms)[$i,($i+1)];
+            $si = $data{$server}{SERVERS}{NAME}{$srv}{IP};
+            $srvport = $data{PORTS}{NAME}{$srvport} if (defined $data{PORTS}{NAME}{$srvport});
+            print "Bind def: $srvtype $name $ip $port $srv $si $srvport\n" if ($debug);
+            $data{$server}{$srvtype}{BIND}{$port}{$si}{$srvport} = $ip;
+            $data{$server}{$srvtype}{IP}{$ip}{BIND}{$port}{$si}{$srvport}++;
+            $data{$server}{SERVERS}{IP}{$si}{PORT}{$srvport}{ALIASPORT} = $port;
+            $i += 2;
+          }
+          print "Defined bind information for $port\n" if ($debug);
+        } elsif (/source-nat/) {
+          push(@{$data{$server}{$srvtype}{IP}{$ip}{ATTR}{'source-nat'}},1);
+          print "Found source-nat\n" if ($debug);
+        } elsif (/no port http translate/) {
+          push(@{$data{$server}{$srvtype}{IP}{$ip}{ATTR}{'no_port_http_translate'}},1);
+          print "Found no port http translate\n" if ($debug);
+        } elsif (/sym-priority/) {
+          push(@{$data{$server}{$srvtype}{IP}{$ip}{ATTR}{'sym-priority'}},$parms[0]);
+          $data{$server}{VIPS}{COST}{$ip} = $parms[0];
+          $data{$server}{VIPS}{LIVECOST}{$ip} = $parms[0];
+          print "Found sym-priority: $parms[0]\n" if ($debug);
+        }
+      }
+    } elsif ($type =~ /\/s/) {
+      if (/Server\s+Total/) {
+        print "State reset\n" if ($debug);
+        $state = 0;
+        next;
+      }
+      if (/Name\s*:/) {
+        $name = $_;
+        $name =~ s/^\s*//;
+        $name =~ s/^.*Name\s*:\s+//;
+        $name =~ s/\s+.*$//;
+        $state = 0;
+        print "Name def: $name\n" if ($debug);
+      }
+      if (/IP:/) {
+        $ip = $_;
+        $ip =~ s/^\s*//;
+        $ip =~ s/^.*IP\s*://;
+        $ip =~ s/:.*$//;
+        $ip =~ s/\s+.*$//;
+        $name = ${data{$server}{SERVERS}{IP}{$ip}{NAME}}
+          if (defined $data{$server}{SERVERS}{IP}{$ip}{NAME});
+        $state = 0;
+        print "IP def: $ip ($name)\n" if ($debug);
+      }
+      if (/MaxConn:/) {
+        $maxconn = $_;
+        $maxconn =~ s/^.*MaxConn\s*:\s*//;
+        $maxconn =~ s/^\(\d+\).*$/$1/;
+        $state = 0;
+        print "MaxConn def: $maxconn\n" if ($debug);
+      }
+      if (/^\s*Port/) {
+        $state = 1;
+        print "Port def\n" if ($debug);
+        next;
+      }
+      if ($state == 1) {
+        next if (/---/);
+        ($port,$st) = split(' ');
+        next if (! defined $port);
+        $port = $data{PORTS}{NAME}{$port} if (defined $data{PORTS}{NAME}{$port});
+        $p = $port;
+        $wt = 10;
+        $vip = "unknown";
+        $p = $data{$server}{SERVERS}{IP}{$ip}{PORT}{$port}{ALIASPORT}
+          if (defined $data{$server}{SERVERS}{IP}{$ip}{PORT}{$port}{ALIASPORT});
+        $vip = $data{$server}{VIPS}{BIND}{$p}{$ip}{$port}
+          if (defined $data{$server}{VIPS}{BIND}{$p}{$ip}{$port});
+        $wt = $data{STATES}{$st} if (defined $data{STATES}{$st});
+        $wt = -1 if ($maxconn == 1);
+        $data{$server}{VIPS}{WEIGHT}{$vip}{$p}{$ip}{$port} = $wt;
+        push(@{$data{$server}{TRACK}{WEIGHTS}},"$vip,$p,$wt,$ip,$port")
+          if (! defined $data{$server}{VIPS}{WEIGHT}{$vip}{$p}{$ip}{$port});
+        print "$server $vip $name $ip $port $p $st $wt\n" if ($debug);
+      }
+    } elsif ($type =~ /\/g/) {
+      ($cmd,@parms) = split(" ");
+      $cmd = "" if (! defined $cmd);
+      if ($cmd eq "ZONE:") {
+        ($zone) = (@parms)[0];
+        $state = 0;
+        next;
+      } elsif ($cmd eq "HOST:") {
+        ($hn) = (@parms)[0];
+        $hn =~ s/:.*$//;
+        $fqdn = "$hn.$zone";
+        # clear previous host data
+        ($ip,$policy,$affinity,$src,$typ,$st,$loc,$fbtcp,
+         $fbapp,$dnscnt,$dnspct,$actbnd,$site,$wt,$lbname,
+         $lbip,$utilpct,$availsess,$pref) = (@gslbdflts);
+        $state = 0;
+        next;
+      } elsif (/GSLB\s+policy/o) {
+        if (/:/) {
+          ($policy) = (@parms)[1];
+          $policy =~ s/\).*$//;
+        } else {
+          $policy = "Global";
+        }
+        $state = 0;
+        next;
+      } elsif (/GSLB\s+affinity/o) {
+        ($affinity) = (@parms)[2];
+        $state = 1;
+      }
+      if ($state > 0) {
+        if (/^\s*$/) {
+          #empty line between IPs
+          # Dump a set of information into the hash table
+          if ($zone ne "" && $hn ne "" &&
+              (! defined $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE})) {
+            $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE} =
+              "$server=$fqdn,$zone,$hn,$ip,$policy,$affinity".
+              ",$src,$typ,$st,$loc,$fbtcp,$fbapp,$dnscnt".
+              ",$dnspct,$actbnd,$site,$wt,$lbname,$lbip".
+              ",$utilpct,$availsess,$pref";
+            $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT} = $dnscnt;
+          }
+          $state=1;
+          next;
+        }
+        if ($state == 1) {
+          if (/v\-ip|real\-ip/o) {
+            # [*] ip: source type state location fbtcp fbapp dnscnt [(dnspct%)]
+            #   If fbtcp = /-/, then set to -1
+            #   If fbapp = /-/, then set to -1
+            #   If dnscnt = /-/, then set to -1 and set dnspct to 0
+            if ($cmd eq '*') {
+              ($ip,$src,$typ,$st,$loc,$fbtcp,$fbapp,$dnscnt,$dnspct) =
+                (@parms);
+            } else {
+              ($ip,$src,$typ,$st,$loc,$fbtcp,$fbapp,$dnscnt,$dnspct) =
+                ($cmd,@parms);
+            }
+            $ip =~ s/:.*$//;
+            $fbtcp = -1 if ($fbtcp =~ /^[-]+$/o);
+            $fbapp = -1 if ($fbapp =~ /^[-]+$/o);
+            if ($dnscnt =~ /^[-]+$/o) {
+              $dnscnt = -1;
+              $dnspct = 0;
+            } else {
+              $dnspct =~ s/[()%]//g;
+              $dnspct = 0 if ($dnspct !~ /^[0-9]+$/);
+            }
+            $state = 2;
+            next;
+          }
+        } elsif ($state == 2) {
+          #site,weight,lbname,lbip,utilpct,availsessions,pref
+          if (/Active\s+Bindings:/io) {
+            ($actbnd) = (@parms)[1];
+            next;
+          } elsif (/site:.*weight:.*SI:/o) {
+            ($site,$wt,$lbname,$lbip) = (@parms)[0,2,4,5];
+            $site =~ s/,.*$//;
+            $wt =~ s/,.*$//;
+            $lbip =~ s/[()]//g;
+            next;
+          } elsif (/session.*util:.*avail.*sessions:/o) {
+            ($utilpct,$availsess) = (@parms)[1,4];
+            $utilpct =~ s/\%.*$//;
+            next;
+          } elsif (/preference:/o) {
+            ($pref) = (@parms)[0];
+            if ($zone ne "" && $hn ne "" &&
+                (! defined $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE})) {
+              $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE} =
+                "$server=$fqdn,$zone,$hn,$ip,$policy,$affinity".
+                ",$src,$typ,$st,$loc,$fbtcp,$fbapp,$dnscnt".
+                ",$dnspct,$actbnd,$site,$wt,$lbname,$lbip".
+                ",$utilpct,$availsess,$pref";
+              $data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{DNSCNT} = $dnscnt;
+            }
+            $state = 1;
+            next;
+          }
+        }
+      }
+    }
+  }
+  
+  if ($debug) {
+    foreach $fd (sort keys %data) {
+      foreach $po (keys %{$data{$fd}{VIPS}{BIND}}) {
+        foreach $si (keys %{$data{$fd}{VIPS}{BIND}{$po}}) {
+          foreach $sp (keys %{$data{$fd}{VIPS}{BIND}{$po}{$si}}) {
+            $vi = $data{$fd}{VIPS}{BIND}{$po}{$si}{$sp};
+            $vs = $data{$fd}{VIPS}{IP}{$vi}{NAME};
+            $sv = $data{$fd}{SERVERS}{IP}{$si}{NAME};
+            $wt = $data{$fd}{VIPS}{WEIGHT}{$vi}{$po}{$si}{$sp};
+            print "$fd=$vs,$vi,$po,$wt,$si,$sv,$sp\n";
+          }
+        }
+      }
+    }
+  }
+
+}
+
+sub parsend {
+  local($server) = @_;
+  local($cnt,$state,$file,$line);
+  local($cr,$cn,$pt,$as,$sr,$sv,$ct,$sp);
+  local($ts,$nfa,$cl,$po,$si,$se,$wt,$tc,$ac,$pl,$hp,$sl,$hs);
+  local(@al,@newdata);
+
+  $cnt = 1;
+  foreach (@{$hlines{$server}}) {
+    chomp;
+    $state = 0;
+    ($file,$line) = split(":",$_,2);
+    if (! defined $filelst{$file}) {
+      print "Unknown file on line $cnt: $file:$line\n";
+      next;
+    }
+    next if ($line =~ /^\s*$/);
+    $state=$filelst{$file};
+    if ($state==1) {
+      @al = split(',',$line);
+      if (@al > 12) {
+        ($ts,$nfa,$cl,$po,$si,$se,$wt,$tc,$ac,$pl,$hp,$sl,$hs) = @al;
+      } elsif (@al > 11) {
+        ($ts,$nfa,$cl,$po,$se,$wt,$tc,$ac,$pl,$hp,$sl,$hs) = @al;
+        $si = $se;
+      } else {
+        next;
+      }
+      if ($wt > 0 && $hp =~ /true/i && $pl < 0) {
+        $wt = 0;
+      }
+      $special{"$se,$po"} = 0 unless (defined $special{"$se,$po"});
+      $special{"$se,$po"}++ if ($wt > 0 && $wt < $ndwthalf);
+      $sp = $po;
+      push(@{$data{$server}{TRACK}{WEIGHTS}},"$cl,$po,$wt,$se,$sp")
+        if (! defined $data{$server}{VIPS}{WEIGHT}{$cl}{$po}{$se}{$sp});
+      $data{$server}{VIPS}{WEIGHT}{$cl}{$po}{$se}{$sp} = $wt;
+      print "$server $ts $nfa $cl $po $si $se $wt $tc $ac $pl $hp $sl $hs\n" if ($debug);
+    } elsif ($state==2) {
+      if ($line =~ /cluster add (\S+)/) {
+        $cr = $1;
+        $cn = "unknown";
+        $cn = $data{SITES}{IP}{$cr} if (defined $data{SITES}{IP}{$cr});
+        $data{$server}{VIPS}{NAME}{$cn}{IP}{$cr}++;
+        $data{$server}{VIPS}{IP}{$cr}{NAME} = $cn;
+        print "$server CLUSTER ADD: $line\n$cr\n" if ($debug);
+      } elsif ($line =~ /port add (\S+)/) {
+        if ($1 =~ /\@/) {
+          ($cr,$pt) = split("\@",$1);
+        } elsif ($1 =~ /\;/) {
+          ($cr,$pt) = split(";",$1);
+        } else {
+          ($cr,$pt) = split(":",$1);
+        }
+        $data{$server}{VIPS}{IP}{$cr}{PORT}{$pt}{SET}++;
+        print "$server PORT ADD: $line\n$cr $pt\n" if ($debug);
+      } elsif ($line =~ /server add (\S+)/) {
+        if ($1 =~ /\@/) {
+          ($cr,$pt,$sr) = split("\@",$1);
+        } elsif ($1 =~ /\;/) {
+          ($cr,$pt,$sr) = split(";",$1);
+        } else {
+          ($cr,$pt,$sr) = split(":",$1);
+        }
+        if ($line =~ /\s+address\s+(\S+)/) {
+          $as = $1;
+        } else {
+          $as = $sr;
+        }
+        $sv = "";
+        $sv = $olddata{$server}{SERVERS}{IP}{$as}{NAME}
+          if (defined $olddata{$server}{SERVERS}{IP}{$as}{NAME});
+        if (defined $data{$server}{SERVERS}{IP}{$as}{NAME}) {
+          $sv = $data{$server}{SERVERS}{IP}{$as}{NAME};
+        } else {
+          if (! defined $data{SERVERS}{IP}{$as}{NAME}) {
+            $iaddr = inet_aton($as);
+            $sv = gethostbyaddr($iaddr, AF_INET);
+            $sv =~ s/\..*$//g;
+            $sv =~ s/e[0-9]$//;
+            $data{SERVERS}{IP}{$as}{NAME} = $sv;
+          } else {
+            $sv = $data{SERVERS}{IP}{$as}{NAME};
+          }
+          $data{$server}{SERVERS}{IP}{$as}{NAME} = $sv;
+        }
+        $data{SERVERS}{NAME}{$sv}{IP} = $as;
+        $data{$server}{SERVERS}{NAME}{$sv}{IP} = $as;
+        $data{SERVERS}{VIPS}{$sv}{VIP}{$cr}{PORT}{$pt}++;
+        $cn = "unknown";
+        $cn = $data{SITES}{IP}{$cr}
+          if (defined $data{SITES}{IP}{$cr});
+        $data{$server}{VIPS}{NAME}{$cn}{IP}{$cr}++;
+        $data{$server}{VIPS}{IP}{$cr}{NAME} = $cn;
+        $sp = $pt;
+        $data{$server}{VIPS}{IP}{$cr}{BIND}{$pt}{$as}{$sp}++;
+        $data{$server}{VIPS}{BIND}{$pt}{$as}{$sp} = $cr;
+        print "$server SERVER ADD: $line\n$cr $pt $sr $as $sv\n" if ($debug);
+      } elsif ($line =~ /server down (\S+)/) {
+        if ($1 =~ /\@/) {
+          ($cr,$pt,$sr) = split("\@",$1);
+        } elsif ($1 =~ /\;/) {
+          ($cr,$pt,$sr) = split(";",$1);
+        } else {
+          ($cr,$pt,$sr) = split(":",$1);
+        }
+        $sp = $pt;
+        if (! defined $data{$server}{VIPS}{WEIGHT}{$cr}{$pt}{$sr}{$sp}) {
+          push(@{$data{$server}{TRACK}{WEIGHTS}},"$cr,$pt,-1,$sr,$sp");
+          $data{$server}{VIPS}{WEIGHT}{$cr}{$pt}{$sr}{$sp} = -1;
+        }
+        print "$server SERVER DOWN: $line\n$cr $pt $sr\n" if ($debug);
+      } elsif ($line =~ /server\s+set\s+(\S+)\s+weight\s+([-]*\d+)/) {
+        if ($1 =~ /\@/) {
+          ($cr,$pt,$sr) = split("\@",$1);
+        } elsif ($1 =~ /\;/) {
+          ($cr,$pt,$sr) = split(";",$1);
+        } else {
+          ($cr,$pt,$sr) = split(":",$1);
+        }
+        $wt = $2;
+        $sp = $pt;
+        if (! defined $data{$server}{VIPS}{WEIGHT}{$cr}{$pt}{$sr}{$sp}) {
+          push(@{$data{$server}{TRACK}{WEIGHTS}},"$cr,$pt,$wt,$sr,$sp");
+          $data{$server}{VIPS}{WEIGHT}{$cr}{$pt}{$sr}{$sp} = $wt;
+          print "$server WEIGHT: $line\n$cr $pt $sr $wt\n" if ($debug);
+        }
+      } elsif ($line =~ /manager\s+quiesce\s+(\S+)/) {
+        $sr = $1;
+        @newdata = ();
+        foreach (@{$data{$server}{TRACK}{WEIGHTS}}) {
+          ($cl,$po,$wt,$se,$sp) = split(/,/);
+          if ($sr eq $se) {
+            push(@newdata,join(",",$cl,$po,"-1",$se,$sp));
+            $data{$server}{VIPS}{WEIGHT}{$cl}{$po}{$se}{$sp} = -1;
+            print "$server QUIESCE: $line\n$cl $po $se $wt\n" if ($debug);
+          } else {
+            push(@newdata,$_);
+          }
+        }
+        @{$data{$server}{TRACK}{WEIGHTS}} = @newdata;
+      }
+    } elsif ($state==3) {
+      ($cl,$ct) = split(",",$line);
+      push(@{$data{$server}{TRACK}{COSTS}},"$cl,$ct")
+        if (! defined $data{$server}{VIPS}{COST}{$cl});
+      $data{$server}{VIPS}{COST}{$cl} = $ct;
+      print "$server COST $cl $ct\n" if ($debug);
+    } elsif ($state==4) {
+      ($cl,$ct) = split(",",$line);
+      push(@{$data{$server}{TRACK}{LIVECOSTS}},"$cl,$ct")
+        if (! defined $data{$server}{VIPS}{LIVECOST}{$cl});
+      $data{$server}{VIPS}{LIVECOST}{$cl} = $ct;
+      print "$server LIVE $cl $ct\n" if ($debug);
+    }
+    $cnt++;
+  }
+}
+
+#########################################################
+############## MIBS NO LONGER SUPPORTED #################
+# %mibs hash takes the form:
+#       {SERVER}{acID}{port} => value
+#       {SERVER}{ascID}{cluster} => value
+#       {SERVER}{csID}{cluster} => value
+#       {SERVER}{esID} => value
+#       {SERVER}{hasID} => value
+#       {SERVER}{hbcID}{primary}{backup} => value
+#       {SERVER}{mcID} => value
+#       {SERVER}{psID}{cluster}{port} => value
+#       {SERVER}{rcID}{cluster}{port} => value
+#       {SERVER}{ssID}{cluster}{port}{server} => value
+#       {SERVER}{ipRouteType}{cluster} => value
+#       {SERVER}{ipRouteMetric1}{cluster} => value
+#     Ordered lists:
+#       {SERVER}{CLST} => @(clusters)
+#       {SERVER}{cluster}{PLST} => @(ports within cluster)
+#       {SERVER}{cluster}{port}{SLST} => @(servers within cluster/port}
+# Workaround hashes:
+# %special hash takes the form:
+#       {"server;port"} => count of ssWeight's >0 and <$ndwthalf
+# NOTE: Values of cluster,server,primary,backup are IP addresses
+sub parsemib {
+  local($server) = @_;
+#  local($n,$c,$p,$hp,$hb,$s,$v);
+
+  print STDERR "MIB parsing not supported any more\n";
+
+#  foreach (@{$hlines{$server}}) {
+#    chomp;
+#    $n = $c = $p = $hp = $hb = $s = $v = '';
+#    s/\s+Wrong Type \(should be [\w\W]+?\)://i;
+#    if (/^(es|has|mc)/) {
+#      ($n,$v) = m/^([\w\W]+?)\.0\s+([\w\W]+)$/;
+#      $mibs{$server}{$n} = $v;
+#    } elsif (/^(asc|cs)/) {
+#      ($n,$c,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$c} = $v;
+#      if (/^cs/) {
+#        push(@{$mibs{$server}{CLST}},$c)
+#          unless (grep($_ eq $c,@{$mibs{$server}{CLST}}));
+#      }
+#    } elsif (/^(ps|rc)/) {
+#      ($n,$c,$p,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$c}{$p} = $v;
+#      push(@{$mibs{$server}{CLST}},$c)
+#        unless (grep($_ eq $c,@{$mibs{$server}{CLST}}));
+#      push(@{$mibs{$server}{$c}{PLST}},$p)
+#        unless (grep($_ eq $p,@{$mibs{$server}{$c}{PLST}}));
+#    } elsif (/^rs/) {
+#      ($n,$c,$p,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+).[0-9]+\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$c}{$p} = $v;
+#    } elsif (/^ac/) {
+#      ($n,$p,$v) = m/^([\w\W]+?)\.([0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$p} = $v;
+#    } elsif (/^hbc/) {
+#      ($n,$hp,$hb,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$hp}{$hb} = $v;
+#    } elsif (/^ss/) {
+#      ($n,$c,$p,$s,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$c}{$p}{$s} = $v;
+#      push(@{$mibs{$server}{CLST}},$c)
+#        unless (grep($_ eq $c,@{$mibs{$server}{CLST}}));
+#      push(@{$mibs{$server}{$c}{PLST}},$p)
+#        unless (grep($_ eq $p,@{$mibs{$server}{$c}{PLST}}));
+#      push(@{$mibs{$server}{$c}{$p}{SLST}},$s)
+#        unless (grep($_ eq $s,@{$mibs{$server}{$c}{$p}{SLST}}));
+#      if ($n eq 'ssWeight') {
+#        $special{"$s,$p"} = 0 unless (defined $special{"$s,$p"});
+#        $special{"$s,$p"}++ if ($v > 0 && $v < $ndwthalf);
+#      }
+#    } elsif (/^ipRouteType/ || /^ipRouteMetric1/) {
+#      ($n,$c,$v) = m/^([\w\W]+?)\.([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)\s+([\w\W]+)$/;
+#      $mibs{$server}{$n}{$c} = $v;
+#    } else {
+#      print STDERR "$pagets - Unknown mib line for ${server}: $_\n";
+#    }
+#    if ($debug) {
+#      print "$_\nn=$n,c=$c,p=$p,hp=$hp,hb=$hb,s=$s,v=$v\n";
+#    }
+#  }
+}
+############## MIBS NO LONGER SUPPORTED #################
+#########################################################
+
+sub currentarr {
+  local($server,$vi,$po,$si,$sp,$vs,$sv,$wt,@ret);
+  local(%seen) = ();
+
+  grep($seen{$_}++,keys %hlines,keys %oldcurr);
+  foreach $server (sort keys %seen) {
+    if (defined $ignores{$server}) {
+      print STDERR "$pagets - Ignoring $server\n";
+      next;
+    }
+    if ($hostrc{$server} > 0 || $hostskip{$server} > 0) {
+      print STDERR "$pagets - Skipping $server: rc=$hostrc{$server}";
+      print STDERR ": timeout or no response" if ($hostskip{$server} > 0);
+      print STDERR "\n";
+      if (@{$oldcurr{$server}}) {
+        print STDERR "$pagets - Adding old $server information\n";
+        push(@ret,@{$oldcurr{$server}});
+      }
+      next;
+    }
+    foreach $vi (keys %{$data{$server}{VIPS}{IP}}) {
+      foreach $po (keys %{$data{$server}{VIPS}{IP}{$vi}{BIND}}) {
+        foreach $si (keys %{$data{$server}{VIPS}{IP}{$vi}{BIND}{$po}}) {
+          foreach $sp (keys %{$data{$server}{VIPS}{IP}{$vi}{BIND}{$po}{$si}}) {
+            $vs = $data{$server}{VIPS}{IP}{$vi}{NAME};
+            $sv = $data{$server}{SERVERS}{IP}{$si}{NAME};
+            $wt = $data{$server}{VIPS}{WEIGHT}{$vi}{$po}{$si}{$sp};
+            push(@ret,"$server=$vs,$vi,$po,$wt,$si,$sv,$sp");
+          }
+        }
+      }
+    }
+  }
+
+  @ret;
+}
+
+sub costarr {
+  local($server,$vi,$vs,$co,@ret);
+  local(%seen) = ();
+  #local(%allcosts) = ();
+
+  grep($seen{$_}++,keys %hlines,keys %oldcost);
+  foreach $server (sort keys %seen) {
+    if (defined $ignores{$server}) {
+      print STDERR "$pagets - Ignoring $server\n";
+      next;
+    }
+    if ($hostrc{$server} > 0 || $hostskip{$server} > 0) {
+      print STDERR "$pagets - Skipping $server: rc=$hostrc{$server}";
+      print STDERR ": timeout or no response" if ($hostskip{$server} > 0);
+      print STDERR "\n";
+      if (@{$oldcost{$server}}) {
+        print STDERR "$pagets - Adding old $server information\n";
+        push(@ret,@{$oldcost{$server}});
+      }
+      next;
+    }
+
+    # If cost exists, but not live, mark .off
+    if (defined $data{$server}{VIPS}{LIVECOSTS}) {
+      foreach $vi (keys %{$data{$server}{VIPS}{COST}}) {
+        if (! defined $data{$server}{VIPS}{LIVECOST}{$vi}) {
+          $co = $data{$server}{VIPS}{COST}{$vi};
+          $co .= "\.off" unless ($co =~ /\.off/);
+          $data{$server}{VIPS}{LIVECOST}{$vi} = $co;
+        }
+      }
+    } else {
+      %{$data{$server}{VIPS}{LIVECOST}} = %{$data{$server}{VIPS}{COST}};
+    }
+
+    foreach $vi (keys %{$data{$server}{VIPS}{LIVECOST}}) {
+      $vs = $data{$server}{VIPS}{IP}{$vi}{NAME} || $vi;
+      $co = $data{$server}{VIPS}{LIVECOST}{$vi};
+      push(@ret,"$server=$vs,$vi,$co");
+    }
+  }
+
+  @ret;
+}
+
+sub gslbarr {
+  local($fqdn,$ip,$server,@ret);
+  local(%seen) = ();
+
+  grep($seen{$_}++,keys %hlines,keys %oldgslb);
+  foreach $server (sort keys %seen) {
+    if (defined $ignores{$server}) {
+      print STDERR "$pagets - Ignoring $server\n";
+      next;
+    }
+    if ($hostrc{$server} > 0 || $hostskip{$server} > 0) {
+      print STDERR "$pagets - Skipping $server: rc=$hostrc{$server}";
+      print STDERR ": timeout or no response" if ($hostskip{$server} > 0);
+      print STDERR "\n";
+      if (@{$oldgslb{$server}}) {
+        print STDERR "$pagets - Adding old $server information\n";
+        push(@ret,@{$oldgslb{$server}});
+      }
+      next;
+    }
+    if (defined $data{$server}{GSLB}) {
+      foreach $fqdn (keys %{$data{$server}{GSLB}{FQDN}}) {
+        foreach $ip (keys %{$data{$server}{GSLB}{FQDN}{$fqdn}{IP}}) {
+          push(@ret,$data{$server}{GSLB}{FQDN}{$fqdn}{IP}{$ip}{LINE});
+        }
+      }
+    }
+  }
+
+  @ret;
+}
+
+sub loadfile {
+  local($sfsfile,$lclfile,$cpflg,$action,$dbgflg,$nosite) = @_;
+  local($f,$site,$arg1,$arg2);
+  local($cp) = "cp";    # Copy file program
+  local($rval) = 0;
+  local(@list) = ();
+  local(%hash) = ();
+
+  # If local file spec is a directory, append basename of shared filesystem file
+  if (-d $lclfile) {
+    ($f = $sfsfile) =~ s%^.*/%%g;
+    $lclfile .= "/$f";
+  }
+
+  # Try each file, shared filesystem first to allow for copy ($cpflg), which is
+  # reset after first file attempt
+  foreach $file ($sfsfile,$lclfile) {
+    if (-r $file) {
+      if ($action == 1) {
+        # Require the file into current program
+        require $file;
+        $rval = 1;
+      } elsif ($action == 2) {
+        # Read file into a chomp'd array for return
+        if (open(FILE, $file)) {
+          chomp(@list = <FILE>);
+          close(FILE);
+        } else {
+          print STDERR "Unable to read $file: $!\n";
+        }
+      } elsif ($action == 3) {
+        # Parse the configuration file into a hash of sites of a hash
+        # of key lists, eg. @{hash{site}{field}} = list of values
+        $nosite = "DEFAULT" unless ($nosite);
+        $site = $nosite;
+        if (open(FILE,"<$file")) {
+          while (<FILE>) {
+            s/^\s*#--\s*timeout/timeout/i; # Special #--timeout value
+            next if (/^\s*#/ || /^\s*$/);  # Skip comment/blank lines
+            chomp;
+            s/\s+#.*$//;                   # Strip ending comments
+            s/^\s+//g;                     # Strip all beginning space
+            s/\s+$//g;                     # Strip all ending space
+            ($arg1,$arg2) = split(/\s+/,$_,2);
+            if ($arg1) {
+              $arg1 = "\L$arg1";
+              if ($arg1 eq "site") {
+                $site = $arg2;
+              } elsif ($arg1 eq "endsite") {
+                $site = $nosite;
+              } else {
+                push(@{$hash{$site}{$arg1}},$arg2);
+              }
+            }
+          }
+          close(FILE);
+        }
+      } else {
+        # Unknown return method ($action)
+        return undef;
+      }
+      system("$cp $sfsfile $lclfile") if ($cpflg);
+      print STDERR "Loaded $file\n" if ($dbgflg);
+
+      return $rval if ($action==1 && $rval != 0);
+      return @list if ($action==2 && (@list));
+      return %hash if ($action==3 && (keys %hash));
+    }
+    $cpflg = 0; # Only have first chance to copy from shared FS to local
+  }
+
+  print STDERR "Could not find $sfsfile or $lclfile: $!\n";
+
+  return undef;
+}
+
+#-----------------------------------------------------------------------------
+#
+# read_pipes
+#
+# Read stdout and stderr from exiting child rsh process pipes.
+# Display to parent's stdout or stderr preceded by "hostname: ".
+#
+# Output from STDERR is first written to an array, since there is a limit
+# of 32k from STDERR, before it ends up hanging.
+#
+# Input is name of host for which command child is exiting.
+#
+#-----------------------------------------------------------------------------
+sub read_pipes {
+  local($hostn) = @_;
+  local($ofh,$efh,$rin,$rout,$num_fh);
+
+  $ofh = $r_out{$hostn};
+  $efh = $r_err{$hostn};
+  $rin = '';
+  $num_fh = 0;
+  $err_ctr = 0;
+  $array_updated = 0;
+
+#  Set the bits in $rin for stdout and stderr file handles
+  if (fileno($ofh) ne '') {
+    vec($rin, fileno($ofh), 1) = 1;
+    $num_fh++;
+  }
+  if (fileno($efh) ne '') {
+    vec($rin, fileno($efh), 1) = 1;
+    $num_fh++;
+  }
+
+# Loop while at least one file handle is open
+  while ($num_fh > 0) {
+# Wait for outstanding I/O from stdout or stderr
+    $nready = select($rout = $rin, undef, undef, undef);
+    last if ($nready == 0);
+
+# Data from stdout
+    if (vec($rout, fileno($ofh), 1)) {
+      $_ = <$ofh>;
+      if (length($_)) {
+        #print STDOUT "$hostn: $_";
+        push(@{$hlines{$hostn}},$_);
+      } else { # EOF has been reached
+        vec($rin, fileno($ofh), 1) = 0;
+        $num_fh--;
+      }
+    }
+
+# Data from stderr
+    if (vec($rout, fileno($efh), 1)) {
+      $_ = <$efh>;
+      if (length($_)) {
+        #$stderr_array[$err_ctr] = $_;
+        push(@{$hosterr{$hostn}},$_);
+        $hostskip{$hostn}++ if ($_ =~ /timeout|no response/i);
+        $err_ctr++;
+        $array_updated = 1;
+      } else {
+        vec($rin, fileno($efh), 1) = 0;
+        $num_fh--;
+      }
+    }
+  }
+  close($ofh);
+  close($efh);
+
+  if ($array_updated) {
+    #for ($prt_ctr=0; $prt_ctr < $err_ctr; $prt_ctr++) {
+    #  print STDERR "$hostn: $stderr_array[$prt_ctr]";
+    #}
+    $array_updated = 0;
+  }
+}
+
+#-----------------------------------------------------------------------------
+#
+# readem
+#
+# Read the stdout and stderr pipes for all hosts in current fanout.
+#
+#-----------------------------------------------------------------------------
+sub readem {
+  local(@h) = @_;
+  local($host);
+  foreach $host (@h) {
+    &read_pipes($host);
+  }
+  @h = ();
+}
+
+#-----------------------------------------------------------------------------
+#
+# set_signals
+#
+# HUP is ignored in the dsh parent and exec'ed rsh children.
+#
+# STOP, CONT, and TSTP are defaulted - this means that they work on the
+# parent, but are ignored (not propagated to) the exec'ed rsh children
+# or the remote processes.
+#
+# Set the signal handler for all other signals.
+# The signals will be propagated to the execed children and then the
+# default action will be taken in the parent.
+#
+# Command will propagate TERM, QUIT, and INT to the remote processes.
+#
+#-----------------------------------------------------------------------------
+sub set_signals {
+
+  # Default STOP, CONT, TSTP signal handling
+  $SIG{'STOP'} = 'DEFAULT';
+  $SIG{'CONT'} = 'DEFAULT';
+  $SIG{'TSTP'} = 'DEFAULT';
+
+  # Propagate signals to forked kids
+  $SIG{'TERM'} = 'infanticide';
+  $SIG{'QUIT'} = 'infanticide';
+  $SIG{'INT'} = 'infanticide';
+  $SIG{'ABRT'} = 'infanticide';
+  $SIG{'ALRM'} = 'infanticide';
+  $SIG{'FPE'} = 'infanticide';
+  $SIG{'ILL'} = 'infanticide';
+  $SIG{'PIPE'} = 'infanticide';
+  $SIG{'SEGV'} = 'infanticide';
+  $SIG{'USR1'} = 'infanticide';
+  $SIG{'USR2'} = 'infanticide';
+  $SIG{'TTIN'} = 'infanticide';
+  $SIG{'TTOU'} = 'infanticide';
+  $SIG{'BUS'} = 'infanticide';
+}
+
+#-----------------------------------------------------------------------------
+#
+# wait_for_kids
+#
+# When a child dies, it must be an exit after the end of his rsh.
+# If a negative return code, the rsh itself failed. Check to see if we
+# should give up on this host and eliminate him from the collective.
+# Display the contents of his stdout/stderr pipes and save the rsh exit code
+# in an environment variable.
+#
+#-----------------------------------------------------------------------------
+sub wait_for_kids {
+  local($child_pid,$child_rc,$child_host);
+
+  while (($child_pid = wait) != -1) {
+    $child_rc = $? >> 8;
+    foreach (keys %pid) {
+      if ($pid{$_} == $child_pid) {
+        $child_host = $_;
+        last;
+      }
+    }
+    $hostrc{$child_host} = $child_rc;
+    if ($child_rc != 0) {
+      $rcode++;
+      #print STDERR "$child_host command had exit code $child_rc\n";
+      push(@goners,$child_host);
+    }
+    &read_pipes($child_host);
+  }
+}
+
+#-----------------------------------------------------------------------------
+#
+# delete_hosts
+#
+# Called if any hosts don't respond. Remove them from the working collective
+# unless the -c flag was set.
+# Input is the hostnames to remove from the working collective.
+#
+#-----------------------------------------------------------------------------
+
+sub delete_hosts {
+  local($child_host,$h,$host_count);
+
+  foreach $child_host (@goners) {
+    $host_count = 0;
+    foreach $h (@wc) {
+      if ($h eq $child_host) {
+        splice(@wc, $host_count, 1);
+      }
+      $host_count++;
+    }
+  }
+}
+
+#-----------------------------------------------------------------------------
+#
+# infanticide
+#
+# User has signaled the dsh parent - propagate TERM, INT, or QUIT to children.
+# (Note - TERM, INT, and QUIT will be propagated to remote processes by rsh).
+# Signal any children with SIGTERM if signal is not one of the above.
+# Wait for children to manage output and prevent zombies.
+# Signal self after setting default signal-handling for self.
+# If still alive, exit.
+# Input is the signal type.
+#
+#-----------------------------------------------------------------------------
+sub infanticide {
+  local($sig) = @_;
+  local($kid_sig);
+
+  print STDERR "Caught SIG$sig - terminating the kids\n";
+  if ($sig ne 'QUIT' && $sig ne 'INT' && $sig ne 'TERM') {
+    $kid_sig = 'TERM';
+    $SIG{'TERM'} = 'IGNORE';
+  } else {
+    $kid_sig = $sig;
+  }
+  $SIG{$sig} = 'DEFAULT';
+  kill $kid_sig, (values %pid);
+  &readem(@hs);
+  &wait_for_kids;
+  kill $sig, $$;
+  exit($rcode);
+}
+
+#------------------------------------------------------------------------------
+#
+# collectdata
+#
+# Program continues while there are commands to distribute to working
+# collective via SNMP. Children are forked for each host (up to the fanout
+# limit). Stdout and stderr are piped back from the children to the parent
+# who will display the results of the execed snmpwalk's to the parent's stdout
+# and stderr.
+#
+#------------------------------------------------------------------------------
+sub collectdata {
+
+  # Flush output filesystem buffers after each write
+
+  select(STDERR); $| = 1;
+  select(STDOUT); $| = 1;
+
+  # Set signal handling
+
+  &set_signals;
+
+  unless ($fanout) {
+    unless ($fanout = $ENV{'FANOUT'}) {
+      $fanout = 64;
+    }
+  }
+
+  foreach $host (@wc) {
+
+    if ($NDCONF{$host}{ARCH} =~ /^221/) {
+      $command = "echo \'Unsupported device: $host\n\'";
+      #$command = "$snmpwalk $snmpwalkargs $host '$snmpcommunity' $snmpoid";
+      #$command .= " && $snmpwalk -q -s -m RFC1213-MIB -M $snmpmibdir $host '$snmpcommunity' ipRouteMetric1";
+      #$command .= " && $snmpwalk -q -s -m RFC1213-MIB -M $snmpmibdir $host '$snmpcommunity' ipRouteType";
+    } elsif ($NDCONF{$host}{FUNCTION} =~ /^SLB/) {
+      $command = "$fdcmd $fdcmdargs $fduser $host $fdprog";
+    } else {
+      $command = "$sshcmd $sshcmdargs $sshuser $host $sshprog";
+    }
+
+    # Create filehandles for pipe ends
+    $r_out{$host} = "READ_STDOUT_" . $host;
+    $w_out{$host} = "WRITE_STDOUT_" . $host;
+    $r_err{$host} = "READ_STDERR_" . $host;
+    $w_err{$host} = "WRITE_STDERR_" . $host;
+
+    # Open pipes for this host's stdout and stderr from rsh
+    if (pipe($r_out{$host}, $w_out{$host}) < 0) {
+        die "Unable to pipe: $!\n";
+        exit(-1);
+    }
+    if (pipe($r_err{$host}, $w_err{$host}) < 0) {
+        die "Unable to pipe: $!\n";
+        exit(-1);
+    }
+
+    # Fork a child to exec the command
+
+    FORK: {
+
+      if ($pid{$host} = fork) {
+
+        # parent code -
+        # close unneeded ends of pipes
+        # parent will wait for child processes if fanout limit reached
+
+        close($w_out{$host});
+        close($w_err{$host});
+
+        push(@hs,$host);
+
+        if (++$cur_fanout >= $fanout) {
+          $cur_fanout = 0;
+          &readem(@hs);
+          &wait_for_kids;
+        }
+      } elsif (defined $pid{$host}) {
+
+        # child code -
+        # close unneeded ends of pipes
+        # redirect stdout and stderr to output pipes
+        # exec command
+        # stdout/stderr will go to pipes to be read by parent
+
+        close($r_out{$host});
+        close($r_err{$host});
+
+        unless (open(STDOUT, ">&$w_out{$host}")) {
+          die "Unable to redirect STDOUT: $!\n";
+          exit(-1);
+        }
+        unless (open(STDERR, ">&$w_err{$host}")) {
+          die "Unable to redirect STDERR: $!\n";
+          exit(-1);
+        }
+
+        select(STDERR); $| = 1;
+        select(STDOUT); $| = 1;
+
+        # Do the command
+        exec "$command" || die "Failure for host $host: $command: $!\n";
+
+      } else {
+        # try again fork must have failed due to resource problem
+        sleep 5;
+        redo FORK;
+      }
+    }
+  }
+
+  # parent continues here after forking all children for this command
+  # get the results of any remaining commands, if any
+  # (number of hosts in working collective may not be multiple of fanout)
+
+  &readem(@hs);
+  &wait_for_kids;
+  &delete_hosts;
+  $cur_fanout = 0;
+
+}
+

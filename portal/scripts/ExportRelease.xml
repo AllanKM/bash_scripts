@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<request    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+            xsi:noNamespaceSchemaLocation="PortalConfig_1.4.xsd"
+    type="export"
+    domain="rel">
+    
+    <!-- This sample file exports the complete portal configuration from the release domain 
+            as required by the portal ReleaseBuilder tool. 
+            For more information about using the ReleaseBuilder refer to the Information Center  -->
+    <portal action="export"/>
+</request>

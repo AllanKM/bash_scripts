@@ -1,0 +1,118 @@
+#!/usr/bin/perl
+
+# Designed to run once a day to create /logs/xml2cli/xml2cli.YYYYMMDD
+# No output for errors will display unless verbose (-v) is specified
+#
+# If the xml2cli program exists, then run it to capture the
+# current configuration of the ITCAM for Internet Service
+# Monitoring (ISM) and place in a directory for LCS to pick up
+#
+
+eval 'exec /usr/bin/perl -wS $0 ${1+"$@"}'
+            if $running_under_some_shell;
+
+use strict;
+use POSIX;
+use Sys::Hostname;
+
+# Use/reset environment variables
+my $CANDLEHOME = $ENV{CANDLEHOME} || "/opt/IBM/ITM";
+$ENV{CANDLEHOME} = $CANDLEHOME;
+
+# Set/export COLUMNS to get longer commands
+$ENV{COLUMNS} = 300;
+
+# Make host name match Directory Store lookup
+my $host = hostname;
+$host =~ s/e[0-9]$/e1/;
+$host .= "e1" if ($host =~ /^px/);
+
+my $debug = 0;
+$debug = 1 if (grep($_ eq "-d", @ARGV));
+my $force = 0;
+$force = 1 if (grep($_ eq "-f", @ARGV));
+my $verbose = 0;
+$verbose = 1 if (grep($_ eq "-v", @ARGV));
+
+$| = 1;
+
+umask(022);
+
+my $xml2cli = "xml2cli";
+my @x2clst = grep(-x "$_", (glob "$CANDLEHOME/*/is/bin/$xml2cli"));
+
+# LCS information
+my $logdirectory = "/logs/$xml2cli";
+my $logroot = $xml2cli;
+my $logextension = "%Y%m%d";
+
+my($date) = POSIX::strftime($logextension, localtime());
+my $tmpfile = "$logdirectory/.$logroot.$date";
+my $outfile = "$logdirectory/$logroot.$date";
+
+# If xml2cli exists, then create an output file
+my $ok = 0;
+if (@x2clst == 1) {
+  if (open(CMD,"$x2clst[$[]|")) {
+    my @lines = ();
+    chomp(@lines = <CMD>);
+    close(CMD);
+    my $out = join("\n",@lines);
+    if (@lines || $force) {
+      if (-d $logdirectory) {
+        if (! $debug) {
+          my ($uid,$gid) = (stat($logdirectory))[$[+4,$[+5];
+          unlink($tmpfile) if (-f $tmpfile);
+          if (open(XML2CLI,">$tmpfile")) {
+            $ok = 1 if print XML2CLI "$out\n";
+            close(XML2CLI);
+            chown($uid,$gid,$tmpfile);
+            if ($ok) {
+              # Rename the temporary file for LCS pick up
+              $ok = 0;
+              unlink($outfile) if (-f $outfile);
+              $ok = 1 if (rename($tmpfile,$outfile));
+              if ($ok) {
+                print "Created $outfile\n"
+                  if ($verbose);
+              } else {
+                print "Unable to rename $tmpfile to $outfile\n"
+                  if ($verbose);
+              }
+            } else {
+              # Unable to save xml2cli output
+              unlink($tmpfile) if (-f $tmpfile);
+              print "Unable to save $xml2cli output\n"
+                if ($verbose);
+            }
+          } else {
+            unlink($tmpfile) if (-f $tmpfile);
+            print "Unable to open $tmpfile for output\n"
+              if ($verbose);
+          }
+        } else {
+          print "DEBUG: Would rename $tmpfile to $outfile\n";
+          print "DEBUG: $xml2cli output:\n$out\n";
+        }
+      } else {
+        print "Log directory $logdirectory does not exist - exiting\n"
+          if ($verbose);
+      }
+    } else {
+      # No output from xml2cli - skip creating LCS file
+      print "$xml2cli is empty - will not create $outfile\n"
+        if ($verbose);
+    }
+  } else {
+    # Unable to run xml2cli
+    print "Unable to run $xml2cli\n"
+      if ($verbose);
+  }
+} else {
+  print "No xml2cli was found\n"
+    if ($verbose);
+}
+
+exit 0;
+
+print "$main::running_under_some_shell\n";

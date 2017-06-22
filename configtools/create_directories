@@ -1,0 +1,36 @@
+#!/bin/ksh
+
+id pubinst > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+       	PUBUSER=pubinst
+else
+        PUBUSER=root
+fi
+
+id webinst > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+       	WEBUSER=webinst
+else
+        WEBUSER=root
+fi
+        
+GROUP=eiadm
+
+while read DIRNAME LINKLIST
+do
+
+	if [ "$DIRNAME" != "" ]; then
+		if [ ! -d "$DIRNAME" ] && [ ! -L "$DIRNAME" ]; then
+			echo "Creating $DIRNAME"
+			mkdir -p $DIRNAME
+		fi
+
+		for LINK in $LINKLIST
+		do
+			if [ ! -d "$LINK" ] && [ ! -L "$LINK" ]; then
+				echo "Linking $LINK to $DIRNAME"
+				ln -sf $DIRNAME $LINK
+			fi
+		done
+	fi
+done

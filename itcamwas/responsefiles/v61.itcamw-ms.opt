@@ -1,0 +1,93 @@
+##
+# Log Parameters
+##
+-V LOG_DIR="/var/ibm/tivoli/common"
+##
+# Install Parameters
+##
+-V disableOSPrereqChecking="true"
+-V LICENSE_ACCEPT_BUTTON="true"
+-V LICENSE_REJECT_BUTTON="false"
+-W LogSetting.logLevel="INFO"
+-W LogSetting.consoleOut="true"
+##
+-P installLocation="/opt/IBM/itcam/WebSphere/MS"
+-V IS_SELECTED_INSTALLATION_TYPE="custom"
+-P msFilesInstall.active="true"
+-P veInstall.active="true"
+-P dbInstall.active="true"
+##
+# VE Admin
+##
+-V ITCAM_SYS_USERS=<itcamuser>
+##
+# Managing Server parameters
+##
+-V KERNEL_HOST01=<hostname>
+-V PORT_ARCHIVE_AGENT1="9129"
+-V PORT_ARCHIVE_AGENT2="9130"
+-V PORT_KERNEL_CODEBASE01="9122"
+-V PORT_KERNEL_RFS01="9121"
+-V PORT_KERNEL_RMI01="9118"
+-V PORT_MESSAGE_DISPATCHER="9106"
+-V PORT_PA="9111"
+-V PORT_PS="9103"
+-V PORT_PS2="9104"
+-V PORT_SAM="9126"
+##
+# Database Parameters
+##
+-V NEW_DB="false"
+-V EXISTING_DB="true"
+-V EXISTING_DB2_LOCAL="false"
+-V EXISTING_DB2_REMOTE="true"
+-V EXISTING_ORACLE_LOCAL="false"
+-V EXISTING_ORACLE_REMOTE="false"
+##
+# DB2 Parameters
+##
+#-V DB2_INSTALL_LOCATION="NULL"
+#-V DB2_IMAGE_LOCATION="db2_image"
+#-V DB2_DAS_USER="db2admin"
+#-V DB2_DAS_PASSWORD="itcam610"
+#-V DB2_DAS_GROUPNAME="dasadm1"
+#-V DB2_DAS_HOMEDIR="/home/db2admin"
+#-V DB2_INST_NAME="db2inst1"
+#-V DB2_INST_PASSWORD="itcam610"
+#-V DB2_INST_GROUPNAME="dasadm1"
+#-V DB2_INST_USER="db2inst1"
+#-V DB2_INST_HOMEDIR="/home/db2inst1"
+#-V DB2_FENCE_USER="db2fenc1"
+#-V DB2_FENCE_PWD="itcam610"
+#-V DB2_FENCE_GROUPNAME="db2fgrp1"
+#-V DB2_FENCE_HOMEDIR="/home/db2fenc1"
+-V DB2_CREATE_DAS_USER="false"
+-V DB2_CREATE_FENCE_USER="false"
+-V DB2_CREATE_INST_USER="false"
+-V DB2_CREATE_SCHEMA_USER="false"
+-V DB2_SCHEMA_USER=<dbappuser>
+-V DB2_SCHEMA_PASSWORD=<password>
+-V DB2_INST_PORTNUMBER=<dbport>
+-V DB2_SERVER=<dbhost>
+-V DB2_JDBC=<jdbcpath>
+##
+# WebSphere parameters
+##
+-V NEW_WAS="false"
+-V EXISTING_WAS="true"
+-V WAS_BASEDIR=<basedir>
+-V WAS_PROFILEHOME=<profiledir>
+-V WAS_PROFILENAME=<profilename>
+-V WAS_SERVER=<preexistingappserver>
+-V WAS_CELL=<cellname>
+-V WAS_NODE=<nodename>
+-V WAS_HOSTNAME=<hostordmgrname>
+-V WAS_USER=<securityuser>
+-V WAS_USER_PWD="<password>"
+-V WAS_ADMIN_CONSOLE_PORT="9060"
+-V WAS_CDROMDIR="was_image"
+-V WAS_SOAP_PORT="8879"
+##
+# Post Install parameters
+##
+-V LAUNCH_MS="false"

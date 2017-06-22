@@ -1,0 +1,144 @@
+#*******************************************************************************************************
+# editSSLConfig.jacl
+#
+#   Author: James Walton
+#   Revision Date: 02/28/2006
+#*******************************************************************************************************
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-node"} {
+    if {[incr i] < $argc} {
+      set nodeName [lindex $argv $i]
+    } else {
+      set argerr 2
+    }
+  } elseif {$arg == "-keystore"} {
+    if {[incr i] < $argc} {
+      set keystoreName [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-keypassword"} {
+    if {[incr i] < $argc} {
+      set keystorePass [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-version"} {
+    if {[incr i] < $argc} {
+      set version [lindex $argv $i]
+    } else {
+      set argerr 5
+    }
+  } else {
+    set argerr 6
+  }
+}
+
+if {![info exists nodeName] && ![info exists keystoreName] && ![info exists keystorePass]} {
+  set argerr 7
+}
+
+if {![info exists version]} {
+  set version "51"
+}
+
+if {$argerr} {
+  puts "Invalid command line invocation (reason code $argerr). Usage:"
+  puts "   wsadmin -f editSSLConfig.jacl -node <nodeName> -keystore <keystoreName> -keypassword <keystorePass> \[-version <51|60|61>\]\n"
+  puts "This script will update the DefaultSSLSettings for the given node to use the given"
+  puts "keystore and password.  Note: currently does not support using a different file for truststore."
+  puts "There is no need to provide a full path to the keystore, provided it is in \$WAS_ROOT/etc/"
+  puts "Providing a version is optional for all but WAS v6.1, since v5.1 and v6.0 use the same commands."
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+
+if {$version == "61"} {
+	if {[regexp "Manager" $nodeName]} {
+		set cellDefaultKS [$AdminConfig getid /KeyStore:CellDefaultKeyStore/]
+		set cellDefaultTS [$AdminConfig getid /KeyStore:CellDefaultTrustStore/]
+		set attrs [list "location \"\$\{USER_INSTALL_ROOT\}/etc/$keystoreName\"" "type JKS" "readOnly true" "password $keystorePass"]
+		set result [$AdminConfig modify $cellDefaultKS $attrs]
+		if {$result != ""} {
+		  puts "### Error occurred while modifying Cell Default Keystore configuration - exiting without save."
+		  puts $result
+		  exit
+		}
+		set result [$AdminConfig modify $cellDefaultTS $attrs]
+		if {$result != ""} {
+		  puts "### Error occurred while modifying Cell Default Truststore configuration - exiting without save."
+		  puts $result
+		  exit
+		}
+	} else {
+		set nodeDefaultKS [$AdminConfig getid /KeyStore:NodeDefaultKeyStore/]
+		if {[llength $nodeDefaultKS] > 1} {
+			foreach ks $nodeDefaultKS {
+				set ksScope [$AdminConfig show [lindex [lindex [$AdminConfig show $ks managementScope] 0] 1] scopeName]
+				set ksNode [lindex [split [lindex [lindex $ksScope 0] 1] :] 3]
+				if {$ksNode == $nodeName} {
+					set nodeDefaultKS $ks
+					break
+				}
+			}
+		}
+		set nodeDefaultTS [$AdminConfig getid /KeyStore:NodeDefaultTrustStore/]
+		if {[llength $nodeDefaultTS] > 1} {
+			foreach ts $nodeDefaultTS {
+				set tsScope [$AdminConfig show [lindex [lindex [$AdminConfig show $ts managementScope] 0] 1] scopeName]
+				set tsNode [lindex [split [lindex [lindex $tsScope 0] 1] :] 3]
+				if {$tsNode == $nodeName} {
+					set nodeDefaultTS $ts
+					break
+				}
+			}
+		}
+		set attrs [list "location \"\$\{USER_INSTALL_ROOT\}/etc/$keystoreName\"" "type JKS" "readOnly true" "password $keystorePass"]
+		set result [$AdminConfig modify $nodeDefaultKS $attrs]
+		if {$result != ""} {
+		  puts "### Error occurred while modifying Node Default Keystore configuration - exiting without save."
+		  puts $result
+		  exit
+		}
+		set result [$AdminConfig modify $nodeDefaultTS $attrs]
+		if {$result != ""} {
+		  puts "### Error occurred while modifying Node Default Truststore configuration - exiting without save."
+		  puts $result
+		  exit
+		}
+	}
+} else {
+	set sslconfigs [$AdminConfig list SSLConfig]
+	foreach ssl $sslconfigs {
+	  set thisAlias [lindex [lindex [$AdminConfig show $ssl alias] 0] 1]
+	  if {$thisAlias == "$nodeName/DefaultSSLSettings"} {
+	    set sslcfg $ssl
+	    set sslobj [$AdminConfig showAttribute $ssl setting]
+	  } 
+	}
+	set sslAlias [$AdminConfig show $sslcfg alias]
+	puts "Updating keystores for SSL Configuration: $sslAlias"
+	set keyFile {${USER_INSTALL_ROOT}/etc/}
+	append keyFile $keystoreName
+	set trustFile $keyFile
+	set sslprot [lindex [lindex [$AdminConfig showAttribute $sslobj properties] 0] 0]
+	set result1 [$AdminConfig modify $sslprot "{value SSLv3}"]
+	set result [$AdminConfig modify $sslobj "{keyFileName {$keyFile}}{trustFileName {$trustFile}}{keyFilePassword $keystorePass}{trustFilePassword $keystorePass}"]
+	if {$result != "" || $result1 != ""} {
+	  puts "### Error occurred while modifying SSL configuration - exiting without save."
+	  puts $result
+	  exit
+	}
+}
+puts "Success! Saving configuration..."
+$AdminConfig save

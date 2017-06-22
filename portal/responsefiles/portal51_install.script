@@ -1,0 +1,451 @@
+################################################################################
+#
+# Response File for IBM WebSphere Portal for Multiplatforms 5.1.0.1 Silent Installation
+#
+# Before you can begin the installation of WebSphere Portal you may want to 
+# first edit this response file with the values appropriate for your 
+# environment. Refer to the comments to learn how to use the response file and 
+# understand the various options.  You must carefully complete or change the 
+# various values. If the values are not completed properly, the install may 
+# be unsuccessful.
+#
+# IMPORTANT: ALL VALUES MUST BE ENCLOSED IN DOUBLE QUOTES ( "" ).
+#
+# To use this response file with the installation, specify -options <file-name>
+# as a command line argument to the install script, where <file-name> is the 
+# full path name of this response file.
+#
+################################################################################
+
+################################################################################
+#
+# SILENT INSTALL CHOICE
+#
+# Description: Specify this parameter if you want to install WebSphere Portal
+# silently.  When installing silently, the installation program will not display
+# any graphical interface panels or solicit input from the user. Note that if a
+# required parameter is not specified in this response file, an error message
+# will be displayed. 
+# 
+# If you want to use this response file but do not want to install silently, 
+# comment this parameter out. 
+# 
+################################################################################
+
+-silent
+
+################################################################################
+#
+# INSTALL WEBSPHERE APPLICATION SERVER
+#
+# Description: Select the type of install that best suites your needs
+#
+# Values:
+# 
+#   full    - Installs everything you need for WebSphere Portal, including 
+#             WebSphere Application Server.
+#   
+#   custom  - Choose this option to install WebSphere Portal to use an existing 
+#             WebSphere Application Server. 
+#
+#   toolkit - Installs a subset of WebSphere Portal, as a WebSphere Portal Test 
+#             Environment, into IBM Rational Application Developer and products 
+#             that extend IBM Rational Application Developer.  Choose this option 
+#             if you wish to install the WebSphere Portal 5.1 Test Environment 
+#             into these products. 
+#   
+################################################################################
+
+-W setupTypePanel.selectedSetupTypeId="custom"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER INSTALLATION LOCATION
+#
+# Description: Specify the directory where you want to install WebSphere 
+# Application Server. If you have WebSphere Application Server already
+# installed specify the location where it is installed.  
+#
+################################################################################
+
+-W was.location="/usr/WebSphere51/AppServer"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER NODE NAME
+#
+# Description: Specify the node within the WebSphere Application Server cell to 
+# which the WebSphere Portal application server will belong. This value must be 
+# unique among other node names in the same cell. Typically this value is the 
+# same as the short host name for the computer.
+#
+# Note: You must replace the "DefaultNode" value with the node name that you  
+# want to use for your default node.
+#
+################################################################################
+
+-W node.name="at0701m"
+
+################################################################################
+#
+# WEBSPHERE APPLICATION SERVER HOST NAME
+#
+# Description: Specify the fully qualified host name or IP address of the
+# computer running WebSphere Application Server.  For example, 
+# "hostname.yourco.com".
+#
+################################################################################
+
+-W node.hostName="at0701m"
+
+################################################################################
+#
+# Begin Installing Services 
+#
+################################################################################
+#-W wasService.was="false"
+#-W wasService.wps="false"
+#-W wasService.user="YOUR_USER_NAME"
+#-W wasService.password="YOUR_PASSWORD"
+
+################################################################################
+#
+# WEBSPHERE PORTAL INSTALLATION LOCATION
+#
+# Description: Specify the directory where you want to install WebSphere Portal.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  For example,
+#
+################################################################################
+
+-W portal.location="/usr/WebSphere51/PortalServer"
+
+################################################################################
+#
+# WEBSPHERE PORTAL ADMINISTRATIVE USER AND PASSWORD
+#
+# Enter the user ID and password for the Portal
+# administrator
+#
+################################################################################
+
+-W portalAdmin.user="wpsadmin"
+-W portalAdmin.password="tmp4now"
+
+################################################################################
+#
+# SETUP CD LOCATION 
+# 
+# Required for: Tradtional and Archive install
+#
+# Description: Specify the directory path to the Setup CD.
+# Although this can be to a CD-ROM drive, for unattended
+# installation this location is more likely to be a directory where electronic
+# product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+################################################################################
+
+-W cdSetup.cdPath="/fs/system/images/portal/5.1"
+				
+
+################################################################################
+#
+# ARCHIVE INSTALL CD LOCATIONS
+#
+# Specify these CD locations if installing with the "full" install choice and
+# no WebSphere Application Server already exists on the machine.
+#
+# Otherwise, instead specify the traditional install CD locations
+# in the next section
+#
+################################################################################
+
+################################################################################
+#
+# WEBSPHERE BUSINESS INTEGRATION SERVER FOUNDATION CD 1 LOCATION 
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the WebSphere Business Integration 
+# Server Foundation CD 1 installation images.  Although this can be to a CD-ROM drive, 
+# for unattended installation this location is more likely to be a directory where 
+# electronic product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd1-1   Windows
+#  cd1-3   Linux for x86
+#  cd1-5   AIX
+#  cd1-7   Solaris
+#  cd1-9   HP-UX
+#  cd1-11  Linix for zSeries
+#  cd1-13  Linux for ppc
+#
+################################################################################
+
+#-W archiveMediaPanelMQ.cdPath="/cdimg/cd1-1"
+
+################################################################################
+#
+# ARCHIVE CD 1
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the first archive install image
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd4-1   Windows
+#  cd4-2   Linux for x86
+#  cd4-3   AIX
+#  cd4-4   Solaris
+#  cd4-5   HP-UX
+#  cd4-6   Linix for zSeries
+#  cd4-7   Linux for ppc
+#
+################################################################################
+
+#-W archiveMediaPanel1.cdPath="/cdimg/cd4-1"
+	   
+################################################################################
+#
+# ARCHIVE CD 2
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the second archive install image
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd5-1   Windows
+#  cd5-2   All other platforms
+#
+################################################################################
+
+#-W archiveMediaPanel2.cdPath="/cdimg/cd5-1"
+
+################################################################################
+#
+# ARCHIVE CD 3
+#
+# Required for: Archive install
+#
+# Description: Specify the directory path to the third archive install image
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd5-3   Windows
+#  cd5-4   All other platforms
+#
+################################################################################
+
+#-W archiveMediaPanel3.cdPath="/cdimg/cd5-3"
+
+
+################################################################################
+#
+# TRADITIONAL INSTALL CD LOCATIONS
+#
+################################################################################
+				
+################################################################################
+#
+# WEBSPHERE BUSINESS INTEGRATION SERVER FOUNDATION CD 1 LOCATION
+#
+# Required for: Traditional install
+#
+# Description: Specify the directory path to the WebSphere Business Integration 
+# Server Foundation CD 1 installation images.  Although this can be to a CD-ROM drive, 
+# for unattended installation this location is more likely to be a directory where 
+# electronic product images are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd1-1   Windows
+#  cd1-3   Linux for x86
+#  cd1-5   AIX
+#  cd1-7   Solaris
+#  cd1-9   HP-UX
+#  cd1-11  Linix for zSeries
+#  cd1-13  Linux for ppc
+#
+################################################################################
+
+#-W userInputCDLocWas.cdPath="/cdimg/cd1-1"
+
+################################################################################
+#
+# WEBSPHERE BUSINESS INTEGRATION SERVER FOUNDATION CD 2 LOCATION
+#
+# Required for: Traditional install
+#
+# Description: Specify the directory path to the WebSphere Business Integration 
+# Server Foundation CD 2.  Although this can be to a CD-ROM 
+# drive, for unattended installation this location is more likely to be a 
+# directory where electronic product images are stored, such as on a network 
+# drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd1-2   Windows
+#  cd1-4   Linux for x86
+#  cd1-6   AIX
+#  cd1-8   Solaris
+#  cd1-10  HP-UX
+#  cd1-12  Linix for zSeries
+#  cd1-14  Linux for ppc
+#
+################################################################################
+
+#-W userInputCDLocWasCumulativeFix.cdPath="/cdimg/cd1-2"
+
+################################################################################
+#
+# WEBSPHERE BUSINESS INTEGRATION SERVER FOUNDATION FIXPACK CD LOCATION
+#
+# Required for: Traditional install
+#
+# Description: Specify the directory path to the WebSphere Business Integration 
+# Server Foundation Fixpack CD.  Although this can be to a CD-ROM 
+# drive, for unattended installation this location is more likely to be a 
+# directory where electronic product images are stored, such as on a network 
+# drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+# CD      Platform
+#  cd1-15  Windows
+#  cd1-16  Linux for x86
+#  cd1-17  AIX
+#  cd1-18  Solaris
+#  cd1-19  HP-UX
+#  cd1-20  Linix for zSeries
+#  cd1-21  Linux for ppc
+#
+################################################################################
+
+#-W userInputCDLocWasFixpack.cdPath="/cdimg/cd1-15"
+
+################################################################################
+#
+# WEBSPHERE PORTAL CD LOCATION
+#
+# Required for: Traditional install
+#
+# Description: Specify the directory path to the WebSphere Portal installation 
+# images.  Although this can be to a CD-ROM drive, for unattended installation 
+# this location is more likely to be a directory where electronic product images 
+# are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+################################################################################
+
+-W WPSCDLoc.cdPath="/fs/system/images/portal/5.1"
+
+################################################################################
+#
+# ILLWCM AND PERSONALIZATION CD LOCATION
+#
+# Required for: Traditional install
+#
+# Description: Specify the directory path to the WebSphere Portal installation 
+# images.  Although this can be to a CD-ROM drive, for unattended installation 
+# this location is more likely to be a directory where electronic product images 
+# are stored, such as on a network drive.
+#
+# Be sure to follow the convention for specifying path information on your
+# platform.  
+#
+################################################################################
+
+#-W PZNCDLoc.cdPath="/cdimg/cd3"
+
+
+################################################################################
+#
+# Advanced Options
+#
+################################################################################
+
+################################################################################
+#
+# WebSphere Application Server 6 profile selection
+# 
+# Required for: Custom install on an existing WebSphere Application Server 6
+#
+# Description: Specify WebSphere Application Server 6 profile that WebSphere Portal 
+# will be installed on. 
+#
+################################################################################
+
+# -W installedWasProfile.value=""				  
+				  
+################################################################################
+#
+# Secondary Node Choice
+#
+# If installing WebSphere Portal on a WebSphere Application Server
+# that will be a member of a clustered environment, AND if this
+# WebSphere Portal installation will NOT be the primary node in the
+# cluster, uncomment the following property and leave the value as
+# "false" to indicate this installation is for a secondary node.  
+# This property is necessary only if installing for a secondary node.
+#
+################################################################################
+
+-W managedNode.primaryNode="true"
+
+################################################################################
+#
+# Skip Coexistence Installation
+#
+# Description: Indicate whether you want to skip the coexistence installation 
+# scenario when installing WebSphere Portal.  Typically, if you are performing 
+# a full installation and the installation program detects an existing instance 
+# of WebSphere Application Server on the machine, a coexistence installation is 
+# triggered.  The coexistence installation launches the WebSphere Application 
+# Server installation program to enable you to select the proper ports to avoid 
+# port conflicts after installation.
+#
+# If you specify a value of "true" for the skipCoexistFlag.visited parameter, a 
+# full installation of WebSphere Portal and WebSphere Application Server will 
+# be installed without regard to whether an instance of WebSphere Application 
+# Server is already installed.  Before installing with this option, stop all 
+# instances of WebSphere Application Server and WebSphere Portal; otherwise, 
+# the installation will fail.  After installation, YOU MUST CHANGE THE PORT 
+# NUMBERS USED BY ONE INSTALLATION OR THE OTHER, or you will be unable to run 
+# both instances of WebSphere Application Server at the same time.
+#
+################################################################################
+
+# -W skipCoexistFlag.visited="true"
+
+################################################################################
+#
+# iSeries Options
+#
+################################################################################
+#-W os400DbUser.user=""
+#-W os400DbUser.password=""
+#-W wasInstance.wasInstance=""
+#-W basicConfig.choice="yes" 
+#-W CollectPortNumber.port=""
+#-W setWASHome.wasUserDataRoot=""
+
+################################################################################

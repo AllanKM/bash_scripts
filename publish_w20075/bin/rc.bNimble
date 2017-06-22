@@ -1,0 +1,489 @@
+#!/usr/bin/ksh 
+
+umask 022
+#set -x
+#-----------------------------------------------------
+# rc.bNimble
+# description: Control script for bNimble Daemon.
+# hpear3@us.ibm.com - Wed Mar 21 10:04:57 UTC 2001
+# Hacked by milo@Wed Aug  1 20:32:37 CUT 2001
+# jensenb@us.ibm.com - 	One version for linux/aix/AFS/DFS
+#-----------------------------------------------------
+# Local Variables defined here
+
+# rc.bNimble [-d] [-l|-d] [-n bNimble.jar] [-s daedalus.jar] [-x NUM] [-n NUM] [-u USER] {start|stop|restart|status} {bNimbleConfig}
+
+# debug:	-d
+# verbose:	-v
+# localdisk:	-l
+# AFS/DFS auth:	-a
+# bnimble:	-n <...>
+# daedalus:	-s <...>
+# maXmem:	-x <...>
+# miNmem:	-n <...>
+# user:		-u <...>
+# java version: -j <...> (ibm or sun)
+# print cfg file: -p
+
+HOST=`hostname -s`
+
+if [[ "$1" = "list" ]] ; then
+	/fs/system/tools/publish/bin/pnlistentries | grep $HOST
+	exit 0
+fi
+
+# base defaults
+#
+DEBUG_PARMS=""
+VERBOSE=0
+LOCALDISK=""
+BNIMBLE_JAR=latest
+DAEDALUS=latest
+MEM_MIN="-Xms128M"
+MEM_MAX="-Xmx256M"
+USER="default"  	# this gets set to mirrd for AIX, webinst for Linux
+JAVA_VERSION="ibm"
+GAF="latest"
+
+
+#PLEX=`hostname -s |cut -c 1-3`
+PLEX=`hostname -s |cut -c 1`
+case $PLEX in
+	px1)	ANTIPLEX="be:::at" ;;
+	px2)	ANTIPLEX="rs:::dt" ;;
+	px3)	ANTIPLEX="se:::gt" ;;
+	be)	ANTIPLEX="px1" ;;
+	rs)	ANTIPLEX="px2" ;;
+	se)	ANTIPLEX="px3" ;;
+esac
+
+echo "PLEX: $PLEX  ANTIPLEX: $ANTIPLEX";
+
+OS=`uname`
+LOCALDISK_BASE="/www/system/tools/publish"
+NETFS_BASE="/fs/system/tools/publish"
+
+# Command line options (these override everything if used)
+while getopts pvdlbj:s:x:n:u: name
+do
+        case $name in
+		p)	PRINT=1 ;;
+		v)	VERBOSE=1 ;;
+                d)      DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE" ;;
+                l)      LOCALDISK=true ;;
+                a)      LOCALDISK=false ;;
+                j)      JAVA_VERSION="${OPTARG}" ;;
+                b)      BNIMBLE_JAR="$OPTARG" ;;
+                g)      GAF="$OPTARG" ;;
+                s)      DAEDALUS="$OPTARG" ;;
+                x)      MEM_MAX="-Xmx${OPTARG}M" ;;
+                n)      MEM_MIN="-Xms${OPTARG}M" ;;
+                u)      USER="$OPTARG" ;;
+                ?) 	echo ""
+			echo "USAGE: "
+			echo " rc.bNimble [-d] [-l|-a] [-j bNimble.jar] [-s daedalus.jar] [-x NUM] [-n NUM] [-u USER] {start|stop|restart|status} {bNimbleConfig}"
+			echo "  debug:          -d"
+			echo "  localdisk:      -l"
+			echo "  DFS/AFS buddy:  -d"
+			echo "  bnimble:        -j <...>"
+			echo "  daedalus:       -s <...>"
+			echo "  maXmem:         -x <...>"
+			echo "  miNmem:         -n <...>"
+			echo "  java version:   -j <...> (sun or ibm)"
+			echo "  user:           -u <...>"
+			echo "  print file:     -p"
+			echo ""
+                	exit 2;;
+        esac
+done
+
+shift $(($OPTIND -1))
+#printf "Remaining arguments are: %s\n" "$*"
+
+if [[ "$LOCALDISK" = "" ]] ; then
+	case "$OS" in
+	  AIX)		CONFIG_BASE=/fs/system/tools/publish/config ;;
+	  Linux)	CONFIG_BASE=/www/system/tools/publish/config ;;
+	esac
+else
+	case "$LOCALDISK" in
+	  true)		CONFIG_BASE=/www/system/tools/publish/config ;;
+	  false)	CONFIG_BASE=/fs/system/tools/publish/config ;;
+	esac
+fi
+
+CONFIG_PARAM=$2
+if [ -d "$CONFIG_BASE/$CONFIG_PARAM" ] ; then
+	echo -n "Checking PNDB..."
+	CONFIG_PARAM=`/fs/system/tools/publish/bin/pndb/pngetconf.pl --site $CONFIG_PARAM`
+	echo "...got $CONFIG_PARAM"
+fi
+
+CONFIGSTRIPPED=`echo $CONFIG_PARAM | sed s/\.conf//g`
+CONFIGEXT=.conf
+CONFIGFILE=${CONFIGSTRIPPED}${CONFIGEXT}
+FULL_CONFIGFILE=$CONFIG_BASE/$CONFIGFILE
+
+# pull out rc.bNimble parameters in config file
+if [ -f $FULL_CONFIGFILE ] ; then
+	for i in `cat $FULL_CONFIGFILE				\
+		| grep -E "^[[:space:]]*#[[:space:]]*param"	\
+		| awk -F"param" '{print $2}'			\
+		| sed s/^[[:space:]]*//g 			\
+		| sed s/[[:space:]]/:/g`
+	do
+#		echo "LINE: $i"
+		PARM=`echo $i | awk -F: '{print $1}'`
+		VAL=`echo $i | awk -F: '{print $2}'`
+#		echo "PARM=$PARM VAL=$VAL"
+		case $PARM in
+		 DEBUG)		DEBUG_PARMS="-Xdebug -Xnoagent -Xrunjdwp:transport=dt_socket,server=y,suspend=n -Djava.compiler=NONE" ;;
+		 LOCALDISK)	LOCALDISK=$VAL ;;
+		 BNIMBLE_JAR)	BNIMBLE_JAR=$VAL ;;
+		 DAEDALUS)	DAEDALUS=$VAL ;;
+		 GAF)		GAF=$VAL ;;
+		 MEM_MIN)	MEM_MIN="-Xms${VAL}M" ;;
+		 MEM_MAX)	MEM_MAX="-Xmx${VAL}M" ;;
+		 JAVA_VERSION)	JAVA_VERSION=$VAL ;;
+		 USER)		USER=$VAL ;;
+		esac
+	done
+fi
+
+RUNDIR="/tmp/bNimble$$"
+CONFDIR=`echo $CONFIGFILE | sed s/[/]/#/g | awk -F"#" '{print $1}'`
+mkdir -p $RUNDIR/$CONFDIR
+chmod -R a+r,a+x $RUNDIR
+#chmod a+r $RUNDIR/$CONFDIR
+#chmod a+x $RUNDIR/$CONFDIR
+#chmod a+r $RUNDIR/$CONFIGFILE
+FOO=`echo $CONFIGFILE | sed s/[/]/\./g`
+#USETHIS="/tmp/${FOO}.$$"
+#USETHIS_TMP="/tmp/${FOO}.$$.tmp"
+USETHIS="$RUNDIR/$CONFIGFILE"
+USETHIS_TMP="$RUNDIR/$CONFIGFILE.tmp"
+
+cp $FULL_CONFIGFILE $USETHIS
+
+# pull out defines in config file
+if [ -f $FULL_CONFIGFILE ] ; then
+	for i in `cat $FULL_CONFIGFILE                          \
+		| grep -E "^[[:blank:]]*#[[:blank:]]*define"    \
+		| awk -F"define" '{print $2}'                   \
+		| sed s/^[[:space:]]*//g                        \
+		| sed s/[[:space:]]/\%/g`
+        do
+		PARM=`echo $i | awk -F"%" '{print $1}'`
+		VAL=`echo $i | awk -F"%" '{print $2}'`
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "Substituting $PARM with $VAL"
+		fi
+		cat $USETHIS | egrep -v define | sed s^%$PARM%^$VAL^g > $USETHIS_TMP
+		mv -f $USETHIS_TMP $USETHIS
+	done
+else
+	echo "Can't find config file.  Exiting"
+	exit 1
+fi
+
+# %PLEX% is a special variable that gets substituted with the current plex
+cat $USETHIS | egrep -v define | sed s/%PLEX%/$PLEX/g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+# %ANTIPLEX% is a special variable that gets substituted with the evil twin of the current plex
+cat $USETHIS | egrep -v define | sed s/%ANTIPLEX%/$ANTIPLEX/g | sed s/:::/\ /g > $USETHIS_TMP
+mv -f $USETHIS_TMP $USETHIS
+
+if [[ $PRINT = 1 ]] ; then
+	cat /$USETHIS
+	echo "# file is $USETHIS"
+#	rm -f $USETHIS
+	exit
+fi
+
+FULL_CONFIGFILE=$USETHIS
+
+
+
+####################################################################
+case "$OS" in
+  AIX)
+	if [[ "$USER" = "default" ]] ; then
+		USER="mirrd"
+	fi
+
+	JAVA=/usr/java14/bin/java
+	PS="ps -ef"
+
+#	# default for AIX is to use buddy
+#	if [[ "$LOCALDISK" = "" ]] ; then
+#		LOCALDISK=false
+#	fi
+
+#	case "$LOCALDISK" in
+#	  true)
+#		JAR_DIR=$LOCALDISK_BASE/bin
+#		CONFIG_BASE=$LOCALDISK_BASE/config
+#		echo "AIX local"
+#		;;
+#	  false)
+#		JAR_DIR=$NETFS_BASE/bin
+#		CONFIG_BASE=$NETFS_BASE/config
+#		echo "AIX DFS"
+#		;;
+#	esac
+	# Always get configs and bins from DFS for AIX	
+	JAR_DIR=$NETFS_BASE/bin
+	CONFIG_BASE=$NETFS_BASE/config
+
+	cd $JAR_DIR
+	unalias ls
+	if [[ "$BNIMBLE_JAR" = "latest" ]] ; then
+		BNIMBLE_JAR=`ls bNimble*jar | egrep 'bNimble[0-9]+.jar' | sort | tail -1`
+	fi
+	if [[ "$DAEDALUS" = "latest" ]] ; then
+		DAEDALUS_JAR_VERSION=`ls daedalus*jar | egrep 'daedalus[0-9]+.jar' | sed s/daedalus//g | sed s/\.jar//g | sort | tail -1`
+		DAEDALUS="daedalus${DAEDALUS_JAR_VERSION}.jar"
+	fi
+	if [[ "$GAF" = "latest" ]] ; then
+		GAF=`ls GAF*jar | egrep 'GAF[0-9]+.jar' | sort | tail -1`
+	fi
+#	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}:${JAR_DIR}/${DAEDALUS}:${JAR_DIR}/crimson.jar:${JAR_DIR}/${GAF}:${JAR_DIR}/gryphon.zip"
+	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}"
+	#echo $JAVA_CLASSPATH
+	JAVA_ARGS="$MEM_MIN $MEM_MAX $DEBUG_PARMS -classpath ${JAVA_CLASSPATH} com.ibm.webos.daedalus.Daedalus" 
+	BNIMBLE="$JAVA $JAVA_ARGS"
+	;;
+  Linux)
+	if [[ "$USER" = "default" ]] ; then
+		USER="pubinst"
+	fi
+
+	if [[ "$JAVA_VERSION" = "sun" ]] ; then
+#		JAVA=/usr/java/jdk1.3.1_03/bin/java
+		JAVA=/usr/bin/java
+	else
+		JAVA=/usr/lib/IBMJava2-1.4.2/jre/bin/java
+	fi
+	PS="ps --cols 1000 -ef"
+
+	# default for Linux is to use local disk
+	if [[ "$LOCALDISK" = "" ]] ; then
+		LOCALDISK=true
+	fi
+
+	case "$LOCALDISK" in
+	  true)
+		JAR_DIR=$LOCALDISK_BASE/bin
+		CONFIG_BASE=$LOCALDISK_BASE/config
+		echo "Linux local"
+		;;
+	  false)
+		JAR_DIR=$NETFS_BASE/bin
+		CONFIG_BASE=$NETFS_BASE/config
+		echo "Linux DFS"
+		;;
+	esac
+
+	cd $JAR_DIR
+	unalias ls
+	if [[ "$BNIMBLE_JAR" = "latest" ]] ; then
+		BNIMBLE_JAR_VERSION=`ls bNimble*jar | egrep 'bNimble[0-9]+.jar' | sed s/bNimble//g | sed s/\.jar//g | sort | tail -1`
+		BNIMBLE_JAR="bNimble${BNIMBLE_JAR_VERSION}.jar"
+	fi
+	if [[ "$DAEDALUS" = "latest" ]] ; then
+		DAEDALUS_JAR_VERSION=`ls daedalus*jar | egrep 'daedalus[0-9]+.jar' | sed s/daedalus//g | sed s/\.jar//g | sort | tail -1`
+		DAEDALUS="daedalus${DAEDALUS_JAR_VERSION}.jar"
+	fi
+	if [[ "$GAF" = "latest" ]] ; then
+		GAF=`ls GAF*jar | egrep 'GAF[0-9]+.jar' | sort | tail -1`
+	fi
+
+#	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}:${JAR_DIR}/${DAEDALUS}:${JAR_DIR}/crimson.jar:${JAR_DIR}/${GAF}:${JAR_DIR}/gryphon.zip" 
+	JAVA_CLASSPATH="${JAR_DIR}/${BNIMBLE_JAR}" 
+	JAVA_ARGS="$MEM_MIN $MEM_MAX $DEBUG_PARMS -classpath ${JAVA_CLASSPATH} com.ibm.webos.daedalus.Daedalus" 
+	CONFIG_BASE=$LOCALDISK_BASE/config
+	BNIMBLE="$JAVA $JAVA_ARGS"
+	;;
+  *)
+	echo "Unknown OS type $OS. Exiting."
+	exit 1
+	;;
+esac
+
+####################################################################
+
+####################################################################
+# Vars that need to be set after OS and LOCALDISK are determined
+BNIMBLE_HOME=`grep -E "^[[:blank:]]*home[[:blank:]]*=" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+#echo "BNIMBLE_HOME=$BNIMBLE_HOME"
+BNIMBLE_LOGFILE=$BNIMBLE_HOME/output.log
+PORT=`grep -E "^[[:blank:]]*port[[:blank:]]*=" $FULL_CONFIGFILE | awk -F= '{print $2}' | head -1`
+####################################################################
+
+####################################################################
+# DFS Buddy variables -- AIX Buddy publishing ONLY
+BUDDY_DIR=$NETFS_BASE/bin
+BUDDY_USER=mirrd
+BUDDY_GROUP=apps
+BUDDY_PRINCIPAL=mirrd
+BUDDY_KEYFILE=FILE:/krb5/$BUDDY_PRINCIPAL.ktab
+BUDDY_PROG=/fs/system/bin/buddy.432
+####################################################################
+
+####################################################################
+# AFS Buddy variables -- Linux lbuddy publishing ONLY
+LBUDDY_USER=mirrd
+LBUDDY_PRINCIPAL=mirrd
+LBUDDY_DIR=$BNIMBLE_HOME
+LBUDDY_KEYFILE=/krb4/$LBUDDY_PRINCIPAL.srvtab
+LBUDDY_PROG=/fs/system/bin/lbuddy
+REAUTH_INTERVAL=60
+####################################################################
+
+if [[ $VERBOSE = 1 ]] ; then
+	echo "FULL_CONFIG: $FULL_CONFIGFILE"
+	echo "PORT: $PORT"
+	echo "DEBUG_PARMS: $DEBUG_PARMS"
+	echo "LOCALDISK: $LOCALDISK"
+	echo "BNIMBLE_JAR: $BNIMBLE_JAR"
+	echo "DAEDALUS: $DAEDALUS"
+	echo "GAF: $GAF"
+	echo "MEM_MAX: $MEM_MAX"
+	echo "MEM_MIN: $MEM_MIN"
+	echo "USER: $USER"
+	echo "JAVA_VERSION = $JAVA_VERSION"
+	echo "JAVA = $JAVA"
+fi
+
+
+####################################################################
+case "$1" in
+  start)
+	echo ""
+	echo "Starting $BNIMBLE_JAR using $FULL_CONFIGFILE, logging to $BNIMBLE_LOGFILE:"
+
+	if [[ "$LOCALDISK" = "true" ]] ; then
+		# Get allnodes.xml in localdisk up to date
+		if [[ -f /fs/system/config/nd-gen/allnodes.xml ]] ; then
+			echo "Syncing allnodes.xml"
+			mkdir -p /www/system/config/nd-gen
+			cp /fs/system/config/nd-gen/allnodes.xml /www/system/config/nd-gen/
+		fi
+		# hack to get stuff to work with dssh/dsh/etc
+		RUNTHIS="$RUNDIR/bNimble$$"
+		chmod a+r,a+x $RUNDIR
+		cd $RUNDIR
+		echo "cd $RUNDIR" > $RUNTHIS
+		chmod a+r,a+x $RUNTHIS
+		echo "$BNIMBLE $CONFIGFILE >> $BNIMBLE_LOGFILE" >> $RUNTHIS
+		chmod +x $RUNTHIS
+		chmod -R a+r,a+x $RUNDIR
+		echo "sudo -u $USER $RUNTHIS" | at now
+		echo "Giving bNimble 5 seconds to get started."
+		sleep 5
+#		rm /tmp/bNimble$$
+	else
+		print "No buddy anymore. Go home."
+		exit 1
+		case "$OS" in
+		  Linux)
+			nohup su $LBUDDY_USER -c "/usr/athena/bin/pagsh -c ${LBUDDY_PROG} ${LBUDDY_DIR} ${LBUDDY_PRINCIPAL} ${LBUDDY_KEYFILE} ${REAUTH_INTERVAL} ${JAVA} \"${JAVA_ARGS} ${FULL_CONFIGFILE}\" " >> $BNIMBLE_LOGFILE  &
+		  ;;
+		  AIX)
+			su $USER -c "nohup ${BUDDY_PROG} -d ${BUDDY_DIR} -u ${BUDDY_USER} -g ${BUDDY_GROUP} -p ${BUDDY_PRINCIPAL} -k ${BUDDY_KEYFILE} ${BNIMBLE} ${FULL_CONFIGFILE} >> $BNIMBLE_LOGFILE " &
+		  ;;
+		esac
+		echo "Giving bNimble 5 seconds to get started."
+		sleep 5
+	fi
+	pwd
+	cd -
+	echo -n "Number of procs:"
+	$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | wc -l
+#	$0 status $CONFIGFILE $3
+	echo ""
+	;;
+  stop)
+	echo ""
+	echo "Shutting down bNimble on port $PORT:"
+
+	if [[ $OS = "AIX" ]] ; then
+		$JAVA -classpath  $NETFS_BASE/bin/${DAEDALUS} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term
+	else
+		echo "$JAVA  -classpath $NETFS_BASE/bin/${DAEDALUS} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term"
+		$JAVA  -classpath $NETFS_BASE/bin/${DAEDALUS} com.ibm.webos.daedalus.DaedalusCtl -host localhost -port ${PORT} -term
+	fi
+
+	sleep 5
+	numprocs=`$PS | grep $FOO | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Try rc.bNimble stop9 to kill"
+#		rm -f $USETHIS
+		exit 1
+	fi
+	;;
+  stop9)
+	echo ""
+	echo "Shutting down bNimble the hard and nasty -9 way:"
+	echo ""
+
+	echo -n "Killing:  "
+	for pid in `$PS | grep ${FOO} | grep -v grep | grep -v $0 | awk '{print $2;}'`
+	do
+		echo -n " $pid"
+		kill -9 $pid
+	done
+	echo ""
+
+	sleep 5
+	numprocs=`$PS | grep $FOO | grep ${BNIMBLE_JAR} | grep -v grep | wc -l | sed s/\ //g`
+	if [[ "$numprocs" = "0" ]] ; then
+		echo "Processes stopped"
+	else
+		echo "There are still $numprocs processes running.  Better just kill them by hand"
+	fi
+	;;
+  status)
+	echo "========== bNimble Status =========="
+	echo -n "Number of procs:"
+#	$PS | grep $FOO | grep ${BNIMBLE_JAR} | grep -v grep | wc -l
+	$PS | grep $CONFIGFILE | grep bNimble | grep -v grep | wc -l
+	echo ""
+	;;
+  print)
+        cat $FULL_CONFIGFILE
+        echo "# file is $USETHIS"
+#       rm -f $USETHIS
+        ;;
+  restart)
+	$0 stop $CONFIGFILE $3
+	$0 start $CONFIGFILE $3
+	;;
+  restart9)
+	$0 stop9 $CONFIGFILE $3
+	$0 start $CONFIGFILE $3
+	;;
+  *)
+	echo ""
+	echo "USAGE:"
+	echo " rc.bNimble [-d] [-l|-b] [-j bNimble.jar] [-s daedalus.jar] [-x NUM] [-n NUM] [-u USER] {start|stop|restart|status|print} {bNimbleConfig}"
+	echo "  debug:        -d"
+	echo "  localdisk:    -l"
+	echo "  DFS/AFS auth: -a"
+	echo "  bnimble:      -j <...>"
+	echo "  daedalus:     -s <...>"
+	echo "  maXmem:       -x <...>"
+	echo "  miNmem:       -n <...>"
+	echo "  java version: -j <...> (sun or ibm)"
+	echo "  user:         -u <...>"
+	echo "  print config: -p"
+	echo ""
+#	rm -f $USETHIS
+	exit 1 ;;
+esac
+####################################################################
+#rm -f $USETHIS
+exit 0
+

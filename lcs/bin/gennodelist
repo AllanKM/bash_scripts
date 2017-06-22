@@ -1,0 +1,101 @@
+#!/bin/ksh
+#
+# Assumed $1 input is a file name of the form:
+#   host.LogRoot.timestamp.gz
+
+# NOTE: This locking method will not work in NFS - due to possible PID clash
+mklockfile () {
+  tempfile="$1.$$"
+  lockfile="$1.lock"
+  #{ echo $$ > $tempfile } >/dev/null 2>&1 || {
+  echo $$ >$tempfile 2>/dev/null || {
+    echo "You don't have permission to access `dirname $tempfile`"
+    return 1
+  }
+  ln $tempfile $lockfile >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 0
+  }
+  kill -0 `cat $lockfile` >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 1
+  }
+  echo "Removing stale lock file"
+  rm -f $lockfile
+  ln $tempfile $lockfile >/dev/null 2>&1 && {
+    rm -f $tempfile
+    return 0
+  }
+  rm -f $tempfile
+  return 1
+}
+
+umask 022
+
+me=$0
+mepath=`dirname $0`
+mepath=`dirname $mepath`
+
+ts=""
+file=""
+while [ $# -gt 0 ] ; do
+  case $1 in
+    -t) ts=$2; shift ;;
+    *) file=$1 ;;
+  esac
+  shift
+done
+
+# Get timestamp
+if [ -z "$file" ] ; then
+  echo "No file specified" 1>&2
+  exit 0
+else
+  dir=`dirname $file 2>/dev/null`
+  file=`basename $file 2>/dev/null`
+fi
+if [ -z "$ts" ] ; then
+  ts=`echo "$file" | sed 's%^.*\.\([0-9][0-9]*\)\.gz$%\1%'`
+  if [ "$ts" = "$file" ] ; then
+    ts=""
+  fi
+fi
+if [ -z "$ts" ] ; then
+  echo "Unable to determine timestamp" 1>&2
+  exit 0
+fi
+
+host=`echo $file | sed 's%\..*$%%`
+nodefile="$dir/nodes.$ts"
+
+# Already in the nodefile - no update needed
+exist=`awk '$1 == "'"$host"'" { print $1; exit }' $nodefile 2>/dev/null`
+if [ "$exist" = "$host" ] ; then
+  exit 0
+fi
+
+# Wait for a lock
+until mklockfile $nodefile ; do
+  sleep 1
+done
+# Should now have $nodefile.lock with PID for contents
+
+rm -f $nodefile.$$
+echo "BEGIN" > $nodefile.$$
+{
+  echo "$host"
+  if [ -f "$nodefile" ] ; then
+    cat $nodefile | \
+      grep -v "BEGIN" | \
+      grep -v "END"
+  fi
+} | sort | uniq >> $nodefile.$$
+echo "END" >> $nodefile.$$
+
+rm -f $nodefile
+mv $nodefile.$$ $nodefile
+
+# Remove the lock,
+rm -f $nodefile.lock
+
+exit 0

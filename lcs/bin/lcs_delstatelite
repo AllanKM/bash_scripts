@@ -1,0 +1,12 @@
+#!/bin/ksh
+#
+# The purpose of this script is for testing only
+#
+# Run this script from the statelite node itself as root
+# NOTE: IHS should be stopped prior to running this script
+#
+# Decommission the LCS configurations for WWSM statelite nodes
+
+/fs/system/tools/lcs/bin/lcs_pull -verbose -lcsonly -partial -wait
+
+exit 0

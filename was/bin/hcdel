@@ -1,0 +1,200 @@
+#!/usr/local/bin/perl-current
+#------------------------------------------------------------------------------
+#
+# Script Name: hcdel
+#
+# Description:
+#
+#   Delete hc definition from dirstore
+#
+# Syntax:
+#
+#   hcdel role app hcname
+#
+# Change history:
+#
+#   Date      Init    Description
+#   09/21/09  MarcoZ  Creation
+#
+#   $Id: hcdel,v 1.2 2010/01/07 08:11:48 wuzxiang Exp $
+#
+#------------------------------------------------------------------------------
+
+
+use Getopt::Std;
+use EI::DirStore;
+
+
+sub usage() {
+  warn "Usage: hcdel -t	was <role> [<app> [<hcname>]]\n";
+  warn "Usage: hcdel -t ihs <role> [<was_hc_dirstore_name> [<hc_name>]]\n";
+  warn "Usage: hcdel -t ihs2 <role> [<site>]\n";
+  warn "  e.g: hcdel -t was was.ibm.sso.pre search csa\n";
+  warn "  e.g: hcdel -t was was.ibm.sso.pre search\n";
+  warn "  e.g: hcdel -t was was.ibm.sso.pre\n";
+  warn "  e.g: hcdel -t ihs webserver.ibm.origin hc_was.ibm.sso.pre_search csa\n";
+  warn "  e.g: hcdel -t ihs webserver.ibm.origin hc_was.ibm.sso.pre_search\n";
+  warn "  e.g: hcdel -t ihs webserver.ibm.origin\n";
+  warn "  e.g: hcdel -t ihs2 webserver.ibm.origin ibmstg\n";
+  warn "  e.g: hcdel -t ihs2 webserver.ibm.origin\n";
+   exit 1;
+}
+
+getopts("ht") or usage;
+usage if $opt_h;
+if ($opt_t) {
+    $type = shift(@ARGV) or usage;
+    if ($type eq "was") {
+        $role = shift(@ARGV) or usage;
+        $app = shift(@ARGV)	;
+		 $hcname	=	shift(@ARGV) ;
+				if(! defined $app){
+					 $name = "hc_$role";
+					 print "Are you sure you want to delete all hc for $role?[yes/no]";
+					 $input	=	<STDIN>;
+					 chomp $input;
+					 if	($input	eq 'yes')	{
+									delete_by_role($name);
+						}	
+				 }
+				else{
+					
+					if	(! defined $hcname){
+					    $name	=	"hc_$role\_$app";
+						 print "Are you sure you want to delete all hc for $role $app?[yes/no]";
+						 $input	=	<STDIN>;
+						 chomp $input;
+						 if	($input	eq 'yes')	{
+									delete_by_app($name);
+							}
+					}
+					else{
+					    $name = "hc_$role\_$app";
+						 delete_all($name, $hcname);
+					}
+			  }
+    } 
+    else{
+       if ($type eq "ihs") {
+         $role = shift(@ARGV) or usage;
+         $was_hc_dirstore_name = shift(@ARGV);
+         $hc_name = shift(@ARGV);
+           	if(! defined $was_hc_dirstore_name){
+					 $name = "hc_$role";
+					 print "Are you sure you want to delete all hc for $role?[yes/no]";
+					 $input	=	<STDIN>;
+					 chomp $input;
+					 if	($input	eq 'yes')	{
+									delete_by_role($name);
+						}	
+				 }
+				else{
+					if	(! defined $hc_name){
+					     $name = "hc_$role";
+					     $hcname="$was_hc_dirstore_name";
+						 print "Are you sure you want to delete all hc for $role $was_hc_dirstore_name?[yes/no]";
+						 $input	=	<STDIN>;
+						 chomp $input;
+						 if	($input	eq 'yes')	{
+									delete_all($name, $hcname);
+							}
+					}
+					else{
+					   $name = "hc_$role";
+                     $hcname="$was_hc_dirstore_name@\@$hc_name";
+        				delete_all($name, $hcname);
+					}
+			  }
+        }
+        
+       else {
+           if ($type eq "ihs2") {
+               $role = shift(@ARGV) or usage;
+               $site = shift(@ARGV);
+              	if(! defined $site){
+					 $name = "hc_$role";
+					 print "Are you sure you want to delete all hc for $role?[yes/no]";
+					 $input	=	<STDIN>;
+					 chomp $input;
+					 if	($input	eq 'yes')	{
+									delete_by_role($name);
+						}	
+				 }
+				else{
+				      $name = "hc_$role";
+                     $hcname="$site";
+               		delete_all($name, $hcname);
+				  }
+            }
+        else{
+              usage;
+         }     
+       }
+    }
+  }
+  else {
+    usage;
+}
+
+sub delete_dirstore {
+        my ($dirstore_key,$dirstore_entry_ref) = @_;
+        my %entry;
+        dsGet(%entry,"software",$dirstore_key);
+ #       print Dumper($dirstore_entry_ref);
+        if (%entry) {
+            #    print "Deleting $dirstore_key\n";
+                dsUpdate("SOFTWARE",$dirstore_key,%{$dirstore_entry_ref}, type => "delete" );
+                delete $dirstore_entry_ref->{"instances"};
+        }
+}
+
+sub	delete_by_role{
+	 if	(not defined $ENV{DSLDAPUSER}	and	not	defined	$ENV{DSUSER})	{
+				dsConnect(user =>	"dsUpdate")	 or	die	"Error:	Couldn't connect:	$dsErrMsg\n";
+		}
+	 dsSearch(%results,	"software",name	=>"${name}*")	 or	die	"Error:	search failed: $dsErrMsg\n";
+	 foreach my	$app (keys %results) {
+			$app=~/.*_(.+?)$/;
+			print	"deleting	hc for $app\n";
+			dsDelete("software", "$app")
+										or die "Error: Delete	of $app	failed:	$dsErrMsg\n";
+	 }
+}
+
+sub	delete_by_app{
+	 if	(not defined $ENV{DSLDAPUSER}	and	not	defined	$ENV{DSUSER})	{
+				dsConnect(user =>	"dsUpdate")	 or	die	"Error:	Couldn't connect:	$dsErrMsg\n";
+		}
+	 dsSearch(%results,	"software",name	=>"$name")	or die "Error: search	failed:	$dsErrMsg\n";
+	 print "deleting hc for	$name\n";
+	 dsDelete("software",	"$name")
+										or die "Error: Delete	of $name failed: $dsErrMsg\n";
+}
+
+sub delete_all{
+   if (not defined $ENV{DSLDAPUSER} and not defined $ENV{DSUSER}) {
+        dsConnect(user => "dsUpdate")  or die "Error: Couldn't connect: $dsErrMsg\n";
+    }
+
+   dsSearch(%results, "software",name =>"$name")  or die "Error: search failed: $dsErrMsg\n";
+   while (($key,$hashRef) = each(%results)) {
+        $others=0;
+        while (($attr,$attrHashRef) = each(%{$hashRef})) {
+             $count = 1;
+             while ($count <=@{$attrHashRef}) {
+              if(@{$attrHashRef}[$count-1]=~/^$hcname@\@/){
+                 $dirstore_entry->{"instances"} =@{$attrHashRef}[$count-1];
+                 print  "Deleting $key: $dirstore_entry->{'instances'} \n";
+                 delete_dirstore($name,$dirstore_entry);  #delete dirstore
+             } else {
+               $others=1;
+             }
+           $count++;
+          }
+     }
+     if ($others<1){
+           dsDelete("software", "$name")
+                    or die "Error: Delete of $name failed: $dsErrMsg\n";
+     }
+  }
+}  

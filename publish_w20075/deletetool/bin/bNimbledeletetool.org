@@ -1,0 +1,1 @@
+/usr/java14/bin/java -Dgaf.symlink.lib=/fs/system/tools/publish/deletetool/bin/symlink.so -Xms32M -Xmx64M -jar /fs/system/tools/publish/deletetool/bin/bNimble1400.jar $1 

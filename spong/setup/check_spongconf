@@ -1,0 +1,26 @@
+#!/bin/ksh
+
+NEW=$1
+CURRENT=`cat /logs/present_spong_conf.txt`
+
+NEWSUM=`sum /fs/system/spong/etc/$NEW`
+CURRENTSUM=`sum /fs/system/spong/etc/$CURRENT`
+
+# Default is to update
+RETURN=1
+
+#echo "New: $NEW Current: $CURRENT"
+
+if [[ "$CURRENT" = "$NEW" ]]
+then
+	if [[ "$CURRENTSUM" = "$NEWSUM" ]]
+	then
+#		print "Sums match."
+		RETURN=0
+	fi
+#	print "Filename match."
+fi
+
+#print "Exit with $RETURN"
+exit $RETURN
+

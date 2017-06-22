@@ -1,0 +1,396 @@
+------------------------------------------------------------------
+--    Create Replication Control Tables
+--    (UDB edition)
+------------------------------------------------------------------
+
+-- BEGIN DPCNTL.UDB
+
+-- UDB -- For the UDB platform, follow the directions given in the comments
+-- UDB -- prefixed with "-- UDB --" (if any).
+
+-- UDB -- TABLESPACE CONSIDERATIONS:
+
+-- UDB -- Uncomment the drop statements below only if you are sure that they do
+-- UDB -- not contain any important user tables!!!
+
+--DROP TABLESPACE TSSNAP01;
+--DROP TABLESPACE TSSNAP02;
+
+-- UDB -- We recommend the use of two tablespaces to contain replication
+-- UDB -- control tables, with one tablespace containing only the UOW table
+-- UDB -- and another to contain the rest of the replication control tables.
+ 
+-- UDB -- For each database, customize the following tablespace parameters:
+-- UDB -- 1. File container must be different for each database.  You must
+-- UDB --    change the sample file container when running this script on
+-- UDB --    Unix platforms, for example: "FILE '/tmp/tssnap01.f1'".
+-- UDB -- 2. Increase page allocation for large replication installations.
+-- UDB -- 3. After making the customization changes, uncomment the
+-- UDB --    CREATE TABLESPACE statements below as well as the IN clause
+-- UDB --    from the CREATE TABLE statements later in this script.
+
+-- UDB -- Note: tablespace parameters correspond to "FILE 'C:\TSSNAP01.F1'"
+-- UDB -- and "2000", respectively, in the following sample statement.
+
+CREATE TABLESPACE TSSNAP01 MANAGED BY SYSTEM
+USING ('/db2_database/db2instname/TS/repl/TSSNAP01');
+
+-- UDB -- Note: tablespace parameters correspond to "FILE 'C:\TSSNAP02.F1'"
+-- UDB -- and "2000", respectively, in the following sample statement.
+
+CREATE TABLESPACE TSSNAP02 MANAGED BY SYSTEM
+USING ('/db2_database/db2instname/TS/repl/TSSNAP02');
+
+
+------------------------------------------------------------------
+--    Critical Section Table                 (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_CRITSEC (
+    APPLY_QUAL        CHAR( 18) NOT NULL )
+DATA CAPTURE CHANGES
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_CRITSECX
+ON ASN.IBMSNAP_CRITSEC ( APPLY_QUAL         ASC );
+
+
+------------------------------------------------------------------
+--    Pruning Control Table                  (All platforms      )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_PRUNCNTL (
+   TARGET_SERVER      CHAR( 18) NOT NULL,
+   TARGET_OWNER       CHAR( 18) NOT NULL,
+   TARGET_TABLE       CHAR( 18) NOT NULL,
+   SYNCHTIME          TIMESTAMP,
+   SYNCHPOINT         CHAR( 10) FOR BIT DATA,
+   SOURCE_OWNER       CHAR( 18) NOT NULL,
+   SOURCE_TABLE       CHAR( 18) NOT NULL,
+   SOURCE_VIEW_QUAL   SMALLINT  NOT NULL,
+   APPLY_QUAL         CHAR( 18) NOT NULL,
+   SET_NAME           CHAR( 18) NOT NULL,
+   CNTL_SERVER        CHAR( 18) NOT NULL,
+   TARGET_STRUCTURE   SMALLINT  NOT NULL,
+   CNTL_ALIAS         CHAR(  8) )
+DATA CAPTURE CHANGES
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_PRUNCNTLX
+ON ASN.IBMSNAP_PRUNCNTL (
+   SOURCE_OWNER       ASC,
+   SOURCE_TABLE       ASC,
+   SOURCE_VIEW_QUAL   ASC,
+   APPLY_QUAL         ASC,
+   SET_NAME           ASC,
+   TARGET_SERVER      ASC,
+   TARGET_TABLE       ASC,
+   TARGET_OWNER       ASC );
+
+
+------------------------------------------------------------------
+--    Register Table                         (All platforms      )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_REGISTER (
+   SOURCE_OWNER       CHAR( 18) NOT NULL,
+   SOURCE_TABLE       CHAR( 18) NOT NULL,
+   SOURCE_VIEW_QUAL   SMALLINT  NOT NULL,
+   GLOBAL_RECORD      CHAR(  1) NOT NULL,
+   SOURCE_STRUCTURE   SMALLINT  NOT NULL,
+   SOURCE_CONDENSED   CHAR(  1) NOT NULL,
+   SOURCE_COMPLETE    CHAR(  1) NOT NULL,
+   CD_OWNER           CHAR( 18),
+   CD_TABLE           CHAR( 18),
+   PHYS_CHANGE_OWNER  CHAR( 18),
+   PHYS_CHANGE_TABLE  CHAR( 18),
+   CD_OLD_SYNCHPOINT  CHAR( 10) FOR BIT DATA,
+   CD_NEW_SYNCHPOINT  CHAR( 10) FOR BIT DATA,
+   DISABLE_REFRESH    SMALLINT NOT NULL,
+   CCD_OWNER          CHAR( 18),
+   CCD_TABLE          CHAR( 18),
+   CCD_OLD_SYNCHPOINT CHAR( 10) FOR BIT DATA,
+   SYNCHPOINT         CHAR( 10) FOR BIT DATA,
+   SYNCHTIME          TIMESTAMP,
+   CCD_CONDENSED      CHAR(  1),
+   CCD_COMPLETE       CHAR(  1),
+   ARCH_LEVEL         CHAR(  4) NOT NULL,
+   DESCRIPTION        CHAR(254),
+   BEFORE_IMG_PREFIX  VARCHAR(4),
+   CONFLICT_LEVEL     CHAR(  1),
+   PARTITION_KEYS_CHG CHAR(  1) )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_REGISTERX
+ON ASN.IBMSNAP_REGISTER (
+   SOURCE_OWNER       ASC,
+   SOURCE_TABLE       ASC,
+   SOURCE_VIEW_QUAL   ASC );
+
+
+------------------------------------------------------------------
+--    Trace Table                            (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_TRACE (
+   OPERATION          CHAR     (  8) NOT NULL,
+   TRACE_TIME         TIMESTAMP      NOT NULL,
+   DESCRIPTION        VARCHAR  (254) NOT NULL )
+IN TSSNAP02
+;
+
+
+------------------------------------------------------------------
+--    Tuning Parameters Table                (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_CCPPARMS (
+   RETENTION_LIMIT    INT,
+   LAG_LIMIT          INT,
+   COMMIT_INTERVAL    INT,
+   PRUNE_INTERVAL     INT )
+IN TSSNAP02
+;
+
+
+------------------------------------------------------------------
+--    Unit-of-Work Table                     (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_UOW (
+   IBMSNAP_UOWID      CHAR( 10) FOR BIT DATA NOT NULL,
+   IBMSNAP_COMMITSEQ  CHAR( 10) FOR BIT DATA NOT NULL,
+   IBMSNAP_LOGMARKER  TIMESTAMP NOT NULL,
+   IBMSNAP_AUTHTKN    CHAR( 12) NOT NULL,
+   IBMSNAP_AUTHID     CHAR( 18) NOT NULL,
+   IBMSNAP_REJ_CODE   CHAR(  1) NOT NULL WITH DEFAULT,
+   IBMSNAP_APPLY_QUAL CHAR( 18) NOT NULL WITH DEFAULT )
+IN TSSNAP01
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_UOW_IDX
+ON ASN.IBMSNAP_UOW (
+   IBMSNAP_COMMITSEQ  ASC,
+   IBMSNAP_UOWID      ASC,
+   IBMSNAP_LOGMARKER  ASC  );
+
+ALTER TABLE ASN.IBMSNAP_UOW VOLATILE;
+
+
+------------------------------------------------------------------
+--    Warm Start Table                       (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_WARM_START (
+   SEQ                CHAR( 10) FOR BIT DATA,
+   AUTHTKN            CHAR( 12),
+   AUTHID             CHAR( 18),
+   CAPTURED           CHAR(  1),
+   UOWTIME            INT )
+IN TSSNAP02
+;
+
+
+------------------------------------------------------------------
+--    Apply Trail Table                      (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_APPLYTRAIL (
+   APPLY_QUAL         CHAR( 18) NOT NULL,
+   SET_NAME           CHAR( 18) NOT NULL,
+   WHOS_ON_FIRST      CHAR(  1) NOT NULL,
+   ASNLOAD            CHAR(  1),
+   MASS_DELETE        CHAR(  1),
+   EFFECTIVE_MEMBERS  INT,
+   SET_INSERTED       INT       NOT NULL,
+   SET_DELETED        INT       NOT NULL,
+   SET_UPDATED        INT       NOT NULL,
+   SET_REWORKED       INT       NOT NULL,
+   SET_REJECTED_TRXS  INT       NOT NULL,
+   STATUS             SMALLINT  NOT NULL,
+   LASTRUN            TIMESTAMP NOT NULL,
+   LASTSUCCESS        TIMESTAMP,
+   SYNCHPOINT         CHAR( 10) FOR BIT DATA,
+   SYNCHTIME          TIMESTAMP,
+   SOURCE_SERVER      CHAR( 18) NOT NULL,
+   SOURCE_ALIAS       CHAR(  8),
+   SOURCE_OWNER       CHAR( 18),
+   SOURCE_TABLE       CHAR( 18),
+   SOURCE_VIEW_QUAL   SMALLINT,
+   TARGET_SERVER      CHAR( 18) NOT NULL,
+   TARGET_ALIAS       CHAR(  8),
+   TARGET_OWNER       CHAR( 18) NOT NULL,
+   TARGET_TABLE       CHAR( 18) NOT NULL,
+   SQLSTATE           CHAR(  5),
+   SQLCODE            INT,
+   SQLERRP            CHAR(  8),
+   SQLERRM            VARCHAR(70),
+   APPERRM            VARCHAR(760) )
+IN TSSNAP02
+;
+
+
+------------------------------------------------------------------
+--    Subscription Columns Table             (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_SUBS_COLS (
+   APPLY_QUAL         CHAR( 18)    NOT NULL,
+   SET_NAME           CHAR( 18)    NOT NULL,
+   WHOS_ON_FIRST      CHAR(  1)    NOT NULL,
+   TARGET_OWNER       CHAR( 18)    NOT NULL,
+   TARGET_TABLE       CHAR( 18)    NOT NULL,
+   COL_TYPE           CHAR(  1)    NOT NULL,
+   TARGET_NAME        CHAR( 18)    NOT NULL,
+   IS_KEY             CHAR(  1)    NOT NULL,
+   COLNO              SMALLINT     NOT NULL,
+   EXPRESSION         VARCHAR(254) NOT NULL )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_SUBS_COLSX
+ON ASN.IBMSNAP_SUBS_COLS (
+   APPLY_QUAL         ASC,
+   SET_NAME           ASC,
+   WHOS_ON_FIRST      ASC,
+   TARGET_OWNER       ASC,
+   TARGET_TABLE       ASC,
+   TARGET_NAME        ASC );
+
+
+------------------------------------------------------------------
+--    Subscription Events Table              (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_SUBS_EVENT (
+   EVENT_NAME         CHAR( 18) NOT NULL,
+   EVENT_TIME         TIMESTAMP NOT NULL,
+   END_OF_PERIOD      TIMESTAMP )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_SUBS_EVENX
+ON ASN.IBMSNAP_SUBS_EVENT (
+   EVENT_NAME         ASC,
+   EVENT_TIME         ASC );
+
+
+------------------------------------------------------------------
+--    Subscription Set Table                 (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_SUBS_SET (
+   APPLY_QUAL         CHAR( 18) NOT NULL,
+   SET_NAME           CHAR( 18) NOT NULL,
+   WHOS_ON_FIRST      CHAR(  1) NOT NULL,
+   ACTIVATE           SMALLINT  NOT NULL,
+   SOURCE_SERVER      CHAR( 18) NOT NULL,
+   SOURCE_ALIAS       CHAR(  8),
+   TARGET_SERVER      CHAR( 18) NOT NULL,
+   TARGET_ALIAS       CHAR(  8),
+   STATUS             SMALLINT  NOT NULL,
+   LASTRUN            TIMESTAMP NOT NULL,
+   REFRESH_TIMING     CHAR(  1) NOT NULL,
+   SLEEP_MINUTES      INT,
+   EVENT_NAME         CHAR( 18),
+   LASTSUCCESS        TIMESTAMP,
+   SYNCHPOINT         CHAR( 10) FOR BIT DATA,
+   SYNCHTIME          TIMESTAMP,
+   MAX_SYNCH_MINUTES  INT,
+   AUX_STMTS          SMALLINT  NOT NULL,
+   ARCH_LEVEL         CHAR(  4) NOT NULL )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_SUBS_SETX
+ON ASN.IBMSNAP_SUBS_SET (
+   APPLY_QUAL         ASC,
+   SET_NAME           ASC,
+   WHOS_ON_FIRST      ASC );
+
+
+------------------------------------------------------------------
+--    Subscription Statements Table          (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_SUBS_STMTS (
+   APPLY_QUAL         CHAR( 18) NOT NULL,
+   SET_NAME           CHAR( 18) NOT NULL,
+   WHOS_ON_FIRST      CHAR(  1) NOT NULL,
+   BEFORE_OR_AFTER    CHAR(  1) NOT NULL,
+   STMT_NUMBER        SMALLINT  NOT NULL,
+   EI_OR_CALL         CHAR(  1) NOT NULL,
+   SQL_STMT           VARCHAR(1024),
+   ACCEPT_SQLSTATES   VARCHAR(50) )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_SUBS_STMTX
+ON ASN.IBMSNAP_SUBS_STMTS (
+   APPLY_QUAL         ASC,
+   SET_NAME           ASC,
+   WHOS_ON_FIRST      ASC,
+   BEFORE_OR_AFTER    ASC,
+   STMT_NUMBER        ASC )
+;
+
+
+------------------------------------------------------------------
+--    Subscription Targets Member Table      (All IBM platforms  )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_SUBS_MEMBR (
+   APPLY_QUAL         CHAR( 18) NOT NULL,
+   SET_NAME           CHAR( 18) NOT NULL,
+   WHOS_ON_FIRST      CHAR(  1) NOT NULL,
+   SOURCE_OWNER       CHAR( 18) NOT NULL,
+   SOURCE_TABLE       CHAR( 18) NOT NULL,
+   SOURCE_VIEW_QUAL   SMALLINT  NOT NULL,
+   TARGET_OWNER       CHAR( 18) NOT NULL,
+   TARGET_TABLE       CHAR( 18) NOT NULL,
+   TARGET_CONDENSED   CHAR(  1) NOT NULL,
+   TARGET_COMPLETE    CHAR(  1) NOT NULL,
+   TARGET_STRUCTURE   SMALLINT  NOT NULL,
+   PREDICATES         VARCHAR(512) )
+IN TSSNAP02
+;
+
+CREATE UNIQUE INDEX ASN.IBMSNAP_SUBS_MEMBX
+ON ASN.IBMSNAP_SUBS_MEMBR (
+   APPLY_QUAL         ASC,
+   SET_NAME           ASC,
+   WHOS_ON_FIRST      ASC,
+   SOURCE_OWNER       ASC,
+   SOURCE_TABLE       ASC,
+   SOURCE_VIEW_QUAL   ASC,
+   TARGET_OWNER       ASC,
+   TARGET_TABLE       ASC );
+
+
+------------------------------------------------------------------
+--    Prune Lock Table                       (All platforms      )
+------------------------------------------------------------------
+
+CREATE TABLE ASN.IBMSNAP_PRUNE_LOCK (
+   ANYNAME            CHAR(1) )
+IN TSSNAP02
+;
+
+
+------------------------------------------------------------------
+-- Insert default values into Tuning Parameters Table
+------------------------------------------------------------------
+
+INSERT INTO ASN.IBMSNAP_CCPPARMS (
+   RETENTION_LIMIT,
+   LAG_LIMIT,
+   COMMIT_INTERVAL,
+   PRUNE_INTERVAL )
+VALUES ( 10080, 10080, 30, 300 );
+
+
+-- END DPCNTL.UDB
+

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ***************************************************************** -->
+<!--                                                                   -->
+<!-- Licensed Materials - Property of IBM                              -->
+<!--                                                                   -->
+<!-- 5724_S68                                                          -->
+<!--                                                                   -->
+<!-- Copyright IBM Corp. 2008  All Rights Reserved.                    -->
+<!--                                                                   -->
+<!-- US Government Users Restricted Rights - Use, duplication or       -->
+<!-- disclosure restricted by GSA ADP Schedule Contract with           -->
+<!-- IBM Corp.                                                         -->
+<!--                                                                   -->
+<!-- ***************************************************************** -->
+
+<!-- 5724-S68                                                          -->
+
+<!-- ************************************************************************************
+This proxy configuration file handles Ajax proxyin for the Home Page component.
+
+The Home Page Ajax proxy is located at /homepage/web/proxy
+
+The default policy configuration of the Home Page Ajax proxy forwards all 
+requests and includes the jsessionid, ltpa and ltpa2 tokens. As an out of the
+box configuration this allows the shipped Home Page widgets to communicate with
+the parent services and ensure that Single Sign On between them is in place.
+
+For secure deployments, this proxy configuration should be modified to
+specifically lock down the target URLs that Home Page widgets should communicate
+with. A sample proxy policy is included (and commented out) below. Administrators
+should modify this configuration file to disable the standard policy and uncommment
+and modify the locked down policy to suit the specifics of their deployment.
+
+************************************************************************************************ -->
+<config id="proxy-profiles-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="proxy-config.xsd"
+    xmlns:proxy="http://www.ibm.com/xmlns/prod/websphere/featurepack/v6.1/proxy-config">
+<proxy-rules>
+    <proxy:mapping contextpath="/http/www.ibm.com/*" /> 
+    <proxy:mapping contextpath="/https/www.ibm.com/*" />
+    <proxy:mapping contextpath="/http/www-951.ibm.com/*" />
+    <proxy:mapping contextpath="/https/www-951.ibm.com/*" />
+
+	<!-- This is the standard, out of the box Home Page proxy policy that
+	     allows communications with all hosts, passing security tokens. -->
+    <proxy:policy url="*" acf="none" allowAuthRequest="false">
+      <proxy:actions>
+            <proxy:method>GET</proxy:method>
+            <proxy:method>POST</proxy:method>
+            <proxy:method>PUT</proxy:method>
+            <proxy:method>DELETE</proxy:method>
+      </proxy:actions>
+      <proxy:cookies>
+          <proxy:cookie>SESSION_ibmpre_connections</proxy:cookie>
+      </proxy:cookies>
+      <proxy:headers>
+        <proxy:header>User-Agent</proxy:header>
+        <proxy:header>Accept*</proxy:header>
+        <proxy:header>Content*</proxy:header>
+        <proxy:header>Authorization*</proxy:header>
+      </proxy:headers>
+    </proxy:policy>
+    
+    <!-- This is an example of a locked down Home Page proxy policy that 
+         only allows widgets to access the target services they need. When 
+         adding additional widgets to the Home Page this policy should be
+         updated to reflect the targets the widget needs to communicate with.
+     -->
+    <!-- TBD -->
+</proxy-rules>
+</config>

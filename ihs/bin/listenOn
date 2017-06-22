@@ -1,0 +1,89 @@
+#!/usr/bin/perl
+# script that sets up temporary listeners on a server for testing firewall rules
+# script is meant to be used in conjunction with sockcheck, but telnet to port should also work 
+# will need to be run as root or using sudo if privileged ports, i.e., < 1024
+#
+# Author: Thad Hinz
+# Date: 12/14/2012
+#
+
+use IO::Socket;
+use Sys::Hostname;
+use Getopt::Std;
+use strict;
+use warnings;
+
+getopts('t:');
+
+#set default timeout for socket at 60 seconds unless timeout is specified
+my $timeout;
+# must use "our" to declare opt args under strict or they won't work
+our($opt_t);
+if ($opt_t) {
+  $timeout = $opt_t;
+} else {
+  $timeout = 60;
+}
+
+my $numargs = @ARGV;
+
+if ($numargs < 1) { 
+  print "Usage: listenOn [-t <seconds>] <port1,port2,portN..>\n";
+  print "          -t, optional, socket timeout in seconds. 60 seconds if none specified.\n";
+  exit;
+}
+
+# get system hostname and convert to ip address
+my $host = hostname;
+my $ipaddress = inet_ntoa(inet_aton($host));
+
+my @ports = split(/\,/, $ARGV[0]);
+ 
+#print "Starting main program\n";
+my @childs;
+ 
+foreach my $port (@ports) {
+  my $pid = fork();
+  if ($pid) {
+    # parent
+    #print "pid is $pid, parent $$\n";
+    push(@childs, $pid);
+  } elsif ($pid == 0) {
+    # child
+    makeSock($ipaddress,$port,$timeout);
+    exit 0;
+  } else {
+    die "couldnt fork: $!\n";
+  }
+}
+ 
+foreach (@childs) {
+  my $tmp = waitpid($_, 0);
+  #print "done with pid $tmp\n";
+}
+ 
+print "Script complete.  All created sockets should be closed but you may want to verify.\n";
+print "Hint: by running the sockcheck script again ;)\n\n";
+ 
+ 
+sub makeSock {
+  my ($ipaddress,$port,$timeout);
+  $ipaddress  = $_[0];
+  $port = $_[1];
+  $timeout = $_[2];
+  #print "$port :: $ipaddress\n";
+  my $sock = new IO::Socket::INET (
+                                    LocalHost => $ipaddress,
+                                    LocalPort => $port,
+                                    Proto => 'tcp',
+                                    Listen => 15,
+                                    # under AIX, below allows socket to be created on port even if already listening
+                                    #Reuse => 1,
+                                  );
+  die "Could not create socket on $ipaddress:$port :: $!\n" unless $sock;
+  if ($sock) {
+    print "Socket $ipaddress:$port listening for $timeout seconds\n"
+  }
+  sleep $timeout;
+  close($sock);
+}

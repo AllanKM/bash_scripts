@@ -1,0 +1,140 @@
+#!/bin/ksh
+
+#################################################################
+#
+#  This script scynchs bNimble code and conf dirs.  It then calls
+#  The create_bNimble_dirs_std script to read the customers
+#  configuration file and create the necessary directories
+#
+#################################################################
+
+echo "Setting umask"
+umask 002
+
+#Default values
+BNIMBLE_VERSION=""
+CUSTOMER_TAG=""
+CUSTOMER_ENV=""
+PUBCONFIG=""
+USER_ID=""
+LOCAL_DIST=""
+
+#Process command-line options
+until [ -z "$1" ] ; do
+        case $1 in
+                version=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then BNIMBLE_VERSION=$VALUE; fi ;;
+                cust=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTOMER_TAG=$VALUE; fi ;;
+                env=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then CUSTOMER_ENV=$VALUE; fi ;;
+                config=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then PUBCONFIG=$VALUE; fi ;;
+                user_id=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then USER_ID=$VALUE; fi ;;
+                ldist=*)  VALUE=${1#*=}; if [ "$VALUE" != "" ]; then LOCAL_DIST=$VALUE; fi ;;
+                *)      print -u2 -- "#### Unknown argument: $1"
+                        print -u2 -- "#### Usage: $0 [ version=< bNimble version > ] [ cust=< Customer Tag > ]"
+                        print -u2 -- "####           [ env=< Customer Env > ] [ config=< Pub config file > ]"
+                        print -u2 -- "####           [ user_id=< User Id that publishing runs as > ]"
+                        print -u2 -- "####           [ ldist=< Indicates rather this is a local distributor > ]"
+                        exit 1
+                        ;;
+        esac
+        shift
+done
+
+echo "Checking to ensure initial install of bNimble code was performed"
+if [ ! -e /etc/rc.bNimble -o ! -d /opt/IBM/${BNIMBLE_VERSION} ]; then
+  echo "   Initial install of bNimble code not completed, aborting"
+  exit 2
+fi
+
+echo "Setting base dir"
+if [ -e /lfs ]; then
+        echo "   Using /lfs for publishing files"
+        BASEDIR="/lfs"
+elif [ -e /www  ]; then
+        echo "   Using /www for publishing files"
+        BASEDIR="/www"
+else
+  echo "   Local tools directory does not exist, aborting"
+  exit 3
+fi
+
+echo "Determine which standard to follow"
+if [[ -d /fs/${CUSTOMER_TAG} && ${CUSTOMER_ENV} = "" ]]; then
+   GLOBAL_BASE="/fs/${CUSTOMER_TAG}"
+elif [[ -d /fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG} && ${CUSTOMER_ENV} != "" ]]; then
+   GLOBAL_BASE="/fs/projects/${CUSTOMER_ENV}/${CUSTOMER_TAG}"
+else
+   echo "Can not find global master base directory"
+   echo "Aborting bNimble sync"
+   exit 1
+fi
+
+echo "Check to make sure requested config file exist"
+CONFIGFILE=`echo $PUBCONFIG | sed s/[/]/#/g | awk -F"#" '{print $NF}'`
+if [ $LOCAL_DIST ]; then
+  CONFIGFILE=`echo ${CONFIGFILE} | cut -c 3-`
+  SITE=`/lfs/system/tools/configtools/get_plex.sh`
+  if [ `hostname -s | cut -c 1-3` == "ecc" ]; then
+    SITE=ecc
+  fi
+  CONFIGFILE=${SITE}${CONFIGFILE}
+fi
+
+if [[ ! -f ${GLOBAL_BASE}/config/${CONFIGFILE} ]]; then
+   echo "Requested config file does not exist in the global master"
+   echo "Aborting bNimble sync"
+   exit 1
+fi
+
+echo "Sync bNimble code"
+${BASEDIR}/system/tools/configtools/filesync /fs/system/images/publishing/${BNIMBLE_VERSION}/ /opt/IBM/${BNIMBLE_VERSION}/ avc 1 1
+
+echo "Sync customer files"
+if [ ! -d /projects/${CUSTOMER_TAG} ]; then
+  mkdir /projects/${CUSTOMER_TAG}
+fi
+${BASEDIR}/system/tools/configtools/filesync ${GLOBAL_BASE}/config/${CONFIGFILE} /projects/${CUSTOMER_TAG}/config/ "avc --exclude=RCS" 1 0
+
+USE_SSL=`cat ${GLOBAL_BASE}/config/${CONFIGFILE} | grep USE_SSL | awk {'print $NF'}`
+if [[ $USE_SSL == "true" || $USE_SSL == "hybrid" ]]; then
+  KEYSTORE=`cat ${GLOBAL_BASE}/config/${CONFIGFILE} | grep "param.*KEYSTORE" | awk -F "/" {'print $NF'}`
+  echo $KEYSTORE
+  if [[ $KEYSTORE == [a-zA-Z_]*.jks ]]; then 
+    ${BASEDIR}/system/tools/configtools/filesync ${GLOBAL_BASE}/etc/${KEYSTORE} /projects/${CUSTOMER_TAG}/etc/ "avc" 1 0
+  fi
+  TRUSTSTORE=`cat ${GLOBAL_BASE}/config/${CONFIGFILE} | grep "param.*TRUSTSTORE" | awk -F "/" {'print $NF'}`
+  echo $TRUSTSTORE
+  if [[ $TRUSTSTORE == [a-zA-Z_]*.jks && $TRUSTSTORE != $KEYSTORE ]]; then
+    ${BASEDIR}/system/tools/configtools/filesync ${GLOBAL_BASE}/etc/${TRUSTSTORE} /projects/${CUSTOMER_TAG}/etc/ "avc" 1 0
+  fi
+fi
+
+if [[ ! -f /logs/pub_vars_per_node.log ]]; then
+   echo "Creating pub_vars_per_node.log file"
+   echo "CONF /projects/${CUSTOMER_TAG}/config/${CONFIGFILE}" >> /logs/pub_vars_per_node.log
+   echo "CONF_DIR /projects/${CUSTOMER_TAG}/config" >> /logs/pub_vars_per_node.log
+else
+   CONF=`cat /logs/pub_vars_per_node.log | grep "CONF "`
+   if [[ $CONF == "" ]]; then
+      echo "Adding CONF keyword to /logs/pub_vars_per_node.log"
+      echo "CONF /projects/${CUSTOMER_TAG}/config/${CONFIGFILE}" >> /logs/pub_vars_per_node.log
+   else
+      if [[ `echo $CONF | awk {'print $NF'}` != "/projects/${CUSTOMER_TAG}/config/${CONFIGFILE}" ]]; then
+         echo "Updating CONF key word in /logs/pub_vars_per_node.log"
+         sed -e "s%CONF .*%CONF /projects/${CUSTOMER_TAG}/config/${CONFIGFILE}%" /logs/pub_vars_per_node.log > /logs/pub_vars_per_node.log.new && mv /logs/pub_vars_per_node.log.new /logs/pub_vars_per_node.log
+      fi
+   fi
+   CONF_DIR=`cat /logs/pub_vars_per_node.log | grep "CONF_DIR "`
+   if [[ $CONF_DIR == "" ]]; then
+      echo "Adding CONF_DIR keyword to /logs/pub_vars_per_node.log"
+      echo "CONF_DIR /projects/${CUSTOMER_TAG}/config" >> /logs/pub_vars_per_node.log
+   else
+      if [[ `echo $CONF_DIR | awk {'print $NF'}` != "/projects/${CUSTOMER_TAG}/config" ]]; then
+         echo "Updating keyword CONF_DIR to /logs/pub_vars_per_node.log"
+         sed -e "s%CONF_DIR .*%CONF_DIR /projects/${CUSTOMER_TAG}/config%" /logs/pub_vars_per_node.log > /logs/pub_vars_per_node.log.new && mv /logs/pub_vars_per_node.log.new /logs/pub_vars_per_node.log
+      fi
+   fi
+fi
+
+echo "Calling create_bNimble_dirs_std"
+${BASEDIR}/system/tools/bNimble/setup/create_bNimble_dirs_std $LOCAL_DIST $BNIMBLE_VERSION $PUBCONFIG $USER_ID
+

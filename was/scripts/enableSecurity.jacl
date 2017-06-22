@@ -1,0 +1,424 @@
+#*******************************************************************************************************
+# enableSecurity.jacl
+#
+#   Author: James Walton
+#   Initial Date: 02/08/2006
+#*******************************************************************************************************
+
+#*******************************************************************************************************
+# Procedures
+#*******************************************************************************************************
+proc getSecurityAdminMbean {} {
+     global AdminControl
+     if {[catch {$AdminControl queryNames WebSphere:type=SecurityAdmin,*} result]} {
+          puts stdout "\$AdminControl queryNames WebSphere:type=SecurityAdmin,* caught an exception $result\n"
+          return
+     } else {
+          if {$result != {}} {
+               # incase more than one, just get the first one
+               set secMbean [lindex $result 0]
+               return $secMbean
+          } else {
+               puts stdout "Security Mbean was not found\n"
+               return
+          }
+    }
+}
+
+proc generateLTPAKeys {ltpaPasw} {
+     global AdminControl
+     set secMbean [getSecurityAdminMbean]
+     if {$secMbean != {} || $secMbean != "null"} {
+          if {[catch {$AdminControl invoke $secMbean generateKeys $ltpaPasw} result]} {
+               puts stdout "\$AdminControl invoke $secMbean generateKeys $ltpaPasw caught an exception $result\n"
+               return
+          } else {
+               puts stdout "LTPA keys was generated\n"
+          }
+     } else {
+          puts stdout "unable to get securityAdmin Mbean, LTPA key not generated"
+     }
+}
+
+
+proc exportLTPAKey {} {
+     global AdminControl privateKey publicKey sharedKey
+     set secMbean [getSecurityAdminMbean]
+     set dmgr [$AdminControl completeObjectName name=dmgr,type=Server,*]
+     set version [$AdminControl getAttribute $dmgr platformVersion]
+     if {$secMbean != {} || $secMbean != "null"} {
+         if {[catch {$AdminControl invoke $secMbean exportLTPAKeys} result]} {
+              puts stdout "\$AdminControl invoke $secMbean exportLTPAKeys caught an exception $result\n"
+              return
+         } else {
+              if {$result != {}} {
+                   if {$version == "5.1"} {
+                        # Get key values for WAS 5.1
+                        set sharedKey [lindex [lindex $result 1] 1]
+                        set privateKey [lindex [lindex $result 4] 1]
+                        set publicKey [lindex [lindex $result 6] 1]
+                   } elseif {$version == "6.0" || $version == "6.1"} {
+                        # Get key values for WAS 6.*
+                        for {set x 0} {$x<7} {incr x} {
+                              set key [lindex [lindex $result $x] 0]
+                              set value [lindex [lindex $result $x] 1]
+                              if {[string compare $key com.ibm.websphere.ltpa.3DESKey] == 0} {
+                                   set sharedKey $value
+                              } elseif {[string compare $key com.ibm.websphere.ltpa.PrivateKey] == 0} {
+                                   set privateKey $value
+                              } elseif {[string compare $key com.ibm.websphere.ltpa.PublicKey] == 0} {
+                                   set publicKey $value
+                              }
+                        }
+                   } else {
+                        puts stdout "No valid WebSphere version was found during LTPA key export."
+                   }
+                   puts stdout "public, private, and shared keys exported\n"
+              } else {
+                   puts stdout "ExportLTPAKeys return empty string\n"
+              }
+         }
+     }
+}
+
+proc disableLTPAKeyAutoGen {} {
+	global AdminConfig
+	set cellKSG [$AdminConfig getid /KeySetGroup:CellLTPAKeySetGroup/]
+	set result [$AdminConfig modify $cellKSG {{autoGenerate false}}]
+	if {$result != ""} {
+	   puts "### Error disabling LTPA key autogen\n$result"
+	   exit
+	}
+}
+
+proc disableLTPAKeyAutoGenSA {} {
+	global AdminConfig
+	set nodeKSG [$AdminConfig getid /KeySetGroup:NodeLTPAKeySetGroup/]
+	set result [$AdminConfig modify $nodeKSG {{autoGenerate false}}]
+	if {$result != ""} {
+	   puts "### Error disabling LTPA key autogen\n$result"
+	   exit
+	}
+}
+
+proc secureCORBA {} {
+     global AdminConfig
+        set authTables [$AdminConfig list AuthorizationTableExt]
+        foreach table $authTables {
+                set tmp [lindex [lindex [$AdminConfig show $table fileName] 0] 1]
+                if {$tmp == "naming-authz.xml"} { set namingAuthz $table }
+        }
+        set authz [lindex [lindex [$AdminConfig show $namingAuthz authorizations] 0] 1]
+
+        #Secure ITCS104
+        foreach a $authz {
+                set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+                set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+                set aSpecs [lindex [lindex [$AdminConfig show $a specialSubjects] 0] 1]
+                if {[regexp "Delete" $rName] || [regexp "Write" $rName] || [regexp "Create" $rName]} {
+                        foreach ss $aSpecs {
+                                set ssName [lindex [split [lindex [split $ss #] 1] _] 0]
+                                if {[regexp "AllAuthenticatedUsers" $ssName] || [regexp "Everyone" $ssName]} {
+                                        puts "Removing group $ssName from restricted role: $rName"
+                                        set result [$AdminConfig remove $ss]
+                                }
+                        }
+                } elseif {[regexp "Read" $rName]} {
+                        set count [llength $aSpecs]
+                        set i 1
+                        foreach ss $aSpecs {
+                                set ssName [lindex [split [lindex [split $ss #] 1] _] 0]
+                                if {[regexp "AllAuthenticatedUsers" $ssName]} {
+                                        puts "CORBA Naming Group ($ssName): $rName"
+                                } elseif {[expr $i + 1] > $count} {
+                                        #No AllAuth, create one
+                                        puts "Configuring $ssName with role: $rName"
+                                        set result [$AdminConfig create AllAuthenticatedUsersExt $a {}]
+                                }
+                                set i [expr $i + 1]
+                        }
+                }
+        }
+}
+
+proc addAdminGroup {group} {
+     global AdminConfig
+        set authTable [$AdminConfig getid /AuthorizationTableExt:admin-authz.xml/]
+        set authz [lindex [lindex [$AdminConfig show $authTable authorizations] 0] 1]
+        foreach a $authz {
+                set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+                set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+                if {[regexp "administrator" $rName]} {
+                        set args [list "name \"$group\""]
+                        set result [$AdminConfig create GroupExt $a $args]
+                }
+                if {[regexp "adminsecuritymanager" $rName]} {
+                        set args [list "name \"$group\""]
+                        set result [$AdminConfig create GroupExt $a $args]
+                }
+                if {[regexp "iscadmins" $rName]} {
+                        set args [list "name \"$group\""]
+                        set result [$AdminConfig create GroupExt $a $args]
+                }
+        }
+}
+
+proc addAdminUser {user} {
+     global AdminConfig
+        set authTable [$AdminConfig getid /AuthorizationTableExt:admin-authz.xml/]
+        set authz [lindex [lindex [$AdminConfig show $authTable authorizations] 0] 1]
+        foreach a $authz {
+                set aRole [lindex [lindex [$AdminConfig show $a role] 0] 1]
+                set rName [lindex [lindex [$AdminConfig show $aRole roleName] 0] 1]
+                if {[regexp "administrator" $rName]} {
+                        set args [list "name \"$user\""]
+                        set result [$AdminConfig create UserExt $a $args]
+                }
+                if {[regexp "adminsecuritymanager" $rName]} {
+                        set args [list "name \"$user\""]
+                        set result [$AdminConfig create UserExt $a $args]
+                }
+                if {[regexp "iscadmins" $rName]} {
+                        set args [list "name \"$user\""]
+                        set result [$AdminConfig create UserExt $a $args]
+                }
+        }
+}
+
+#*******************************************************************************************************
+# Commandline parameter handling
+#*******************************************************************************************************
+set argerr 0
+set enableWI 0
+set enableUD 0
+set enableED 0
+set standAlone 0
+
+for {set i 0} {$i < $argc} {incr i} {
+  set arg [lindex $argv $i]
+  if {$arg == "-WI"} {
+      set enableWI 1
+  } elseif {$arg == "-UD"} {
+      set enableUD 1
+  } elseif {$arg == "-ED" || $arg == "-BP"} {
+      set enableED 1
+  } elseif {$arg == "-ldappassword"} {
+    if {[incr i] < $argc} {
+      set ldapPassword [lindex $argv $i]
+    } else {
+      set argerr 1
+    }
+  } elseif {$arg == "-bindpassword"} {
+    if {[incr i] < $argc} {
+	  set bindPassword [lindex $argv $i]
+    } else {
+	  set argerr 2
+    }
+  } elseif {$arg == "-ltpapassword"} {
+    if {[incr i] < $argc} {
+      set ltpaPassword [lindex $argv $i]
+    } else {
+      set argerr 3
+    }
+  } elseif {$arg == "-ltpatimeout"} {
+    if {[incr i] < $argc} {
+      set ltpaTimeout [lindex $argv $i]
+    } else {
+      set argerr 4
+    }
+  } elseif {$arg == "-standalone"} {
+  	  set standAlone 1
+  } else {
+    set argerr 5
+  }
+}
+
+if {![info exists ldapPassword] && $enableWI == 0 && $enableUD == 0 && $enableED == 0} {
+  set argerr 6
+}
+if {![info exists ldapPassword] && $enableWI == 1 && $enableUD == 1 && $enableED == 1} {
+  set argerr 7
+}
+if {![info exists ltpaPassword] || ![info exists ltpaTimeout]} {
+  set argerr 8
+}
+if {![info exists bindPassword] && $enableWI == 1} {
+  set argerr 9
+}
+set enableCount [expr $enableWI + $enableUD + $enableED]
+if {$enableCount != 1} { set argerr 10 }
+
+if {$argerr} {
+  puts "### Invalid command line invocation (reason code $argerr). Usage:"
+  puts "Enable Global Security with LDAP User Registry as Web Identity"
+  puts "   wsadmin -f enableSecurity.jacl -WI -ldappassword <ldapPassword> -bindpassword <bindPassword> -ltpapassword <ltpapassword> -ltpatimeout <ltpaTimeout>"
+  puts "\nEnable Global Security with LDAP User Registry as Unified Directory"
+  puts "   wsadmin -f enableSecurity.jacl -UD -ldappassword <ldapPassword> -ltpapassword <ltpapassword> -ltpatimeout <ltpaTimeout>"
+  puts "\nEnable Global Security with LDAP User Registry as Enterprise Directory (BluePages)"
+  puts "   wsadmin -f enableSecurity.jacl -ED -ldappassword <ldapPassword> -ltpapassword <ltpapassword> -ltpatimeout <ltpaTimeout>"
+  puts "  -- OR --"
+  puts "   wsadmin -f enableSecurity.jacl -BP -ldappassword <ldapPassword> -ltpapassword <ltpapassword> -ltpatimeout <ltpaTimeout>"
+  puts "\nFor LTPA password, use the SSL keystore password (not required but easier), LTPA timeout is in seconds."
+  puts "The EI user for UD, WI, and ED are pre-filled by the script currently."
+  exit
+}
+
+#*******************************************************************************************************
+# Decipher and Perform Requested Action
+#*******************************************************************************************************
+if {$standAlone} {
+	set dmgr [$AdminControl completeObjectName name=server1,type=Server,*]
+} else {
+	set dmgr [$AdminControl completeObjectName name=dmgr,type=Server,*]
+}
+set version [$AdminControl getAttribute $dmgr platformVersion]
+
+# Grab LDAP object, set common Registry values
+set ldap [$AdminConfig list LDAPUserRegistry]
+set result [$AdminConfig modify $ldap {{reuseConnection false}{sslEnabled true}{type CUSTOM}}]
+if {$result != ""} {
+  puts "### Error updating common LDAP Registry values\n$result"
+  exit
+}
+
+if {$version != "6.1"} {
+	# Generating LTPA Keys during security setup is deprecated in 6.1
+	# Grab LTPA object, set common LTPA values
+	set LTPA [$AdminConfig list LTPA]
+	set attrib {}
+	lappend attrib [list password $ltpaPassword]
+	lappend attrib [list timeout $ltpaTimeout]
+	set result [$AdminConfig modify $LTPA $attrib]
+	if {$result != ""} {
+	  puts "### Error updating common LTPA values\n$result"
+	  exit
+	}
+	puts stdout "Generating LTPA Keys"
+	generateLTPAKeys $ltpaPassword
+	exportLTPAKey
+	set result [$AdminConfig modify $LTPA [list [list password $ltpaPassword] [list private [list [list byteArray $privateKey]]] [list public [list [list byteArray $publicKey]]] [list shared [list [list byteArray $sharedKey]]]]]
+	if {$result != ""} {
+	  puts "### Error modifying LTPA with generated keys\n$result"
+	  exit
+	}
+} else {
+	# Turn off autoGen of the LTPA keys
+	if {$standAlone} {
+		disableLTPAKeyAutoGenSA
+	} else {
+		disableLTPAKeyAutoGen
+	}
+}
+
+if {$enableWI} {
+  set dmEnv [string range $env(local.node) 2 4]
+  if {$dmEnv == "prd" || $dmEnv == "spp"} {
+	  set wiUser "eiwasadmin"
+  } else {
+	  set wiUser "eiapplications"
+  }
+  if {$version != "6.1"} {
+    #Old non-group setup
+	#set result [$AdminConfig modify $ldap "{baseDN l=world}{bindDN IBMuniqueIdentifier=060000GMV4,cn=people,c=US,l=world}{bindPassword $ldapPassword}{serverId eiauth@events.ihost.com}{serverPassword $ldapPassword}{realm icrldap.boulder.ibm.com:636}"]
+	#New setup to allow groups
+	set result [$AdminConfig modify $ldap "{baseDN l=world}{bindDN uid=$wiUser,cn=applications}{bindPassword $bindPassword}{serverId eiauth@events.ihost.com}{serverPassword $ldapPassword}{realm wildap.ibm.com:636}"]
+  } else {
+	#Old non-group setup
+    #set result [$AdminConfig modify $ldap "{baseDN l=world}{bindDN IBMuniqueIdentifier=060000GMV4,cn=people,c=US,l=world}{bindPassword $ldapPassword}{primaryAdminId eiauth@events.ihost.com}{useRegistryServerId false}{realm icrldap.boulder.ibm.com:636}"]
+	#New setup to allow groups
+	set result [$AdminConfig modify $ldap "{baseDN l=world}{bindDN uid=$wiUser,cn=applications}{bindPassword $bindPassword}{primaryAdminId eiauth@events.ihost.com}{useRegistryServerId false}{realm wildap.ibm.com:636}"]
+  }
+  if {$result != ""} {
+    puts "### Error updating WI LDAP values\n$result"
+    exit
+  }
+  set ldaphosts [lindex [$AdminConfig showAttribute $ldap hosts] 0]
+  set result [$AdminConfig modify $ldaphosts "{host wildap.ibm.com}{port 636}"]
+  if {$result != ""} {
+    puts "### Error updating WI LDAP host and port\n$result"
+    exit
+  }
+  set ldapfilter [$AdminConfig showAttribute $ldap searchFilter]
+  #Old non-group filters
+  #set result [$AdminConfig modify $ldapfilter "{groupFilter (&(cn=%v1)(objectclass=irperson))}{groupIdMap irperson:cn}{groupMemberIdMap groupOfNames:member;groupOfUniqueNames:uniqueMember}{userFilter (&(uid=%v1)(objectclass=irperson))}{userIdMap irperson:uid}"]
+  #New accessrol filters
+  set result [$AdminConfig modify $ldapfilter "{groupFilter (&(cn=%v1)(objectclass=accessrole))}{groupIdMap accessrole:cn}{groupMemberIdMap accessRole:member}{userFilter (&(uid=%v1)(objectclass=irperson))}{userIdMap irperson:uid}"]
+  if {$result != ""} {
+    puts "### Error updating WI LDAP filter values\n$result"
+    exit
+  }
+  #Setup Admin Roles for users/groups - ITCS104 required
+  #configWIAdmins
+  addAdminGroup "eiapps"
+} elseif {$enableUD} {
+  if {$version != "6.1"} {
+    set result [$AdminConfig modify $ldap "{baseDN o=ibm.com}{serverId uid=060000GMV4WI,ou=persons,o=ibm.com}{serverPassword $ldapPassword}{realm g03edldcl201.ahe.boulder.ibm.com:636}"]
+  } else {
+    set result [$AdminConfig modify $ldap "{baseDN o=ibm.com}{primaryAdminId eiauth@events.ihost.com}{useRegistryServerId false}{realm g03edldcl201.ahe.boulder.ibm.com:636}"]
+  }
+  if {$result != ""} {
+    puts "### Error updating UD LDAP values\n$result"
+    exit
+  }
+  set ldaphosts [lindex [$AdminConfig showAttribute $ldap hosts] 0]
+  set result [$AdminConfig modify $ldaphosts "{host g03edldcl201.ahe.boulder.ibm.com}{port 636}"]
+  if {$result != ""} {
+    puts "### Error updating UD LDAP host and port\n$result"
+    exit
+  }
+  set ldapfilter [$AdminConfig showAttribute $ldap searchFilter]
+  set result [$AdminConfig modify $ldapfilter "{groupFilter (&(cn=%v)(|(objectclass=groupOfUniqueNames)(objectclass=UDgroupOfUniqueNames)))}{groupIdMap *:cn}{groupMemberIdMap UDgroupOfUniqueNames:uniqueMember}{userFilter (&(authenid=%v)(objectclass=udPerson))}{userIdMap *:authenid}"]
+  if {$result != ""} {
+    puts "### Error updating UD LDAP filter values\n$result"
+    exit
+  }
+  #Setup Admin Roles for users/groups - ITCS104 required
+  addAdminGroup "HPODS Applications"
+} elseif {$enableED} {
+if {$version != "6.1"} {
+  set result [$AdminConfig modify $ldap "{baseDN o=ibm.com}{serverId uid=C-794B897,c=us,ou=bluepages,o=ibm.com}{serverPassword $ldapPassword}{realm bluepages.ibm.com:636}"]
+} else {
+  set result [$AdminConfig modify $ldap "{baseDN o=ibm.com}{primaryAdminId eibpauth@us.ibm.com}{useRegistryServerId false}{realm bluepagesibm.com:636}"]
+}
+if {$result != ""} {
+  puts "### Error updating ED LDAP values\n$result"
+  exit
+}
+set ldaphosts [lindex [$AdminConfig showAttribute $ldap hosts] 0]
+set result [$AdminConfig modify $ldaphosts "{host bluepages.ibm.com}{port 636}"]
+if {$result != ""} {
+  puts "### Error updating ED LDAP host and port\n$result"
+  exit
+}
+set ldapfilter [$AdminConfig showAttribute $ldap searchFilter]
+set result [$AdminConfig modify $ldapfilter "{groupFilter (&(cn=%v)(objectclass=groupOfUniqueNames))}{groupIdMap *:cn}{groupMemberIdMap groupOfUniqueNames:uniqueMember}{userFilter (&(mail=%v)(objectclass=ePerson))}{userIdMap *:uid}"]
+if {$result != ""} {
+  puts "### Error updating ED LDAP filter values\n$result"
+  exit
+}
+#Setup Admin Roles for users/groups - ITCS104 required
+addAdminGroup "ei_ed_wasadmins"
+}
+
+#Setup ITCS104 Required CORBA Naming for 5.1 and 6.0 - V6.1 doesn't use All Authenticated
+if {$version != "6.1"} { secureCORBA }
+
+
+#Now Enabled Global Security with the newly config'ed LTPA and Registry
+set security [$AdminConfig list Security]
+set sec_attrib {}
+if {$version != "6.1"} { lappend sec_attrib [list activeAuthMechanism $LTPA] }
+lappend sec_attrib [list activeUserRegistry $ldap]
+lappend sec_attrib [list enforceJava2Security false]
+if {$version == "6.1"} { lappend sec_attrib [list appEnabled true] }
+lappend sec_attrib [list enabled true]
+set result [$AdminConfig modify $security $sec_attrib]
+if {$result != ""} {
+  puts "### Error updating common Security attributes\n$result"
+  exit
+}
+puts "Success! Saving configuration..."
+$AdminConfig save
+
+puts "You must synchronize your changes across the cell to update any federated nodes."
+puts "!! More importantly the dmgr and any federated nodes (nodeagents/appservers) must be restarted. !!"

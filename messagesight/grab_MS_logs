@@ -1,0 +1,76 @@
+#!/bin/bash 
+
+LOG_DIR=/logdrop/events/messagesight/
+#LOG_DIR=/fs/scratch/adrian/ms_logs/
+WORKING_DIR=$LOG_DIR/working
+
+[[ -d $LOG_DIR ]] || mkdir $LOG_DIR
+[[ -d $WORKING_DIR ]] || mkdir $WORKING_DIR
+
+for node in $(eilssys -q -e role==MESSAGESIGHT systemtype==APPLIANCE.MESSAGESIGHT hostenv==PRD nodestatus==LIVE; eilssys -q -e role==MESSAGESIGHT systemtype==APPLIANCE.MESSAGESIGHT hostenv==PRE nodestatus==LIVE; eilssys -q -e role==MESSAGESIGHT.SL hostenv==PRD nodestatus==LIVE)
+do         
+  systime=$(date +"%Y:%m:%d:%H:%M")
+  
+  hour=$(echo $systime|cut -d: -f4)
+  trimmed_hour=$(echo $hour|sed "s/^0//")
+  min=$(echo $systime|cut -d: -f5|sed "s/^0//")
+  day=$(echo $systime|cut -d: -f3)
+  mon=$(echo $systime|cut -d: -f2)
+  year=$(echo $systime|cut -d: -f1)
+
+  echo -n "Grabbing logs from $node ... "
+  /usr/bin/ssh -l logs $node show log imaserver-connection.log > $WORKING_DIR/"$node"_imaserver-connection.log
+
+  if [[ $? -ne 0 ]] ; then
+    echo "Error connecting to $node"
+    continue
+  fi
+
+  /usr/bin/ssh -l logs $node show log imaserver-admin.log > $WORKING_DIR/"$node"_imaserver-admin.log
+
+  if [[ $min -lt 10 ]] ; then
+    echo -n "getting hourly ... "
+
+    PREV_HOUR_TIMESTAMP=$(TZ=aaa1 date +"%Y:%m:%d:%H")
+
+    PREV_HOUR=$(echo $PREV_HOUR_TIMESTAMP|cut -d: -f4)
+    PREV_DAY=$(echo $PREV_HOUR_TIMESTAMP|cut -d: -f3)
+    PREV_MON=$(echo $PREV_HOUR_TIMESTAMP|cut -d: -f2)
+    PREV_YEAR=$(echo $PREV_HOUR_TIMESTAMP|cut -d: -f1)
+    PREV_MIN=5
+  else
+    [[ -d $LOG_DIR/$year ]] || mkdir $LOG_DIR/$year
+    [[ -d $LOG_DIR/$year/$mon ]] || mkdir $LOG_DIR/$year/$mon
+    [[ -d $LOG_DIR/$year/$mon/$day ]] || mkdir $LOG_DIR/$year/$mon/$day
+
+    PREV_HOUR=$hour
+    PREV_DAY=$day
+    PREV_MON=$mon
+    PREV_YEAR=$year
+    PREV_MIN=$(echo $(( min - 10 )))
+
+    if [[ $PREV_MIN -lt 10 ]] ; then
+      PREV_MIN=0
+    else
+      PREV_MIN=$(echo $PREV_MIN | cut -c1)
+    fi
+  fi
+
+  ## Get logs for previous ten minutes
+  log_stamp="$PREV_YEAR-$PREV_MON-$PREV_DAY"T$PREV_HOUR:$PREV_MIN
+  log_stamp_alt=$(echo $log_stamp|cut -d: -f1|tr "-" "_")
+
+  grep ^$log_stamp $WORKING_DIR/"$node"_imaserver-connection.log >> $LOG_DIR/$PREV_YEAR/$PREV_MON/$PREV_DAY/"$node"_imaserver-connection_"$log_stamp_alt".log
+  grep ^$log_stamp $WORKING_DIR/"$node"_imaserver-admin.log | grep -v CWLNA6004 >> $LOG_DIR/$PREV_YEAR/$PREV_MON/$PREV_DAY/"$node"_imaserver-admin"$log_stamp_alt".log
+
+  echo "done"
+done
+
+find $LOG_DIR/$PREV_YEAR/$PREV_MON/$PREV_DAY -type f -exec chmod -R 644 {} \;
+find $LOG_DIR/$PREV_YEAR/$PREV_MON/$PREV_DAY -type d -exec chmod -R 755 {} \;
+
+rm $WORKING_DIR/*
+
+find $LOG_DIR -mtime +180 -name "*imaserver*" -exec rm {} \;
+find $LOG_DIR -type d -depth -exec rmdir {} \; 2> /dev/null
+find $LOG_DIR -mtime +1 -name "*imaserver*.log" -exec gzip {} \;

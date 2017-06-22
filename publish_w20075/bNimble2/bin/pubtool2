@@ -1,0 +1,101 @@
+#!/usr/bin/ksh
+
+#-------------------------------------------------------
+# pubtool2
+# description:  Shell script wrapper to determine OS and 
+#               platform to call the correct binary
+# todds@us.ibm.com - Wed Jul 26 13:13:25 CUT 2006
+#-------------------------------------------------------
+
+#
+# Set defaults
+#
+
+VERBOSE=0
+LOCALDISK="true"
+LOCALDISK_BASE="/lfs/system/tools/publish/bNimble2"
+SHAREDFS_BASE="/fs/system/tools/publish/bNimble2"
+OS=`uname`
+
+#
+# Define functions
+#
+
+command_syntax ()
+{
+	echo ""
+	echo "USAGE: "
+	echo " pubtool2 [[-v] [-s]| -u] {pubtool2 command line arguements}"
+	echo ""
+	echo "    verbose:             -v"
+	echo "    shared disk:         -s"
+	echo "    usage:               -u"
+	echo ""
+	exit 2
+}
+
+#
+# Command line options
+#
+
+while getopts :vsh name
+do
+	case $name in
+		v)      shift $(($OPTIND -1))
+			VERBOSE=1 ;;
+		s)      shift $(($OPTIND -1))
+			LOCALDISK="false" ;;
+		h)	shift $(($OPTIND -1))
+			command_syntax ;;
+	esac
+done
+
+case "$LOCALDISK" in
+	true)  
+		COMMAND_BASE=$LOCALDISK_BASE ;;
+	false)
+		COMMAND_BASE=$SHAREDFS_BASE ;;
+esac
+
+if [[ $VERBOSE = 1 ]] ; then
+	if [[ $LOCALDISK = "true" ]] ; then
+		echo "Using default local disk"
+	else
+		echo "Using shared disk"
+	fi
+fi
+
+case "$OS" in
+	AIX)
+		if [[ $VERBOSE = 1 ]] ; then
+			echo "OS is $OS"
+			echo "${COMMAND_BASE}/bin/pubtool2.aix $*" 
+		fi
+		${COMMAND_BASE}/bin/pubtool2.aix $* ;;
+
+	Linux)
+		ARCH=`uname -m`
+		case "$ARCH" in
+			ppc64)
+				if [[ $VERBOSE = 1 ]] ; then
+					echo "OS is $OS"
+					echo "Using architecture $ARCH"
+                        		echo "${COMMAND_BASE}/bin/pubtool2.linuxppc $*"
+                		fi
+                		${COMMAND_BASE}/bin/pubtool2.linuxppc $* ;;
+			i686)
+				if [[ $VERBOSE = 1 ]] ; then
+					echo "OS is $OS"
+					echo "Using architecture $ARCH"
+                        		echo "${COMMAND_BASE}/bin/pubtool2.linux $*"
+                		fi
+                		${COMMAND_BASE}/bin/pubtool2.linux $* ;;
+			*)
+				echo "Unknown architecture: $ARCH"
+				exit 3 ;;
+		esac
+		;;
+	*)
+		echo "Unknown OS: $OS" 
+		exit 3 ;;
+esac 

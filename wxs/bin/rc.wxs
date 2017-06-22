@@ -1,0 +1,220 @@
+#!/bin/bash
+# Start/stop/restart WXS standalone processes
+# Usage: rc.wxs <start|stop|restart> serverName|all <version>
+#        rc.wxs <start|stop|restart> help
+#   serverName must contain the keyword grid or catalog
+#   version 86 is required for eXtremeScale v8.6, the default is v7.1 if version is not specified
+
+#--- Function definitions ---#
+print_usage () {
+	echo "Usage: rc.wxs <start|stop|restart> serverName|all <version>"
+	echo "       rc.wxs help"; echo
+	echo "Server name should omit host name (i.e. v10001_wxs_catalog --> wxs_catalog"
+}
+
+startWXServer () {
+	echo
+	echo "------------------------------------------------------------------------"
+	echo " Starting WXS $SRVTYPE process: $SRVNAME"
+	echo " ($USER) $startCmd $SRVNAME $PROPOPT $GRIDOPTS $JVMARGS"
+	echo "------------------------------------------------------------------------"
+	su - $USER -c "cd ${WXSDIR}; ${WXSDIR}/ObjectGrid/bin/$startCmd $SRVNAME $PROPOPT $GRIDOPTS $JVMARGS"
+	/etc/rc.itm start yn
+}
+
+stopWXServer () {
+	/etc/rc.itm stop yn
+	echo
+	echo "------------------------------------------------------------------------"
+	echo " Stopping WXS $SRVTYPE process: $SRVNAME"
+	echo " ($USER) $stopCmd $SRVNAME $CSEOPT"
+	echo "------------------------------------------------------------------------"
+	su - $USER -c "${WXSDIR}/ObjectGrid/bin/$stopCmd $SRVNAME $CSEOPT"
+	#--- Verify process stopped ---#
+	#--- the second SRVNAME grep pattern is to avoid matching any stacked host_server_[123] names when looking for hostname_server
+	i=0 
+	while ps -ef |grep WebSphere |grep $SRVNAME |grep -v "${SRVNAME}_" |grep -v grep 1>/dev/null; do
+		echo "WXS server $SRVNAME still running"
+		sleep 5
+		i=$((i+1))
+		if [ $i -ge 15 ]; then
+			echo "WXS server $SRVNAME stop is hung, killing the process."
+			ps -ef |grep WebSphere |grep $SRVNAME |grep -v "${SRVNAME}_" |grep -v grep |awk '{print $2}' |xargs kill -9
+		fi
+	done
+	echo "Full stop of server $SRVNAME verified."
+}
+
+populateStopList () {
+	GRIDLIST=`cd $PROPDIR; /usr/bin/ls *_grid*.properties |awk '{split($0,f,"."); print f[1]}'`
+	CATLIST=`cd $PROPDIR; /usr/bin/ls *_catalog*.properties |awk '{split($0,f,"."); print f[1]}'`
+	#Append catalog list to the end, so they are stopped (or restarted) last
+	SRVLIST="$GRIDLIST $CATLIST"
+}
+
+populateStartList () {
+	GRIDLIST=`cd $PROPDIR; /usr/bin/ls *_grid*.properties |awk '{split($0,f,"."); print f[1]}'`
+	CATLIST=`cd $PROPDIR; /usr/bin/ls *_catalog*.properties |awk '{split($0,f,"."); print f[1]}'`
+	#Insert catalog list to the beginning, so they are started first
+	SRVLIST="$CATLIST $GRIDLIST"
+}
+
+#capture arguments
+if [ -z "$1" ] || [ "$1" == "help" ]; then
+    print_usage
+    exit 1
+fi
+ACTION=$1
+OPTNAME=$2
+FULLVERSION=${3:-7100}
+
+#--- Global variables and defaults ---#
+USER=webinst
+WXSTOOLS=/lfs/system/tools/wxs
+
+VERSION=`echo $FULLVERSION | cut -c1-2`
+
+# If version 7.1 was specified explicitly or defaulted and was not found attempt
+# to be nice and look for a version 8.6 installation.
+if [ $VERSION == '71' ] && [ ! -e /usr/WebSphere/eXtremeScale71 ]; then
+   echo "Version 7.1 was specified but is not installed. Trying version 8.6."
+   if [ -e /usr/WebSphere86/eXtremeScale ]; then
+       echo "Version 8.6 was found will attempt action using v8.6"
+       VERSION="86"
+   fi
+fi
+
+if [ "$VERSION" == "86" ]; then
+    WXSDIR=/usr/WebSphere86/eXtremeScale
+    startCmd="startXsServer.sh"
+    stopCmd="stopXsServer.sh"
+elif [ "$VERSION" == "71" ]; then
+       WXSDIR=/usr/WebSphere/eXtremeScale71
+       startCmd="startOgServer.sh"
+       stopCmd="stopOgServer.sh"
+else
+    echo "Invalid version was specified: $FULLVERSION"
+    exit 1
+fi
+
+PROPDIR=/projects/wxs/properties
+GRIDDIR=/projects/wxs/grids
+HOST=`hostname -s`
+#Default catalog heap size
+HEAP_MIN="512M"
+HEAP_MAX="1024M"
+
+if [ "$OPTNAME" == "all" ]; then
+	case $ACTION in
+		start) populateStartList ;;
+		stop|restart) populateStopList ;;
+	esac
+	echo "Will execute $ACTION on the following servers:"
+	for srv in $SRVLIST; do
+		echo "     ${HOST}_${srv}"
+	done
+	echo
+else
+	SRVLIST=$OPTNAME
+fi
+
+#--- Iterate through the list of servers ---#
+for NAME in $SRVLIST; do
+	case $NAME in
+		*grid*) SRVTYPE="grid";;
+		*catalog*) SRVTYPE="catalog";;
+	esac
+	
+	#--- Setup server names, properties, and parameters ---#
+	SRVNAME="${HOST}_${NAME}"
+	PROPFILE="${PROPDIR}/${NAME}.properties"
+	if [ ! -f $PROPFILE ]; then
+		echo "ERROR: Server properties file not found. ($PROPFILE)"
+		exit 1
+	fi
+	PROPOPT="-serverProps $PROPFILE"
+	
+	CONFFILE="${PROPDIR}/${NAME}.conf"
+	if [ ! -f $CONFFILE ]; then
+		if [[ $SRVTYPE == "grid" ]]; then
+			HEAP_MIN="512M"
+			HEAP_MAX="1500M"
+		fi
+		echo "     WARN: No JVM config file found. ($CONFFILE) Using JVM defaults [${HEAP_MIN}/${HEAP_MAX}]."
+	else
+	    # JVM config file is formatted like a bunch of bash variables, "execute" to load them
+		. $CONFFILE
+	fi
+	
+	if [[ $SRVTYPE == "grid" ]]; then	
+		#Get catalog service endpoints value
+		cseDef=`grep '^catalogServiceEndPoints=' $PROPFILE`
+		CSEOPT="-catalogServiceEndPoints ${cseDef#*=}"
+		custTag=${NAME%_*}
+		#Get grid XML files
+		gridXML="${GRIDDIR}/${custTag}Grid.xml"
+		if [ ! -f $gridXML ]; then
+			echo "ERROR: Grid XML file not found. ($gridXML)"
+			exit 1
+		fi
+		deployXML="${GRIDDIR}/${custTag}Deployment.xml"
+		if [ ! -f $deployXML ]; then
+			echo "ERROR: Deployment XML file not found. ($deployXML)"
+			exit 1
+		fi
+		GRIDOPTS="-objectGridFile $gridXML -deploymentPolicyFile $deployXML"
+	elif [[ $SRVTYPE == "catalog" ]]; then
+		#Build local catalog service endpoint from listenerPort
+		lportLine=`grep '^listenerPort=' $PROPFILE`
+		lport=${lportLine#*=}
+		CSEOPT="-catalogServiceEndPoints ${HOST}:${lport}"
+	else
+		echo "### rc.wxs only functions on grid or catalog stand-alone server types ###"
+		echo "### Please define the server name as wxs_catalog or <custtag>_grid   ###"
+		exit 1
+	fi
+	
+    # If APPDYNAMICS is enabled for this instance then create the required JVM agent and node name arguments
+    #
+    if [ -n "$APPDYNAMICS" ] && [ "$APPDYNAMICS" == "ENABLED" ]; then
+        APPDYN_AGENT=" -javaagent:/opt/appdynamics/AppServerAgent-ibm/javaagent.jar "
+        APPDYN_JVMARGS=" ${APPD_DIR} ${APPD_CTRL_HOST} ${APPD_CTRL_PORT} ${APPD_TIER} ${APPD_UNIQUE} ${APPD_NODENAME} ${APPD_APPNAME} ${APPD_ACCT} ${APPD_ACCTKEY} "
+        if [[ -f "/opt/appdynamics/AppServerAgent-ibm/javaagent.jar" ]]; then
+            APPDYN_PARAMS="${APPDYN_AGENT}${APPDYN_JVMARGS}"
+            echo "     INFO: Enabling APPDYNAMICS Agent parms=${APPDYN_PARAMS}"
+        else
+            echo "     WARN: APPDYNAMICS is enabled but installation is not found. APPDYNAMICS will not be activated."
+        fi
+    fi
+	
+    #
+    # If GENERICJVMARGS is set then pass these on to java
+    #
+    if [ -n "$GENERICJVMARGS" ]; then
+         echo "     GENERICJVMARGS: $GENERICJVMARGS"
+         JVM_CONFPARAMS=""
+         JVM_CONFPARAMS="${JVM_CONFPARAMS}${GENERICJVMARGS}"
+    fi
+	
+	#Set JVM Arguments, particularly heap sizing
+    #Apply RMI vulnerability workaround (CVE-2013-1537)
+    JVMARGS="-jvmArgs -Xms${HEAP_MIN} -Xmx${HEAP_MAX} -Djava.rmi.server.useCodebaseOnly=true ${JVM_PARAMS} ${JVM_CONFPARAMS} ${APPDYN_PARAMS}"
+	
+	echo "------------------------------------------------------------------------"
+	echo " Commencing $ACTION of $SRVTYPE server $SRVNAME in 5 seconds..."
+	echo "------------------------------------------------------------------------"
+	sleep 5
+	
+	case $ACTION in
+		start) startWXServer ;;
+		stop)  stopWXServer ;;
+		restart)	stopWXServer
+					sleep 5
+					startWXServer ;;
+		*) echo "Unrecognized action. Exiting..."
+		   print_usage
+		   exit 1 ;;
+	esac
+	echo
+done
+echo "Completed $ACTION of $OPTNAME"

@@ -1,0 +1,722 @@
+#!/usr/local/bin/perl
+#======================================================================
+# rc.was        This perl script takes care of administration of the
+#               EI websphere environment.  Can start/stop/restart an
+#               application server, individual application, or
+#               everything in an entire cell.
+#
+
+use Getopt::Long;
+use Sys::Hostname;
+use Expect;
+
+
+
+my $DEBUG=0;
+my $CONFIG_FILE='/lfs/system/tools/was/conf/rc.was.conf';
+my $VE_MODE_DIR='/lfs/system/tools/was/conf/';
+my $VE_MODE_PY='/lfs/system/tools/was/lib/operationalmode.py';
+my $NOPROMPT=0;
+my @STRINGS;
+my ($ACTION, $WASDIR, $WASROOT, $PROFILE, $VERSION, $ACTONALL, $FARM)=undef;
+
+sub usage ()
+{
+print "Usage:  rc.was [--noprompt|-n] [--wasdir | -d] [--version | -v] stop|start|restart|status [string]\n\n";
+
+print "        Script discovers the various websphere environments and applications on\n";
+print "        the server, prompts which ones to act upon or uses past answers to\n";
+print "        decide what should be done.\n\n";
+
+print "        --noprompt - Don't ask what servers should be acted upon.  \n";
+print "        --wasdir   - WebSphere Directory to use.  Specify full path to \"bin\" subdirectory.\n";
+print "                     Example:  --wasdir /usr/WebSphere51/AppServer/bin\n\n";
+print "        --version  - WebSphere version to use.  Relies on default EI directory structures.\n";
+print "                     Example:  --version 61\n\n";
+
+print "        [string] - Grep for \"string\" in the list of applications and perform the\n";
+print "                   specified action on anything matching.  Multiple strings can be specified\n";
+print "                   on the command line separated by a space.\n";
+print "                 - Or if \"all\" is specified, then the action will be performed on all \n";
+print "                   application servers defined on the box including nodeagent and m2m instances\n\n"
+
+}
+
+# Look at arguments passed to the script to determine what we should be doing
+while (my $arg = shift @ARGV) {
+  debug("Evaluating argument: $arg\n");
+  if ( $arg =~ /(noprompt|-n)/ ) {
+    $NOPROMPT=1;
+  } elsif ( $arg =~ /(wasdir|-d)/ ) {
+    $WASDIR=shift @ARGV;
+  	if ( $WASDIR !~ /bin/ ) {
+    	warn "Specified directory, $WASDIR , did not include full path to \"bin\" subdirectory\n";
+  		&usage();
+  		exit 1;
+  	}
+  } elsif ( $arg =~ /(version|-v)/ ) {
+    $VERSION=shift @ARGV;
+  	if ( -d "/usr/WebSphere$VERSION/AppServer/bin" ) {
+    	$WASDIR="/usr/WebSphere$VERSION/AppServer/bin"
+  	} else {
+  		warn "Could not find WebSphere directory for specified version \"$VERSION\"\n";
+  		&usage();
+  		exit 1;
+  	}
+  } elsif ($arg =~ /(stop|start|restart|status)/ ) {
+    $ACTION=$arg;
+  } elsif ($ACTION) {
+    # If action has been specified then next arg is "string"
+    push @STRINGS, $arg, ; 
+  }
+}
+
+unless ( $ACTION ) {
+  usage();
+  die "\nNo action specified ... exiting\n";
+}
+
+if ( grep /^all$/, @STRINGS ) {
+	print "Enabling Tivoli monitoring starts and stops as we are acting on all WAS application servers\n";
+	$ACTONALL=true;
+}
+
+unless ($WASDIR)  {
+	# Where is WebSphere installed?
+	my @WASDIRS = getWebSphereProfiles() or 
+  		die "Unable to determine where WebSphere is installed on this server\n";
+	if ( scalar(@WASDIRS) == 1)  {
+		#Only one websphere directory on this box
+		$WASDIR= @WASDIRS[0];	
+		debug("One directory found: $WASDIR");
+	} else {
+		print "WebSphere Environment(s) and profiles:\n";
+		my $dir;
+		my $num=1;
+		foreach $dir (@WASDIRS) {
+			print "\t[$num]\t$dir\n";
+			$num++;
+		}
+		print "\nEnter number for the WebSphere environment you want to use: ";
+		my $response = <STDIN>;
+		chomp $response;
+		if ( ($response =~ /^\d+$/)  and ( $response < $num)) {
+			$WASDIR=@WASDIRS[$response-1];
+		} else {
+			die "[$response] is not associated with a WebSphere directory .. exiting\n";
+		}	
+	}
+}
+print "\n\nSetting WebSphere Environment to:\n\t  $WASDIR\n\n";
+
+# Remove /bin from wasdir, set profile name
+$WASROOT = substr($WASDIR,0,-4);
+my ($WAS_VER) = $WASROOT =~ /WebSphere(.*?)\//;
+my @WASARGS = split /\//, $WASROOT;
+$PROFILE = pop(@WASARGS);
+my $host = hostname;
+if ( ($PROFILE !~ /^$host/) and ($PROFILE !~ /Manager$/) ) {
+  # Catch for WAS 5.1 -- old, but why not
+  $PROFILE=$host;
+}
+
+my @ACT_ON_THESE;
+if ( ($WASDIR =~ /Manager/) or (grep /dmgr/, @STRINGS) ) {
+  @ACT_ON_THESE = ('dmgr');
+} elsif ( -d "/usr/WebSphere$WAS_VER/portalfs" ) {
+	print "Identified this is a Portal Farm node, setting appserver to WebSphere_Portal\n\n";
+	$FARM=1;
+	@ACT_ON_THESE = ('WebSphere_Portal');
+} elsif ( grep /\w/, @STRINGS ) {
+  if ( (grep /nodeagent/, @STRINGS ) and ( scalar(@STRINGS) == 1 )) {
+    @ACT_ON_THESE=('nodeagent');
+  } else {
+    if ( grep !/^all$/, @STRINGS ) {
+      print "Looking for appservers with\n";
+      foreach my $string (@STRINGS) {
+        print "\t$string\n";
+      }
+      print "in the name....\n";
+    } else {
+      print "Obtaining a list of all the application servers\n";
+    }
+    @ACT_ON_THESE = getMatch($WASROOT, $PROFILE, $ACTION, @STRINGS) or
+      die "No matching application servers were found\n";;
+  }
+} elsif ($NOPROMPT) {
+  print "Reading in past list of what to $ACTION on this node....\n";
+  @ACT_ON_THESE = getPastResponse($CONFIG_FILE) or 
+    do {
+      warn "Run without the --noprompt|-n argument\n";
+      die "Failed to read list of past appservers acted upon ... exiting\n";
+    };
+} else {
+  @ACT_ON_THESE = getResponse($PROFILE,$CONFIG_FILE,$ACTION) and
+    do  {
+      saveResponse($CONFIG_FILE,@ACT_ON_THESE);
+    };
+}
+
+my $THESE = "@ACT_ON_THESE";
+#make sure we have at least one app server listed
+if ( $THESE =~ /\w/ ) {
+	
+	# Temporarily requiring any stop/start action to restart Tivoli
+	#if (( $ACTION ne 'status' ) and ($ACTONALL)) {
+	if (( $ACTION ne 'status' )) {
+		print "Stopping Tivoli monitoring for WebSphere\n";	
+		my $output = `/etc/rc.itm stop yn 2>&1`;
+		print "$output\n";		
+	}
+	foreach my $appserver ( @ACT_ON_THESE ) {
+		if ( $ACTION eq 'status' ) {
+			print "Checking status of $appserver...\n";
+			status($appserver);	
+		} else {
+  			print "Performing $ACTION on $appserver...\n";
+  			startServer($appserver) if ( $ACTION eq 'start' );
+  			stopServer($appserver) if ( $ACTION eq 'stop' );
+  			restartServer($appserver) if ( $ACTION eq 'restart' );
+		}
+	}
+	# Temporary work around to start Tivoli after actions complete
+	# Do not start Tivoli if everything was stopped
+	#if (( $ACTION =~ /start/i ) and ( $ACTONALL )) {
+	if (( $ACTION ne 'status' ) and not (( $ACTONALL ) and ( $ACTION eq 'stop' ))) {
+		#Don't need to start Tivoli if we are doing a status or stop action
+		#Just restart Tivoli if this was a restart or start
+		print "Starting Tivoli monitoring for WebSphere\n";	
+		my $output = `/etc/rc.itm start yn 2>&1`;
+		print "$output\n";
+	}
+} else {
+	die "Failed to locate an application server\n";
+}
+
+sub getWebSphereProfiles {
+  my $dir;
+  my @websphere_installs;
+  my @dirs;
+  my $wasdir;
+  my $iswas6;
+  
+  opendir DIR, "/usr" and
+# /usr
+    do {
+       my @files = readdir DIR;
+       @websphere_installs = grep /WebSphere/, @files;     
+    };
+    	  
+  foreach $dir (@websphere_installs) {
+# /usr/WebSphere
+    $dir = '/usr/' . "$dir";
+    opendir DIR, "$dir" and
+    do {
+        $wasdir = "$dir" . '/AppServer';
+        $profdir = "$wasdir" . '/profiles';
+        opendir WASDIR, "$profdir" and
+# /usr/WebSphere/AppServer/profiles
+        do {
+          my @profiles = readdir WASDIR;
+          foreach my $profile (@profiles) {
+            my $fullpath = "$profdir" . '/' . "$profile" . "/bin";
+# /usr/WebSphere/AppServer/profiles/<profile>/bin
+            if ( ($profile !~ /^\.+$/) and ( -d $fullpath ) ) {
+              debug("Found websphere directory: $fullpath");
+              push @dirs, "$fullpath";
+            }
+          }      
+        }; 
+        closedir WASDIR;
+        #end traversal of AppServer subdirectory
+    }; # end @websphere_installs
+    closedir DIR;
+  }# end foreach $dir
+  return @dirs;
+}
+
+sub getPastResponse {
+  my $file = shift @_;
+  my $appserver;
+  my @appservers;
+  open FILE, "$file" and
+    do {
+      while ( $appserver = <FILE>) {
+	chomp $appserver;
+	push @appservers, $appserver;
+      }
+    };
+  close FILE;
+
+  return @appservers;
+}
+
+sub getMatch {
+  my $wasdir = shift @_;
+  my $node = shift @_;
+  my $action = shift @_;
+  my @patterns =  @_;
+  my ($app,$status,$string,$celldir) = undef;
+  my (@matches,@files,@servers);
+  my $isALL = undef;
+
+  # Find cell name
+  opendir DIR, "$wasdir/config/cells/" and
+    do {
+       @files = grep !/^\.\.?\z/, grep !/\.xml.*/, readdir DIR;
+       closedir DIR;
+       $celldir = @files[0];
+    };
+  # Populate server list
+  opendir DIR, "$wasdir/config/cells/$celldir/nodes/$node/servers" and
+    do {
+       @servers = grep !/^\.\.?\z/, readdir DIR;
+       closedir DIR;
+    };
+  # if we can't find any servers, check the non-standard Portal Farm dir
+  unless (@servers) {
+  	opendir DIR, "$wasdir/config/cells/$celldir/nodes/wpnode/servers" and
+  	do {
+  		@servers = grep !/^\.\.?\z/, readdir DIR;
+  		closedir DIR;
+  		};
+    }
+
+  foreach $app (@servers) {
+    $appservers{$app} = 1 unless ( $app =~ /(jmsserver|By|The)/ );
+  }
+
+  if ( grep /^all$/, @patterns ) {
+    $isAll = 'true';
+    @matches = keys %appservers;
+  } else {
+    foreach $string (@patterns){
+      push @matches, grep /$string/i, keys %appservers;
+    }
+  }
+  
+      if ( $action ne 'stop') {
+      # Ensure nodeagent is started first
+      if ( grep /nodeagent/, @matches ) {
+        @matches = grep !/nodeagent/, @matches;
+        # Ensure m2m/wxs are started next
+        if ( my @results = grep /(m2m|wxs)/, @matches ) {
+          @matches = grep !/(nodeagent|m2m|wxs)/, @matches;
+          my @m2ms = grep /m2m/, @results;
+          my @catalogs = grep /wxs_catalog/, @results;
+          my @grids = grep /wxs_grid/, @results;
+          unshift @matches, 'nodeagent', @m2ms, @catalogs, @grids ;
+        } else {
+          # No m2m/wxs servers on this box
+          unshift @matches, 'nodeagent';
+        }
+      }
+    } else {
+      # Ensure nodeagent is stopped last
+      if ( grep /nodeagent/, @matches ) {
+        @matches = grep !/nodeagent/, @matches;      
+        # Ensure m2m is stopped second to last
+        if ( my @results = grep /m2m|wxs/, @matches ) {
+          @matches = grep !/(nodeagent|m2m|wxs)/, @matches;
+          my @m2ms = grep /m2m/, @results;
+          my @catalogs = grep /wxs_catalog/, @results;
+          my @grids = grep /wxs_grid/, @results;
+          push @matches, @grids, @catalogs, @m2ms, 'nodeagent' ;
+        } else {
+           # No  m2m servers on this box
+          push @matches, 'nodeagent';
+        }
+      } 
+    }
+  
+  unless ( ($NOPROMPT) or ($isAll) or ($#matches < 1 ) ) {
+    #If the pattern matched multiple app servers, then lets double check with the user
+    #that they want to take action on all of them
+    my $patterns = "@patterns";
+    print "Found multiple applications servers matching [$patterns]:\n";
+    my %new_list;
+    my $i, $app;
+    foreach $app ( @matches ) {
+      $i++;
+      $new_list{$i}= $app;
+	    print "*\t$i : $app\n";
+    }
+    
+    print "\nUse the -n or --noprompt flag with rc.was to avoid being prompted.\n";
+    print "Press ENTER to accept this order and selection \n";
+    print "or type the number corresponding with each application server you want to $action\n";
+    print "in the exact order you want the action performed =>";
+
+    my $order = <STDIN>;
+
+    if ( $order =~ /\d/ ) {
+      undef @matches;
+      chomp $order;
+      debug("Looking at what was typed [$order]");
+      foreach my $number ( $order =~ /(\d+)/g ) {
+        if ( exists $new_list{$number} ) {
+          push @matches, $new_list{$number};
+        } else {
+          warn "Number [$number] was not associated with an application server\n";
+        }
+      }
+    } else {
+      debug("no order was provided .. going with the past list");
+    }
+  }
+  
+  return @matches; 
+}
+
+sub getCurrentList {
+  my $node = shift @_;
+  my %appservers;
+  my @output = `/lfs/system/tools/was/bin/servstatus.ksh all csv 2>&1|grep $node |grep -v '_grid' |grep -v '_catalog'` or
+    return undef;
+
+  foreach my $line (@output) {
+    my $app= (split /\,/, $line)[0];
+	 my $status;
+    $status="stopped" if ($line =~ /STOPPED/);
+    $status="started" if ($line =~ /RUNNING/);
+    $appservers{$app} = $status unless ( $app =~ /jmsserver/ || ! $status ) ;
+  }
+  return %appservers;
+}
+
+sub getResponse {
+  my $node = shift @_;
+  my $conf_file = shift @_;
+  my $action = shift @_;
+  my @past_list;
+  my %curr_list;
+  my %new_list;
+  my @appservers;
+  my $app;
+
+  #Read in what application servers were acted on last time
+  my @past_list = getPastResponse($conf_file);
+
+  my %curr_list=getCurrentList($node);
+
+  my $i = 0;
+  if ( @past_list ) {
+    print "\nSet to $action the following marked with an \"*\" in this order:\n";
+    # Have nodeagent be last when stopping - otherwise - first
+    if ( $action ne 'stop') {
+      if (($curr_list{nodeagent} =~ /start/i) and ( $action eq 'start')) {
+	print "\t-- : nodeagent - already started\n";
+      } else {
+	$i++;
+	$new_list{$i}= 'nodeagent';
+	print "*\t$i : nodeagent - $curr_list{nodeagent}\n";
+      }
+      if (my  @results = grep /m2m/i, ( keys %curr_list )) {
+	     # Have m2m nodeagents be started second
+	     foreach my $app ( @results ) {
+	       if (($curr_list{$app} =~ /start/i) and ($action eq 'start') ) {
+	         print "\t-- : $app - already started\n";
+	       } else {
+	         $i++;
+	         $new_list{$i}= $app;
+	         print "*\t$i : $app - $curr_list{$app}\n";
+	       }
+	     }
+      }
+    }
+
+    APP: foreach $app ( @past_list  ) {
+	next APP if ( $app =~ /(nodeagent|m2m)/i ); 
+	# Don't try to take action on something that is no longer on this box
+	if ( exists $curr_list{$app} ) {
+	  if ( ($action eq 'stop') and $curr_list{$app} =~ /stop/i ) {
+	    print "\t-- : $app - already stopped\n";
+	  } elsif ( ($action eq 'start') and $curr_list{$app} =~ /start/i ) {
+	    print "\t-- : $app - already started\n";
+	  } else {
+	    $i++;
+	    $new_list{$i}= $app;
+	    print "*\t$i : $app - $curr_list{$app}\n";
+	  }
+	  delete $curr_list{$app};
+	}
+      } #END foreach $app
+
+    if ($action eq 'stop') {
+      if (my @results = grep /m2m/i, ( keys %curr_list ) ) {
+	     # Have m2m appservers be stopped second to last
+	     foreach my $app  (@results) {
+	       if ($curr_list{$app} =~ /stop/i ) {
+	         print "\t-- : $app - already stopped\n";
+	       } else {
+	         $i++;
+	         $new_list{$i}= $app;
+	         print "*\t$i : $app - $curr_list{$app}\n";
+	       }
+        }
+      }
+      if ( $curr_list{nodeagent} =~ /stop/i ) {
+	       print "\t-- : nodeagent - already stopped\n";
+      } else {
+	       $i++;
+	       $new_list{$i}= 'nodeagent';
+	       print "*\t$i : nodeagent - $curr_list{nodeagent}\n";
+      }
+
+    }
+
+    delete $curr_list{nodeagent};
+    if ( my @results = grep /m2m/i, ( keys %curr_list ) ) {
+      foreach my $app (@results) {
+        delete $curr_list{$app};
+      }
+    }
+  } #END if (@past_list)
+
+  my $num_past = $i;
+  
+  # Now lets look at what new apps may be on this box since last time rc.was was ran
+  if ( keys %curr_list ) {
+    print "\nFound these application servers defined on the box:\n";
+    print "NOTE If you just press ENTER the action $action will not be performed on these.\n";
+    foreach my $app ( sort keys %curr_list ) {
+      if ( ($action eq 'stop') and $curr_list{$app} =~ /stop/i ) {
+	print "\t-- : $app - already stopped\n";
+      } elsif ( ($action eq 'start') and $curr_list{$app} =~ /start/i ) {
+	print "\t-- : $app - already started\n";
+      } else {
+	$i++;
+	$new_list{$i}= $app;
+	print "\t$i : $app - $curr_list{$app}\n";
+      }
+    }
+  }
+
+  print "\nPress ENTER to accept this order and selection: \n" if ( @past_list );
+  print "Type the number corresponding with each application server you want to $action\n";
+  print "in the exact order you want the action performed =>";
+
+  my $order = <STDIN>;
+
+  if ( $order =~ /\d/ ) {
+    chomp $order;
+    debug("Looking at what was typed [$order]");
+   foreach my $number ( $order =~ /(\d+)/g ) {
+     if ( exists $new_list{$number} ) {
+       push @appservers, $new_list{$number};
+     } else {
+       warn "Number [$number] was not associated with an application server\n";
+     }
+   }
+ } else {
+   debug("no order was provided .. going with the past list");
+   $i = 1;
+   while ( $i <= $num_past ) {
+     push @appservers, $new_list{$i};
+     $i++;
+   }
+ }
+  return @appservers;
+}
+
+sub saveResponse {
+  my $file = shift @_;
+  my @appservers =@_;
+  my $result;
+
+  open FILE, ">$file" and
+    do {
+      foreach my $appserver ( @appservers ) {
+	print FILE "$appserver\n";
+      }
+      close FILE;
+      return 1;
+    };
+
+
+  warn "Failed to save selection to $file: $!\n";
+  return undef;
+}
+
+sub saveVEMode {
+	my $appserver = shift @_;
+	my $modefile = shift @_;
+	print "Saving VE operational mode for $appserver.\n";
+	my $output = callVEOpMode($appserver, 'get');
+	$output =~ s/^.*\,//;
+	$output =~ s/\r//;
+	open MODEFILE, ">$modefile" and
+	do {
+		print MODEFILE "$output";
+		close MODEFILE;
+	};
+	print "\tCurrent mode: $output\n";
+	return $output;
+}
+
+sub setVEMode {
+	my $appserver = shift @_;
+	my $modefile = shift @_;
+	my @opFile,$opMode;
+	if ( -e $modefile ) {
+		print "\nRetrieving VE operational mode for $appserver.\n";
+		open MODEFILE, "<$modefile" and
+		do {
+			@opFile = <MODEFILE>;
+			close MODEFILE;
+		};
+		$opMode = shift @opFile;
+		print "\tSaved operational mode: $opMode\n";
+	} else {
+		print "No VE operational mode stored for $appserver.\n";
+		$opMode = 'supervised';
+		print "\tDefault mode: $opMode\n";
+	}
+	my $output = "OK";
+	if ( $opMode =~ /manual/ ) {
+		print "No mode change required, continuing...\n";
+	} else {
+		$output = callVEOpMode($appserver, $opMode);
+		$output =~ s/^.*\,//;
+		print "\tMode successfully set: $output\n";
+	}
+	return $output;
+}
+
+sub callVEOpMode {
+	my $appserver = shift @_;
+	my $opCmd = shift @_;
+	return command("wsadmin.sh -lang jython -f $VE_MODE_PY $appserver $opCmd 2>&1 |grep $appserver |grep -v ^WASX", 0);
+}
+
+sub startServer {
+  my $appserver = shift @_;
+  if ( $appserver =~ /nodeagent/i ) {
+    return command("startNode.sh");
+  } elsif ( $appserver =~ /dmgr/i ) {
+    return command("startManager.sh");
+  } elsif ( $FARM ) {
+  	print "Emptying /usr/WebSphere$WAS_VER/portalfs/[ws]temp/ ...\n";
+  	system("rm -rf /usr/WebSphere$WAS_VER/portalfs/wstemp/*;rm -rf /usr/WebSphere$WAS_VER/portalfs/temp/*");
+    return command("../PortalServer/bin/start_WebSphere_Portal.sh");
+  } else {
+    my $rcode = command("startServer.sh $appserver");
+	if ( $appserver =~ /^p[123]_dc_/ || $appserver =~ /^DC_/ || $appserver =~ /^pre_dc_/ || $appserver =~ /^cdt_dc_/ || $appserver =~ /^dss_dc_/ ) {
+		my $veStateFile = "$VE_MODE_DIR" . "$appserver" . '.vemode';
+		setVEMode($appserver, $veStateFile);
+	}
+	return $rcode;
+  }
+}
+
+sub stopServer {
+  my $appserver = shift @_;
+  if ( $appserver =~ /nodeagent/i ) {
+    return command("stopNode.sh");
+  } elsif ( $appserver =~ /dmgr/i ) {
+    return command("stopManager.sh");
+  } elsif ( $FARM ) {
+    return command("../PortalServer/bin/stop_WebSphere_Portal.sh");
+  } else {
+  	if ( $appserver =~ /^p[123]_dc_/  || $appserver =~ /^DC_/ || $appserver =~ /^pre_dc_/ || $appserver =~ /^cdt_dc_/ || $appserver =~ /^dss_dc_/ ) {
+		my $veStateFile = "$VE_MODE_DIR" . "$appserver" . '.vemode';
+		my $veMode = saveVEMode($appserver, $veStateFile);
+		if ( $veMode =~ /manual/ ) {
+			print "VE operational mode already manual, continuing...\n";
+		} else {
+			my $output = callVEOpMode($appserver, 'manual');
+			$output =~ s/^.*\,//;
+			print "VE operational mode changed to: $output\n";
+		}
+	}
+    return command("stopServer.sh $appserver");
+  }
+}
+
+sub restartServer {
+  my $appserver = shift @_;
+  stopServer($appserver) or
+    return undef;
+  if ( $appserver =~ /wxs_grid/i ) {
+  	print "Please wait. Pausing 10 seconds to allow for grid shard re-placement...\n";
+  	sleep(10);
+  }
+  startServer($appserver) or
+    return undef;
+  return 1;
+}
+
+sub status {
+  my $appserver = shift @_;
+  my %appservers;
+  my ($app,$status) = undef;
+  my $output = command("serverStatus.sh $appserver") or
+    return undef;
+
+  foreach my $line (split /\n/, $output) {
+    ($app) = $line =~ /\"(\S.*)\"/ and 
+      do {
+	$status="stopped" if ($line =~ /cannot/);
+	$status="started" if ($line =~ /start/i);
+	$appservers{$app} = $status unless ( $app =~ /jmsserver/ );
+      };
+  }
+
+  if ( exists $appservers{$appserver} ) {
+    return $appservers{$appserver};
+  } else {
+    return undef;
+  }
+}
+
+sub debug {
+  my $message = "@_" || " ";
+  print "\tDEBUG: $message\n" if $DEBUG;
+}
+
+sub command {
+  my $run_this = shift @_;
+  my $stdout = 1;
+  if ( $#_ >= 0 ) {
+  	$stdout = shift @_;
+  }
+  if ( $run_this ) {
+    my $command = new Expect  or
+      do {
+        die "Unable to use Expect module\n";
+        return undef;
+      };
+    $command->log_stdout($stdout); #unless ( $DEBUG );
+    $run_this = "su - webinst -c \"$WASDIR/$run_this\" 2>&1";
+    if ($stdout) {
+      print "\n---------------------------------------------\n";
+      print "EXECUTING: $run_this\n";
+      print "---------------------------------------------\n";
+    }
+    $command->spawn($run_this ) or
+      do {
+        warn "Failed to execute $run_this\n";
+        return undef;
+      };
+    my ($pos,$error,$match,$output,$after) = $command->expect(600,'eof');
+    $command->hard_close();
+    if ($stdout) {
+      print "---------------------------------------------\n";
+      print "---------------------------------------------\n";
+    }
+    if ( $error ) {
+      unless ( $error =~ /(status 0|EOF)/ ) {
+        warn "ERROR: $error\n";
+        return undef;
+      }
+    }
+
+    if ( $output ) {
+      return $output;
+    } else {
+      return "OK";
+    }
+  } else {
+    return "nothing to run"
+  }
+}
